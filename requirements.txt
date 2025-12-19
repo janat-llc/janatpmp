@@ -1,1 +1,2 @@
-gradio[mcp]==6.0.2
+gradio[mcp]>=6.2.0
+pandas
