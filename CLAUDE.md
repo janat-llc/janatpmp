@@ -22,6 +22,9 @@ JANATPMP/
 ├── database.py               # SQLite database layer (schema, CRUD operations)
 ├── requirements.txt          # Python dependencies
 ├── pyproject.toml            # Project metadata and configuration
+├── Dockerfile                # Container image definition
+├── docker-compose.yml        # Container orchestration config
+├── .dockerignore             # Files excluded from Docker build context
 ├── janatpmp.db               # SQLite database file (runtime)
 └── features/                 # Modular features package
     └── inventory/
@@ -34,15 +37,22 @@ JANATPMP/
 ## Commands
 
 ```bash
-# Install dependencies
+# Install dependencies (local development)
 pip install -r requirements.txt
 
-# Run the application
+# Run the application (local)
 python app.py
 # App launches at http://localhost:7860
 
 # Initialize database (if needed)
 python -m database
+
+# Docker commands
+docker-compose build          # Build container image
+docker-compose up             # Run container (foreground)
+docker-compose up -d          # Run container (detached)
+docker-compose down           # Stop container
+docker-compose logs           # View container logs
 ```
 
 ## Architecture
@@ -72,6 +82,14 @@ Three-table normalized design:
 - File queries default to 500-item limit to prevent UI overload
 - Extension filtering is whitelist-based (configured in `features/inventory/config.py`)
 - Errors collected in result dicts rather than thrown
+
+## Docker
+
+The application runs in a Docker container with live code reloading:
+- **Image:** Python 3.14-slim base
+- **Port:** 7860 (Gradio default)
+- **Volume mount:** Local directory mounted at `/app` for live code changes without rebuild
+- **MCP Server:** Enabled via `GRADIO_MCP_SERVER=True` environment variable
 
 ## Development Notes
 

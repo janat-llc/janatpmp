@@ -3,7 +3,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime
 
-DB_PATH = Path("janatpmp.db")
+DB_PATH = Path(__file__).parent / "db" / "janatpmp.db"
 
 def init_db():
     """Initialize the SQLite database schema."""
