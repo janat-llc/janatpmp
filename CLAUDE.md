@@ -25,7 +25,9 @@ JANATPMP/
 ├── Dockerfile                # Container image definition
 ├── docker-compose.yml        # Container orchestration config
 ├── .dockerignore             # Files excluded from Docker build context
-├── janatpmp.db               # SQLite database file (runtime)
+├── db/
+│   ├── schema.sql            # Database schema definition
+│   └── janatpmp.db           # SQLite database file (runtime, gitignored)
 └── features/                 # Modular features package
     └── inventory/
         ├── __init__.py
@@ -70,10 +72,21 @@ Gradio UI (app.py) → API Layer (api.py) → Business Logic (features/inventory
 
 ## Database Schema
 
-Three-table normalized design:
-- `projects` - Detected project roots (path, type, detection timestamp)
-- `files` - Indexed files (path, filename, extension, size, timestamps)
-- `scan_runs` - Scan execution history
+Located at `db/janatpmp.db`, defined in `db/schema.sql`:
+
+**Core Tables:**
+- `items` - Projects/features across 12 domains (literature, janatpmp, janat, atlas, meax, etc.)
+- `tasks` - Work queue for agents and users
+- `documents` - Conversations, files, artifacts, research
+- `relationships` - Universal connector between entities
+- `cdc_outbox` - Change Data Capture for Qdrant/Neo4j sync
+- `schema_version` - Migration tracking
+
+**Features:**
+- Full-text search via FTS5 on items and documents
+- CDC triggers for eventual consistency with vector/graph stores
+- JSON attributes for domain-specific data
+- 12 seeded domain projects
 
 ## Conventions
 
@@ -94,6 +107,6 @@ The application runs in a Docker container with live code reloading:
 ## Development Notes
 
 - No test suite exists yet - testing infrastructure needs to be added
-- Database path is hardcoded to `janatpmp.db` in project root
+- Database located at `db/janatpmp.db` (configured in `database.py`)
 - Project detection features are placeholders (under development)
 - Built for AI integration via Gradio's MCP support
