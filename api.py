@@ -1,17 +1,28 @@
 """
-JANATPMP API Layer - All functions exposed via gr.api()
-Import and re-export all API-compatible functions.
+JANATPMP API Layer - Re-exports all database operations.
+All functions are exposed via gr.api() in app.py for MCP tool access.
 """
-from database import (
-    start_scan_run, complete_scan_run, save_file, save_project,
-    get_files, get_projects, get_scan_history, search_files
-)
-from features.inventory.scanner import scan_directory
 
-# These will be wrapped with gr.api() in app.py
+from db.operations import (
+    # Items
+    create_item, get_item, list_items, update_item, delete_item,
+    # Tasks
+    create_task, get_task, list_tasks, update_task,
+    # Documents
+    create_document, get_document, list_documents,
+    # Relationships
+    create_relationship, get_relationships,
+    # Schema & Stats
+    get_schema_info, get_stats,
+    # Search
+    search_items, search_documents
+)
+
 __all__ = [
-    'scan_directory',
-    'start_scan_run', 'complete_scan_run', 
-    'save_file', 'save_project',
-    'get_files', 'get_projects', 'get_scan_history', 'search_files'
+    'create_item', 'get_item', 'list_items', 'update_item', 'delete_item',
+    'create_task', 'get_task', 'list_tasks', 'update_task',
+    'create_document', 'get_document', 'list_documents',
+    'create_relationship', 'get_relationships',
+    'get_schema_info', 'get_stats',
+    'search_items', 'search_documents'
 ]

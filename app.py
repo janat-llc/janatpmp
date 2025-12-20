@@ -1,70 +1,72 @@
 import gradio as gr
-from pathlib import Path
 import pandas as pd
-from database import init_db
-import api
+from db.operations import (
+    create_item, get_item, list_items, update_item, delete_item,
+    create_task, get_task, list_tasks, update_task,
+    create_document, get_document, list_documents,
+    create_relationship, get_relationships,
+    get_schema_info, get_stats,
+    search_items, search_documents
+)
 
-# Ensure database exists
-init_db()
 
 def app_interface():
     # --- Event Handlers ---
-    def on_scan(path_str):
-        if not path_str:
-            gr.Warning("Please enter a directory path.")
-            return "No path provided.", gr.DataFrame(value=[])
-        
-        try:
-            gr.Info(f"Starting scan of {path_str}...")
-            # 1. Run Scan
-            results = api.scan_directory(path_str)
-            
-            # 2. Save Run
-            run = api.start_scan_run("janatpmp.db", path_str)
-            scan_id = run.get('scan_run_id')
-            
-            # 3. Save Files & Projects
-            for proj in results['projects']:
-                 api.save_project("janatpmp.db", proj)
-                 
-            for file_dat in results['files']:
-                file_dat['project_id'] = None # Link logic later
-                api.save_file("janatpmp.db", scan_id, file_dat)
-                
-            # 4. Complete Run
-            api.complete_scan_run("janatpmp.db", scan_id, results['stats']['total_files'], len(results['errors']))
-            
-            status_msg = f"Scan Complete. Found {results['stats']['total_files']} files."
-            
-            # Refresh data
-            start_df = get_file_dataframe()
-            return status_msg, start_df
-            
-        except Exception as e:
-            raise gr.Error(f"Scan failed: {e}")
+    def get_items_dataframe(domain_filter="", status_filter=""):
+        """Get items as DataFrame for display."""
+        items = list_items(
+            domain=domain_filter if domain_filter else "",
+            status=status_filter if status_filter else "",
+            limit=100
+        )
+        if not items:
+            return pd.DataFrame(columns=["Title", "Domain", "Type", "Status", "Priority"])
 
-    def get_file_dataframe(search_query=None):
-        if search_query:
-            files = api.search_files("janatpmp.db", search_query)
-        else:
-            files = api.get_files("janatpmp.db", limit=500)
-            
-        if not files or (len(files) == 1 and 'error' in files[0]):
-            return pd.DataFrame(columns=["Filename", "Extension", "Size", "Path"])
-            
-        # Transform for display
         data = []
-        for f in files:
+        for item in items:
             data.append({
-                "Filename": f['filename'],
-                "Extension": f['extension'],
-                "Size": f['size_bytes'],
-                "Path": f['path']
+                "Title": item['title'],
+                "Domain": item['domain'],
+                "Type": item['entity_type'],
+                "Status": item['status'],
+                "Priority": item['priority']
             })
         return pd.DataFrame(data)
 
-    def load_recents():
-        return get_file_dataframe()
+    def get_tasks_dataframe(status_filter=""):
+        """Get tasks as DataFrame for display."""
+        tasks = list_tasks(
+            status=status_filter if status_filter else "",
+            limit=100
+        )
+        if not tasks:
+            return pd.DataFrame(columns=["Title", "Type", "Assigned", "Status", "Priority"])
+
+        data = []
+        for task in tasks:
+            data.append({
+                "Title": task['title'],
+                "Type": task['task_type'],
+                "Assigned": task['assigned_to'],
+                "Status": task['status'],
+                "Priority": task['priority']
+            })
+        return pd.DataFrame(data)
+
+    def load_stats():
+        """Load database statistics."""
+        stats = get_stats()
+        return (
+            stats.get('total_items', 0),
+            stats.get('total_tasks', 0),
+            stats.get('total_documents', 0)
+        )
+
+    def load_items():
+        return get_items_dataframe()
+
+    def load_tasks():
+        return get_tasks_dataframe()
 
     # --- UI Components ---
     with gr.Blocks(title="JANATPMP") as demo:
@@ -76,82 +78,105 @@ def app_interface():
             # LEFT PANEL (Stats)
             with gr.Column(scale=1):
                 with gr.Accordion("Stats & Observability", open=True):
-                    stat_total_files = gr.Number(label="Total Files", value=0, interactive=False)
-                    stat_projects = gr.Number(label="Projects", value=0, interactive=False)
-                    stat_last_scan = gr.Textbox(label="Last Scan", value="Never", interactive=False)
-                    gr.Markdown("_(Real-time stats coming soon)_")
+                    stat_items = gr.Number(label="Total Items", value=0, interactive=False)
+                    stat_tasks = gr.Number(label="Total Tasks", value=0, interactive=False)
+                    stat_docs = gr.Number(label="Total Documents", value=0, interactive=False)
 
             # MIDDLE PANEL (Main Content)
             with gr.Column(scale=3):
                 with gr.Tabs():
-                    with gr.Tab("Inventory"):
-                        gr.Markdown("### Codebase Inventory")
-                        
-                        with gr.Group():
-                            with gr.Row():
-                                scan_input = gr.Textbox(
-                                    label="Directory Path", 
-                                    placeholder="/mnt/c/Janat/...", 
-                                    scale=4
-                                )
-                                scan_btn = gr.Button("Scan", variant="primary", scale=1)
-                            
-                            scan_status = gr.Textbox(label="Status", value="Ready", interactive=False)
-                        
-                        gr.Markdown("---")
-                        
+                    with gr.Tab("Items"):
+                        gr.Markdown("### Project Items")
+                        gr.Markdown("Items across all 12 domains")
+
                         with gr.Row():
-                            search_input = gr.Textbox(label="Search Files", placeholder="filename or extension...", scale=4)
-                            search_btn = gr.Button("Search", scale=1)
-                        
-                        file_table = gr.DataFrame(
-                            headers=["Filename", "Extension", "Size", "Path"],
+                            domain_filter = gr.Dropdown(
+                                label="Domain",
+                                choices=["", "literature", "janatpmp", "janat", "atlas", "meax",
+                                        "janatavern", "amphitheatre", "nexusweaver", "websites",
+                                        "social", "speaking", "life"],
+                                value=""
+                            )
+                            status_filter = gr.Dropdown(
+                                label="Status",
+                                choices=["", "not_started", "planning", "in_progress", "blocked",
+                                        "review", "completed", "shipped", "archived"],
+                                value=""
+                            )
+                            filter_btn = gr.Button("Filter", variant="primary")
+
+                        items_table = gr.DataFrame(
+                            headers=["Title", "Domain", "Type", "Status", "Priority"],
                             interactive=False,
-                            label="Indexed Files"
+                            label="Items"
                         )
 
-                    with gr.Tab("Projects"):
-                        gr.Markdown("### Detected Projects (Stub)")
-                        gr.Markdown("_Project list will appear here_")
+                    with gr.Tab("Tasks"):
+                        gr.Markdown("### Task Queue")
+                        gr.Markdown("Work items for agents and users")
 
-                    with gr.Tab("Scans"):
-                         gr.Markdown("### Scan History (Stub)")
-                         gr.Markdown("_Scan logs will appear here_")
+                        tasks_table = gr.DataFrame(
+                            headers=["Title", "Type", "Assigned", "Status", "Priority"],
+                            interactive=False,
+                            label="Tasks"
+                        )
 
-            # RIGHT PANEL (Tasks)
+                    with gr.Tab("Database"):
+                        gr.Markdown("# Database Operations")
+                        gr.Markdown("Database tools exposed via MCP for Claude Desktop")
+
+                        # Expose all database operations as API/MCP tools
+                        gr.api(create_item)
+                        gr.api(get_item)
+                        gr.api(list_items)
+                        gr.api(update_item)
+                        gr.api(delete_item)
+
+                        gr.api(create_task)
+                        gr.api(get_task)
+                        gr.api(list_tasks)
+                        gr.api(update_task)
+
+                        gr.api(create_document)
+                        gr.api(get_document)
+                        gr.api(list_documents)
+
+                        gr.api(create_relationship)
+                        gr.api(get_relationships)
+
+                        gr.api(get_schema_info)
+                        gr.api(get_stats)
+                        gr.api(search_items)
+                        gr.api(search_documents)
+
+                        gr.Markdown("## MCP Tools Available")
+                        gr.Markdown("All database operations are now accessible via Claude Desktop at:")
+                        gr.Markdown("`http://localhost:7860/gradio_api/mcp/`")
+
+            # RIGHT PANEL (Actions)
             with gr.Column(scale=1):
-                with gr.Accordion("Tasks & Actions", open=True):
-                    gr.Markdown("## Tasks")
-                    gr.Markdown("_AI-executable tasks will appear here_")
-                    
+                with gr.Accordion("Quick Actions", open=True):
+                    gr.Markdown("## Actions")
+                    gr.Markdown("_Quick actions coming soon_")
+
                     with gr.Group():
-                         gr.Button("Rescan All")
-                         gr.Button("Export Report")
-                         gr.Button("Clear Database", variant="stop")
+                        gr.Button("Refresh Data")
+                        gr.Button("Export Report")
 
         # --- Wiring ---
-        scan_btn.click(
-            on_scan, 
-            inputs=[scan_input], 
-            outputs=[scan_status, file_table]
+        filter_btn.click(
+            get_items_dataframe,
+            inputs=[domain_filter, status_filter],
+            outputs=[items_table]
         )
-        
-        search_btn.click(
-            get_file_dataframe,
-            inputs=[search_input],
-            outputs=[file_table]
-        )
-        
-        # Load initial data on load
-        demo.load(load_recents, outputs=[file_table])
-        
-        # --- API Exposure ---
-        # Note: Functions connected via .click() are auto-exposed as API endpoints
-        # MCP server (GRADIO_MCP_SERVER=true) will pick these up automatically
-        # TODO: Research gr.api() pattern for standalone function exposure in Gradio 6.0.2
+
+        # Load initial data on app load
+        demo.load(load_items, outputs=[items_table])
+        demo.load(load_tasks, outputs=[tasks_table])
+        demo.load(load_stats, outputs=[stat_items, stat_tasks, stat_docs])
 
     return demo
 
 if __name__ == "__main__":
     demo = app_interface()
-    demo.launch()
+    demo.launch(mcp_server=True)
