@@ -2,111 +2,125 @@
 
 ## Project Overview
 
-**JANATPMP (Janat Project Management Platform)** is a Gradio-based Python web application for codebase inventory management and analysis. It allows users to scan directories, discover projects, index files, and search through a codebase catalog.
+**JANATPMP (Janat Project Management Platform)** is a Gradio-based project management
+platform designed for solo architects and engineers working with AI partners. It provides
+persistent project state that AI assistants can read and write via MCP (Model Context Protocol).
 
-**Status:** Alpha (v0.1)
+**Status:** v0.2 (Hackathon Sprint — Feb 10-16, 2026)
+**Hackathon:** Anthropic "Built with Opus 4.6" Claude Code competition
+**Demo Story:** Cold start — user installs with empty database, AI partner helps build
+project landscape from nothing.
 
 ## Tech Stack
 
 - **Python** 3.14+
-- **Gradio** 6.2.0+ with MCP (Model Context Protocol) support
-- **SQLite3** for persistence
-- **Pandas** for data manipulation
+- **Gradio** 6.5.1 with MCP support (`gradio[mcp]==6.5.1`)
+- **SQLite3** for persistence (WAL mode, FTS5 full-text search)
+- **Pandas** for data display
+
+## Current Sprint: TODO_HACKATHON_SPRINT_1.md
+
+Read this file first. It contains the complete specification for the current work.
 
 ## Project Structure
 
 ```
 JANATPMP/
-├── app.py                    # Main Gradio application entry point
-├── api.py                    # API layer - re-exports database and scanner functions
-├── database.py               # SQLite database layer (schema, CRUD operations)
-├── requirements.txt          # Python dependencies
-├── pyproject.toml            # Project metadata and configuration
-├── Dockerfile                # Container image definition
-├── docker-compose.yml        # Container orchestration config
-├── .dockerignore             # Files excluded from Docker build context
+├── app.py                    # Main Gradio application (UI + event handlers)
+├── api.py                    # API layer - re-exports all operations for MCP
+├── database.py               # Legacy file (deprecated, operations moved to db/)
+├── requirements.txt          # Python dependencies (pinned)
+├── pyproject.toml            # Project metadata
+├── Dockerfile                # Container image (Python 3.14-slim)
+├── docker-compose.yml        # Container orchestration (port 7860, volume mount)
+├── CLAUDE.md                 # This file
+├── TODO_HACKATHON_SPRINT_1.md # Current sprint specification
 ├── db/
-│   ├── schema.sql            # Database schema definition
-│   └── janatpmp.db           # SQLite database file (runtime, gitignored)
-└── features/                 # Modular features package
-    └── inventory/
-        ├── __init__.py
-        ├── scanner.py        # Directory scanning logic
-        ├── models.py         # Data classes (Project, FileItem, ScanRun)
-        └── config.py         # Scan configuration (extensions, skip dirs, markers)
-```
-
-## Commands
-
-```bash
-# Install dependencies (local development)
-pip install -r requirements.txt
-
-# Run the application (local)
-python app.py
-# App launches at http://localhost:7860
-
-# Initialize database (if needed)
-python -m database
-
-# Docker commands
-docker-compose build          # Build container image
-docker-compose up             # Run container (foreground)
-docker-compose up -d          # Run container (detached)
-docker-compose down           # Stop container
-docker-compose logs           # View container logs
+│   ├── schema.sql            # Database schema DDL (NO seed data)
+│   ├── seed_data.sql         # Optional seed data (separate from schema)
+│   ├── operations.py         # All CRUD + lifecycle functions (19+ operations)
+│   ├── test_operations.py    # Tests
+│   ├── janatpmp.db           # SQLite database (runtime, gitignored)
+│   ├── backups/              # Timestamped database backups
+│   └── __init__.py
+├── features/
+│   └── inventory/            # Directory scanning feature (future)
+└── completed/                # Archived TODO files
 ```
 
 ## Architecture
 
-**Layered Architecture:**
 ```
-Gradio UI (app.py) → API Layer (api.py) → Business Logic (features/inventory/) → Data Access (database.py) → SQLite
+Gradio UI (app.py)
+    ↓ event handlers call
+DB Operations (db/operations.py)
+    ↓ read/write
+SQLite (db/janatpmp.db)
+
+Simultaneously:
+    Gradio API  → same functions → same database
+    MCP Server  → same functions → same database
 ```
 
-**Key Patterns:**
-- Context managers for database connections (`get_db_connection()`)
-- Data classes for type-safe models
-- Event-driven UI with Gradio `.click()` bindings
-- Functions return dicts with `error` key instead of raising exceptions (API-friendly)
+**Key principle:** One set of functions serves UI, API, and MCP. Every function in
+`db/operations.py` with proper docstrings becomes an MCP tool automatically when
+wired to a Gradio component.
 
-## Database Schema
-
-Located at `db/janatpmp.db`, defined in `db/schema.sql`:
+## Database Schema (db/schema.sql)
 
 **Core Tables:**
-- `items` - Projects/features across 12 domains (literature, janatpmp, janat, atlas, meax, etc.)
-- `tasks` - Work queue for agents and users
-- `documents` - Conversations, files, artifacts, research
-- `relationships` - Universal connector between entities
-- `cdc_outbox` - Change Data Capture for Qdrant/Neo4j sync
-- `schema_version` - Migration tracking
+- `items` — Projects, features, books, etc. across domains. Supports hierarchy via parent_id.
+  Has JSON attributes for domain-specific data. FTS5 full-text search enabled.
+- `tasks` — Work queue with agent/human assignment. Supports retry logic, dependencies,
+  acceptance criteria, cost tracking.
+- `documents` — Conversations, files, artifacts, research. FTS5 enabled.
+- `relationships` — Universal connector between any two entities. Typed relationships
+  (blocks, enables, informs, etc.) with hard/soft strength.
+- `cdc_outbox` — Change Data Capture for future Qdrant/Neo4j sync.
+- `schema_version` — Migration tracking.
 
-**Features:**
-- Full-text search via FTS5 on items and documents
-- CDC triggers for eventual consistency with vector/graph stores
-- JSON attributes for domain-specific data
-- 12 seeded domain projects
+**Domain enum values:** literature, janatpmp, janat, atlas, meax, janatavern,
+amphitheatre, nexusweaver, websites, social, speaking, life
+
+## Commands
+
+```bash
+# Local development
+pip install -r requirements.txt
+python app.py
+# App at http://localhost:7860, MCP at http://localhost:7860/gradio_api/mcp/sse
+
+# Docker (preferred)
+docker-compose build
+docker-compose up              # foreground
+docker-compose up -d           # detached
+docker-compose down
+docker-compose logs -f
+```
 
 ## Conventions
 
-- Use `pathlib.Path` for all path handling (cross-platform compatibility)
-- ISO format for all timestamps (`datetime.isoformat()`)
-- File queries default to 500-item limit to prevent UI overload
-- Extension filtering is whitelist-based (configured in `features/inventory/config.py`)
-- Errors collected in result dicts rather than thrown
+- All functions in db/operations.py MUST have full docstrings with Args and Returns
+  (Gradio uses these for MCP tool descriptions)
+- Use `pathlib.Path` for all path handling
+- ISO format for timestamps
+- Empty string = "no filter" / "no change" in function parameters
+- Functions return strings for status messages, dicts for single entities, lists for collections
+- Context managers for database connections (`get_connection()`)
+- Test each change by running the app — no separate test runner yet
 
 ## Docker
 
-The application runs in a Docker container with live code reloading:
-- **Image:** Python 3.14-slim base
-- **Port:** 7860 (Gradio default)
-- **Volume mount:** Local directory mounted at `/app` for live code changes without rebuild
-- **MCP Server:** Enabled via `GRADIO_MCP_SERVER=True` environment variable
+- **Image:** Python 3.14-slim
+- **Port:** 7860
+- **Volume:** `.:/app` for live code changes without rebuild
+- **MCP:** Enabled via `GRADIO_MCP_SERVER=True` environment variable
+- **CMD:** `gradio app.py` (uses Gradio's built-in server)
 
-## Development Notes
+## Important Notes
 
-- No test suite exists yet - testing infrastructure needs to be added
-- Database located at `db/janatpmp.db` (configured in `database.py`)
-- Project detection features are placeholders (under development)
-- Built for AI integration via Gradio's MCP support
+- This is a HACKATHON project — favor completion over perfection
+- The database starts EMPTY (no seed data). This is intentional for the demo.
+- Every operation must work from all three surfaces: UI, API, MCP
+- Do NOT add features not specified in the current TODO file
+- When in doubt, ask — don't guess

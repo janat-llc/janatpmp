@@ -123,35 +123,7 @@ def app_interface():
 
                     with gr.Tab("Database"):
                         gr.Markdown("# Database Operations")
-                        gr.Markdown("Database tools exposed via MCP for Claude Desktop")
-
-                        # Expose all database operations as API/MCP tools
-                        gr.api(create_item)
-                        gr.api(get_item)
-                        gr.api(list_items)
-                        gr.api(update_item)
-                        gr.api(delete_item)
-
-                        gr.api(create_task)
-                        gr.api(get_task)
-                        gr.api(list_tasks)
-                        gr.api(update_task)
-
-                        gr.api(create_document)
-                        gr.api(get_document)
-                        gr.api(list_documents)
-
-                        gr.api(create_relationship)
-                        gr.api(get_relationships)
-
-                        gr.api(get_schema_info)
-                        gr.api(get_stats)
-                        gr.api(search_items)
-                        gr.api(search_documents)
-
-                        gr.Markdown("## MCP Tools Available")
-                        gr.Markdown("All database operations are now accessible via Claude Desktop at:")
-                        gr.Markdown("`http://localhost:7860/gradio_api/mcp/`")
+                        gr.Markdown("19 database tools exposed via MCP for Claude Desktop")
 
             # RIGHT PANEL (Actions)
             with gr.Column(scale=1):

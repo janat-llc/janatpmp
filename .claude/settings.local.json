@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"C:\\Janat\\JANATPMP\" remote -v)",
+      "Bash(git -C \"C:\\Janat\\JANATPMP\" status)",
+      "Bash(git -C \"C:\\Janat\\JANATPMP\" diff)",
+      "Bash(git -C \"C:\\Janat\\JANATPMP\" log --oneline -5)",
+      "Bash(git -C \"C:\\Janat\\JANATPMP\" add .gitignore CLAUDE.md pyproject.toml requirements.txt)",
+      "Bash(git -C \"C:\\Janat\\JANATPMP\" commit -m \"$(cat <<''EOF''\nAdd project documentation and update dependencies\n\n- Add CLAUDE.md with project guidelines for AI assistants\n- Add .gitignore for Python, IDE, and database files\n- Update Gradio dependency to 6.2.0 in requirements.txt and pyproject.toml\n- Add missing pandas to requirements.txt\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(docker-compose build:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(git -C \"C:\\Janat\\JANATPMP\" log --oneline -3)",
+      "Bash(git -C:*)",
+      "Bash(git -C \"C:\\Janat\\JANATPMP\" commit -m \"$(cat <<''EOF''\nAdd Docker containerization setup\n\n- Add Dockerfile with Python 3.14-slim base image\n- Add docker-compose.yml with volume mount for live code changes\n- Add .dockerignore to exclude venv, cache, and dev files from build context\n- Gradio app runs at http://localhost:7860 with MCP server enabled\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(python -c:*)",
+      "Bash(python test_operations.py:*)",
+      "Bash(git remote add:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
