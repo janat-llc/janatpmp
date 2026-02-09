@@ -6,7 +6,7 @@
 platform designed for solo architects and engineers working with AI partners. It provides
 persistent project state that AI assistants can read and write via MCP (Model Context Protocol).
 
-**Status:** v1.0 operational, Phase 1 multi-page upgrade in progress
+**Status:** Phase 1 complete — tab-based UI with dual sidebars, 22 MCP tools operational
 **Origin:** Anthropic "Built with Opus 4.6" Claude Code competition (Feb 2026)
 **Goal:** Strategic command center for consciousness architecture work across multiple domains.
 
@@ -17,26 +17,17 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 - **SQLite3** for persistence (WAL mode, FTS5 full-text search)
 - **Pandas** for data display
 
-## Current Sprint: TODO_PHASE1_MULTIPAGE.md
-
-Read this file first. It contains the complete specification for the current work.
-Also see `docs/janatpmp-mockup.png` for the visual target of the Projects page layout.
-
 ## Project Structure
 
 ```
 JANATPMP/
-├── app.py                    # Multi-page orchestrator: routes, navbar, MCP exposure
-├── pages/                    # Multi-page modules (each independently runnable)
+├── app.py                    # Thin orchestrator: init_database(), build_page(), gr.api(), launch
+├── pages/
 │   ├── __init__.py
-│   ├── projects.py           # Three-panel Projects page (Phase 1)
-│   └── database.py           # Database management page (Phase 1)
-├── tabs/                     # LEGACY tab builders (still imported by pages)
-│   ├── __init__.py           # Re-exports build_*_tab functions
-│   ├── tab_items.py          # Items tab builder
-│   ├── tab_tasks.py          # Tasks tab builder (future: Work page)
-│   ├── tab_documents.py      # Documents tab builder (future: Knowledge page)
-│   └── tab_database.py       # Database tab builder (imported by pages/database.py)
+│   └── projects.py           # ALL UI lives here: build_page() function
+├── tabs/
+│   ├── __init__.py
+│   └── tab_database.py       # Database/Admin tab builder (imported by projects.py)
 ├── db/
 │   ├── schema.sql            # Database schema DDL (NO seed data)
 │   ├── seed_data.sql         # Optional seed data (separate from schema)
@@ -47,58 +38,116 @@ JANATPMP/
 │   └── __init__.py
 ├── docs/
 │   └── janatpmp-mockup.png   # Visual reference for Projects page layout
+├── completed/                # Archived TODO files
+├── screenshots/              # UI screenshots for reference
 ├── requirements.txt          # Python dependencies (pinned)
 ├── pyproject.toml            # Project metadata
 ├── Dockerfile                # Container image (Python 3.14-slim)
 ├── docker-compose.yml        # Container orchestration (port 7860, volume mount)
-├── CLAUDE.md                 # This file
-└── completed/                # Archived TODO files
+├── Janat_Brand_Guide.md      # Brand colors, fonts, design system
+└── CLAUDE.md                 # This file
 ```
 
 ## Architecture
 
-### Multi-Page Structure (Phase 1+)
+### Single-Page, Tab-Based Layout
+
+The app is a single Gradio Blocks page with top-level tabs and dual collapsible sidebars.
+This approach was chosen over multi-page routing (`demo.route()`) because:
+
+- Sidebars persist across all tab switches (no re-render, no context loss)
+- Simpler state management (one Blocks context, shared gr.State)
+- Mobile-friendly: both sidebars collapse independently via built-in hamburger toggle
+- No page reload flicker between views
 
 ```
-app.py (orchestrator)
-    ├── init_database()
-    ├── gr.Blocks() with gr.Navbar()
-    │   ├── pages/projects.py  → main page (/)
-    │   └── pages/database.py  → demo.route("Database", "/database")
-    ├── gr.api() × 22          → MCP tool exposure
-    └── demo.launch(mcp_server=True, server_name="0.0.0.0")
+┌──────────────────────────────────────────────────────────────┐
+│  [Projects]  [Work]  [Knowledge]  [Admin]    ← gr.Tabs()    │
+├──────────┬──────────────────────────────┬────────────────────┤
+│  LEFT    │     CENTER CONTENT           │  RIGHT             │
+│  SIDEBAR │                              │  SIDEBAR           │
+│          │  Content changes per tab     │                    │
+│  Project │  selected. Each top-level    │  Claude Chat       │
+│  cards   │  tab can have sub-tabs       │  (MCP placeholder) │
+│  Filters │  (Detail/List View, etc.)    │                    │
+│  +New    │                              │                    │
+└──────────┴──────────────────────────────┴────────────────────┘
 ```
 
-### Three-Panel Layout Pattern (all content pages)
+**Implementation in code:**
 
-```
-┌──────────────┬──────────────────────────────┬──────────────┐
-│  LEFT PANEL  │       CENTER PANEL           │ RIGHT PANEL  │
-│  gr.Column   │       gr.Column              │ gr.Column    │
-│  scale=1     │       scale=3                │ scale=1      │
-│              │  [Tab1] [Tab2] [Tab3] [Tab4] │              │
-│  Item list   │  ┌──────────────────────┐    │  Chat        │
-│  Filters     │  │  Detail / List /     │    │  placeholder │
-│  Create form │  │  Kanban / Query      │    │  (Phase 4)   │
-│  (accordion) │  └──────────────────────┘    │              │
-└──────────────┴──────────────────────────────┴──────────────┘
+```python
+# app.py
+with gr.Blocks(title="JANATPMP") as demo:
+    build_page()          # builds everything: sidebars + tabs + wiring
+    gr.api(create_item)   # MCP tools exposed here
+    ...
+demo.launch(mcp_server=True, server_name="0.0.0.0")
 ```
 
-See `docs/janatpmp-mockup.png` for the visual target.
+```python
+# pages/projects.py — build_page() function
+def build_page():
+    with gr.Sidebar(position="left"):
+        # Project list, filters, create form
+    with gr.Sidebar(position="right"):
+        # Claude chat placeholder
+    # Center content — main Blocks body, no wrapper needed
+    with gr.Tabs():
+        with gr.Tab("Projects"):
+            ...
+        with gr.Tab("Work"):
+            ...
+        with gr.Tab("Knowledge"):
+            ...
+        build_database_tab()  # "Database" tab from tabs/tab_database.py
+```
 
-### Page Architecture Rules
+**Use `gr.Sidebar` for both side panels — NOT `gr.Column` in a `gr.Row`.**
+Sidebar is collapsible, mobile-friendly, and purpose-built for this layout.
+The center content is just the main Blocks body (no Row/Column wrapper needed).
 
-- **Each page is a standalone `gr.Blocks()` app** — independently runnable via `__main__`
-- **No cross-page event listeners** — each page is fully self-contained
-- **Pages import from `db/operations.py`** for all data access
-- **Pages may import from `tabs/`** to reuse existing tab builders
-- **`app.py` renders pages** via `demo.route()` and `gr.Navbar`
+### Four Tabs (current state)
+
+| Tab | Left Sidebar | Center | Status |
+|-----|-------------|--------|--------|
+| **Projects** | Project cards, filters, + New | Detail editor, List View | ✅ Working |
+| **Work** | (same as Projects for now) | Placeholder | Stub only |
+| **Knowledge** | (same as Projects for now) | Placeholder | Stub only |
+| **Database** | (same as Projects for now) | Stats, backups, lifecycle | ✅ Working |
+
+### Phase 2 Vision: Contextual Left Sidebar
+
+Currently the left sidebar is static (always shows project list). The design intent
+is for it to become **contextual** — changing content based on the active tab:
+
+| Tab | Left Sidebar Content |
+|-----|---------------------|
+| **Projects** | Project cards, domain/status filters, + New Item |
+| **Work** | Task list, assignee filter, + New Task |
+| **Knowledge** | Documents list, chat history search |
+| **Admin** | Field management, schema tools |
+
+**Implementation pattern** (for when this is built):
+```python
+with gr.Sidebar(position="left"):
+    @gr.render(inputs=active_tab)
+    def render_left_panel(tab):
+        if tab == "Projects":
+            # project cards, filters, create form
+        elif tab == "Work":
+            # task list, assignee filter
+        ...
+```
+
+The right sidebar (Claude chat) stays constant regardless of active tab.
+The "Database" tab will also be renamed to "Admin" in this phase.
 
 ### Data Flow
 
 ```
 db/operations.py → 22 functions → three surfaces:
-    1. UI: imported by pages/, called in event listeners
+    1. UI: imported by pages/projects.py, called in event listeners
     2. API: exposed via gr.api() in app.py
     3. MCP: auto-generated from gr.api() + docstrings
 ```
@@ -108,16 +157,7 @@ db/operations.py → 22 functions → three surfaces:
 - One set of functions in `db/operations.py` serves UI, API, and MCP
 - NO `demo.load()` — data is computed at build time and passed via `value=`
 - `gr.api()` exposes db functions as MCP tools without UI components
-- Each page module is self-contained: imports from db/operations, builds its own UI
-
-## Four Pages (planned)
-
-| Page | Route | Status | Description |
-|------|-------|--------|-------------|
-| Projects | `/` (main) | Phase 1 | Three-panel: project list → detail editor → chat |
-| Work | `/work` | Phase 2 | Task engine with Kanban board (columns by status) |
-| Knowledge | `/knowledge` | Phase 3 | Document browser with FTS5 search |
-| Database | `/database` | Phase 1 | Schema viewer, backups, lifecycle management |
+- `build_page()` is the single entry point for all UI construction
 
 ## Database Schema (db/schema.sql)
 
@@ -143,11 +183,8 @@ pip install -r requirements.txt
 python app.py
 # App at http://localhost:7860
 # MCP at http://localhost:7860/gradio_api/mcp/sse
+# API docs at http://localhost:7860/gradio_api/docs
 # Accessible from other devices on LAN (mobile, etc.)
-
-# Test individual pages
-python pages/projects.py     # Projects page standalone
-python pages/database.py     # Database page standalone
 
 # Docker
 docker-compose build
@@ -171,17 +208,16 @@ docker-compose logs -f
 ### UI Conventions
 - **`api_visibility="private"`** on ALL UI event listeners (keeps them off the MCP/API surface)
 - **`server_name="0.0.0.0"`** in launch calls (enables mobile/LAN access)
-- **Each page independently runnable** — include `if __name__ == "__main__": demo.launch()`
 - **No `demo.load()` anywhere** — bake initial data via `value=` parameter
 - **Display formatting** — enum values like `not_started` display as `Not Started` in UI only,
   never modify database values. Use: `value.replace("_", " ").title()`
 
 ### Mobile Considerations
 - App is accessed from both desktop and phone (same WiFi network)
-- Gradio's Row/Column layout wraps naturally on narrow screens
-- Three panels stack vertically on mobile (left → center → right) — acceptable for now
+- `gr.Sidebar` is collapsible by design — collapses to hamburger toggle on mobile
+- Both left and right sidebars collapse independently, leaving center content full-width
 - Avoid `size="sm"` on critical touch targets
-- Phase 4 will upgrade left panel to `gr.Sidebar()` for better mobile UX
+- This dual-sidebar pattern gives us mobile-friendly layout with zero custom CSS
 
 ## Docker
 
@@ -196,30 +232,6 @@ docker-compose logs -f
 This app is built with **Gradio Blocks**, NOT Gradio Interface. These are fundamentally
 different paradigms. Do NOT use Interface patterns (demo.load for every component,
 static layouts, flat input/output wiring). Use Blocks patterns as described below.
-
-### Multi-Page Routing
-
-Gradio 6.5.1 supports multi-page apps with URL-based routing:
-
-```python
-import pages.projects
-import pages.database
-
-with gr.Blocks(title="JANATPMP") as demo:
-    gr.Navbar(main_page_name="Projects")
-    pages.projects.demo.render()
-
-with demo.route("Database", "/database"):
-    pages.database.demo.render()
-
-demo.launch(mcp_server=True, server_name="0.0.0.0")
-```
-
-**Key constraints:**
-- No cross-page event listeners — each page's Blocks context is isolated
-- `gr.api()` calls may need to be inside or outside the `with gr.Blocks()` context —
-  test both placements if errors occur
-- Each page defines its own `with gr.Blocks() as demo:` and is independently testable
 
 ### Architecture: @gr.render() for Dynamic UI
 
@@ -313,8 +325,9 @@ Gradio auto-generates MCP tools from functions with proper docstrings:
 
 ```python
 with gr.Blocks() as demo:
-    # ... UI components ...
+    build_page()
     gr.api(create_item)  # Becomes MCP tool, no UI element
+    ...
 
 demo.launch(mcp_server=True)
 ```
@@ -334,8 +347,8 @@ Google-style docstrings with Args/Returns for MCP tool generation.
 | Returning `gr.update()` for complex state | Return new State value, let render rebuild |
 | Wiring outputs to 10+ components per click | Use State as single output, render reacts |
 | Missing `api_visibility="private"` | Add to ALL UI event listeners |
-| Cross-page event listeners | Not supported — keep each page self-contained |
-| Using `demo.load()` for page init | Use `value=` parameter on components instead |
+| Using `gr.Column` for side panels | Use `gr.Sidebar(position="left"/"right")` instead |
+| Wrapping center+right in `gr.Row` | Center is main body, sidebars are separate |
 
 ## Important Notes
 

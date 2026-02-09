@@ -70,7 +70,7 @@ def _handle_reset():
 
 def build_database_tab():
     """Build the Database tab. Returns dict of components."""
-    with gr.Tab("Database"):
+    with gr.Tab("Admin"):
         with gr.Row():
             # Left: Stats and Schema
             with gr.Column(scale=1):
@@ -78,8 +78,8 @@ def build_database_tab():
                     gr.Markdown("### Database Stats")
                     refresh_stats_btn = gr.Button("Refresh", variant="secondary", size="sm")
                 stats_display = gr.JSON(value=_load_stats(), label="Stats")
-                gr.Markdown("### Schema Info")
-                schema_display = gr.Code(value=_load_schema(), label="Schema", language="json", interactive=False)
+                with gr.Accordion("Schema Info", open=False):
+                    schema_display = gr.Code(value=_load_schema(), label="Schema", language="json", interactive=False, max_lines=30)
 
             # Right: Lifecycle controls
             with gr.Column(scale=1):

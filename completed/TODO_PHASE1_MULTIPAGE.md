@@ -29,7 +29,11 @@ JANATPMP   [Projects]  [Work]  [Knowledge]  [Database]     ← demo.route()
 └──────────┴────────────────────────────────┴──────────┘
 ```
 
-**Hierarchy:** Pages (navbar routes) → Panels (three columns) → Views (tabs within center)
+**Hierarchy:** Pages (navbar routes) → Panels (dual sidebars + center body) → Views (tabs within center)
+
+**Layout implementation:** Use `gr.Sidebar(position="left")` and `gr.Sidebar(position="right")`
+for the side panels. The center content is just the main Blocks body — no Row/Column wrapper.
+Do NOT use `gr.Column` in a `gr.Row` for the three-panel layout.
 
 ### Visual Reference
 
@@ -46,20 +50,14 @@ The Gradio implementation should match this layout structurally. Exact visual st
 ### Mobile Considerations
 
 JANATPMP will be accessed from both desktop and mobile (Mat running on PC, accessing
-from phone on same WiFi). Gradio's Row/Column layout wraps naturally on narrow screens,
-but keep these patterns in mind:
+from phone on same WiFi). The dual `gr.Sidebar` pattern handles this natively:
 
 - **Launch config:** Use `server_name="0.0.0.0"` so the app is accessible from other devices
   on the local network. The phone hits `http://<PC-IP>:7860`.
-- **Panel stacking:** On mobile, the three columns will stack vertically (left → center → right).
-  This is acceptable for Phase 1. In Phase 4, consider `gr.Sidebar()` for the left panel
-  (collapsible by design, better mobile UX).
+- **Sidebar collapse:** Both sidebars collapse independently on mobile, leaving center
+  content full-width. No custom responsive CSS needed.
 - **Touch targets:** Ensure buttons and clickable elements are large enough for touch.
   Use `size="sm"` sparingly — prefer default button sizes.
-- **Chat panel:** On mobile the right panel stacks below center content. Phase 4 may
-  move this to a collapsible bottom sheet or separate tab.
-- **No `fill_width=True`:** Avoid for now as it removes side padding that helps on desktop.
-  Can revisit when implementing responsive CSS in Phase 4.
 
 ### Gradio Multipage Pattern (from docs)
 
