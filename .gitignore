@@ -52,5 +52,12 @@ Thumbs.db
 # Gradio
 flagged/
 
+# Runtime artifacts
+app_stdout.txt
+app_stderr.txt
+app_output.txt
+nul
+screenshots/
+
 # Drive sync artifacts
 .tmp.driveupload/

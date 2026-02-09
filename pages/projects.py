@@ -134,7 +134,7 @@ def build_page():
         )
         chat_input = gr.Textbox(
             placeholder="Chat coming soon...",
-            label="",
+            show_label=False,
             interactive=False,
         )
 
@@ -172,7 +172,7 @@ def build_page():
 
                         with gr.Row():
                             save_btn = gr.Button("Save Changes", variant="primary")
-                            save_msg = gr.Textbox(label="", interactive=False, scale=2)
+                            save_msg = gr.Textbox(show_label=False, interactive=False, scale=2)
 
                         gr.Markdown("#### Child Items")
                         children_table = gr.DataFrame(
@@ -195,7 +195,7 @@ def build_page():
                             new_parent = gr.Textbox(label="Parent ID", placeholder="Optional...", scale=1)
                         with gr.Row():
                             create_btn = gr.Button("Create", variant="primary")
-                            create_msg = gr.Textbox(label="", interactive=False, scale=2)
+                            create_msg = gr.Textbox(show_label=False, interactive=False, scale=2)
 
                 with gr.Tab("List View"):
                     gr.Markdown("### All Items")
@@ -253,13 +253,7 @@ def build_page():
     def _load_detail(item_id):
         """Load item detail when selection changes."""
         if not item_id:
-            return (
-                "*Select a project from the sidebar, or create a new item.*",
-                gr.Column(visible=False),
-                gr.Column(visible=False),
-                "", "", "", "", "", 3, "", "", "",
-                pd.DataFrame(columns=["ID", "Title", "Type", "Status", "Priority"]),
-            )
+            return gr.skip()
 
         item = get_item(item_id)
         if not item:

@@ -1,1 +1,1 @@
-"""Page modules for JANATPMP multi-page app."""
+"""Page modules for JANATPMP."""

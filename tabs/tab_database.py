@@ -70,7 +70,7 @@ def _handle_reset():
 
 def build_database_tab():
     """Build the Database tab. Returns dict of components."""
-    with gr.Tab("Database"):
+    with gr.Tab("Admin"):
         with gr.Row():
             # Left: Stats and Schema
             with gr.Column(scale=1):
