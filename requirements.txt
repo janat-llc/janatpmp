@@ -1,2 +1,2 @@
-gradio[mcp]>=6.2.0
+gradio[mcp]==6.5.1
 pandas

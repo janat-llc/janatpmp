@@ -6,7 +6,9 @@ Each function has proper docstrings and type hints for MCP tool generation.
 
 import sqlite3
 import json
+import shutil
 from pathlib import Path
+from datetime import datetime
 from typing import Optional
 from contextlib import contextmanager
 
@@ -17,13 +19,40 @@ DB_PATH = Path(__file__).parent / "janatpmp.db"
 @contextmanager
 def get_connection():
     """Get database connection with proper settings."""
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         yield conn
     finally:
         conn.close()
+
+
+def init_database():
+    """Initialize database schema if tables don't exist.
+    Safe to call multiple times. Cleans orphaned WAL/journal files."""
+    schema_path = Path(__file__).parent / "schema.sql"
+    
+    # Clean orphaned WAL files if DB was deleted but journals remain
+    if not DB_PATH.exists():
+        for suffix in ['-wal', '-shm', '-journal']:
+            p = Path(str(DB_PATH) + suffix)
+            if p.exists():
+                p.unlink()
+    
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='items'"
+        )
+        if cursor.fetchone() is not None:
+            return  # Already initialized
+        schema_sql = schema_path.read_text(encoding="utf-8")
+        conn.executescript(schema_sql)
+
+
+# Initialize on import
+init_database()
 
 
 # =============================================================================
@@ -37,8 +66,7 @@ def create_item(
     description: str = "",
     status: str = "not_started",
     parent_id: str = "",
-    priority: int = 3,
-    attributes: str = "{}"
+    priority: int = 3
 ) -> str:
     """
     Create a new item in the database.
@@ -51,7 +79,6 @@ def create_item(
         status: Status (not_started, planning, in_progress, blocked, review, completed, shipped, archived)
         parent_id: Optional parent item ID for hierarchy
         priority: Priority 1-5 (1=highest, 5=lowest)
-        attributes: JSON string of domain-specific attributes
 
     Returns:
         The ID of the created item
@@ -60,7 +87,7 @@ def create_item(
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO items (entity_type, domain, title, description, status, parent_id, priority, attributes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, '{}')
         """, (
             entity_type,
             domain,
@@ -69,7 +96,6 @@ def create_item(
             status,
             parent_id if parent_id else None,
             priority,
-            attributes
         ))
         conn.commit()
 
@@ -147,8 +173,7 @@ def update_item(
     title: str = "",
     description: str = "",
     status: str = "",
-    priority: int = 0,
-    attributes: str = ""
+    priority: int = 0
 ) -> str:
     """
     Update an existing item.
@@ -159,7 +184,6 @@ def update_item(
         description: New description (optional)
         status: New status (optional)
         priority: New priority 1-5 (optional, 0 = no change)
-        attributes: New attributes JSON (optional)
 
     Returns:
         Success message or error
@@ -182,9 +206,6 @@ def update_item(
         if priority > 0:
             updates.append("priority = ?")
             params.append(priority)
-        if attributes:
-            updates.append("attributes = ?")
-            params.append(attributes)
 
         if not updates:
             return "No updates provided"
@@ -385,9 +406,7 @@ def create_document(
     doc_type: str,
     source: str,
     title: str,
-    content: str = "",
-    file_path: str = "",
-    conversation_uri: str = ""
+    content: str = ""
 ) -> str:
     """
     Create a new document.
@@ -397,8 +416,6 @@ def create_document(
         source: Source (claude_exporter, upload, agent, generated, manual)
         title: Document title
         content: Document content
-        file_path: Optional file path
-        conversation_uri: Optional conversation URI (for claude_exporter imports)
 
     Returns:
         The ID of the created document
@@ -406,15 +423,13 @@ def create_document(
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO documents (doc_type, source, title, content, file_path, conversation_uri)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO documents (doc_type, source, title, content)
+            VALUES (?, ?, ?, ?)
         """, (
             doc_type,
             source,
             title,
             content if content else None,
-            file_path if file_path else None,
-            conversation_uri if conversation_uri else None
         ))
         conn.commit()
 
@@ -681,3 +696,127 @@ def search_documents(query: str, limit: int = 50) -> list:
             LIMIT ?
         """, (query, limit))
         return [dict(row) for row in cursor.fetchall()]
+
+
+# =============================================================================
+# DATABASE LIFECYCLE
+# =============================================================================
+
+SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+BACKUPS_DIR = Path(__file__).parent / "backups"
+
+
+def backup_database() -> str:
+    """
+    Create a timestamped backup of the current database.
+    Backups are stored in the db/backups/ directory.
+
+    Returns:
+        The backup filename, or error message if backup failed
+    """
+    if not DB_PATH.exists():
+        return "No database file to backup"
+
+    BACKUPS_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_name = f"janatpmp_backup_{timestamp}.db"
+    backup_path = BACKUPS_DIR / backup_name
+
+    try:
+        shutil.copy2(str(DB_PATH), str(backup_path))
+        return backup_name
+    except Exception as e:
+        return f"Backup failed: {e}"
+
+
+def reset_database() -> str:
+    """
+    Reset the database to a clean state. Drops all tables and recreates
+    the schema from db/schema.sql. All data will be lost.
+    Creates a timestamped backup before resetting.
+
+    Returns:
+        Status message with backup filename if created, or confirmation of reset
+    """
+    backup_msg = ""
+
+    # Backup if database exists and has data
+    if DB_PATH.exists() and DB_PATH.stat().st_size > 0:
+        backup_result = backup_database()
+        if not backup_result.startswith("Backup failed"):
+            backup_msg = f" Backup saved as {backup_result}"
+
+    # Delete existing database AND journal files
+    for suffix in ['', '-wal', '-shm', '-journal']:
+        p = Path(str(DB_PATH) + suffix)
+        if p.exists():
+            p.unlink()
+
+    # Recreate from schema
+    schema_sql = SCHEMA_PATH.read_text()
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        conn.executescript(schema_sql)
+    finally:
+        conn.close()
+
+    if backup_msg:
+        return f"Database reset.{backup_msg}"
+    return "Database reset to clean state."
+
+
+def restore_database(backup_name: str = "") -> str:
+    """
+    Restore database from a backup. If no backup_name is specified,
+    restores the most recent backup.
+
+    Args:
+        backup_name: Name of backup file to restore (optional, defaults to most recent)
+
+    Returns:
+        Status message confirming restore, or error if no backups found
+    """
+    if not BACKUPS_DIR.exists():
+        return "No backups found"
+
+    if backup_name:
+        backup_path = BACKUPS_DIR / backup_name
+    else:
+        # Find most recent backup
+        backups = sorted(BACKUPS_DIR.glob("janatpmp_backup_*.db"), reverse=True)
+        if not backups:
+            return "No backups found"
+        backup_path = backups[0]
+        backup_name = backup_path.name
+
+    if not backup_path.exists():
+        return f"Backup '{backup_name}' not found"
+
+    try:
+        shutil.copy2(str(backup_path), str(DB_PATH))
+        return f"Restored from {backup_name}"
+    except Exception as e:
+        return f"Restore failed: {e}"
+
+
+def list_backups() -> list:
+    """
+    List all available database backups.
+
+    Returns:
+        List of dicts with backup name, size in bytes, and created timestamp
+    """
+    if not BACKUPS_DIR.exists():
+        return []
+
+    backups = []
+    for f in sorted(BACKUPS_DIR.glob("janatpmp_backup_*.db"), reverse=True):
+        stat = f.stat()
+        backups.append({
+            "name": f.name,
+            "size": stat.st_size,
+            "created": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        })
+    return backups
+
+

@@ -21,4 +21,4 @@ ENV GRADIO_SERVER_NAME="0.0.0.0"
 ENV GRADIO_MCP_SERVER="True"
 
 # Run app.py when the container launches
-CMD ["gradio", "app.py"]
+CMD ["python", "app.py"]
