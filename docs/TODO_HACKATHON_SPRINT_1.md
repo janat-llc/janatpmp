@@ -18,6 +18,9 @@ Claude helps them build their project landscape from nothing. So NO seed data.
 - Gradio 6.5.1 (pin exact version)
 - Python 3.14
 - SQLite only (no external dependencies)
+- **CRITICAL: Run `docker-compose down` before editing any project files.** The running
+  container holds locks on the SQLite database and volume-mounted files. Edit first,
+  then `docker-compose up --build` to test. This applies to every task.
 - Every new function in db/operations.py MUST have full docstrings with Args/Returns
   (this is how Gradio generates MCP tool descriptions)
 - Do NOT delete any existing working code — extend it
