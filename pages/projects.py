@@ -1,8 +1,9 @@
-"""Main page layout — left sidebar, right sidebar, center tabs."""
+"""Main page layout — contextual sidebar, center tabs, Claude chat."""
 import gradio as gr
 import pandas as pd
 from db.operations import (
     list_items, get_item, create_item, update_item, delete_item,
+    list_tasks, get_task, create_task, update_task,
 )
 from tabs.tab_database import build_database_tab
 
@@ -28,6 +29,28 @@ STATUSES = [
     "not_started", "planning", "in_progress", "blocked",
     "review", "completed", "shipped", "archived"
 ]
+
+TASK_STATUSES = [
+    "pending", "processing", "blocked", "review",
+    "completed", "failed", "retry", "dlq"
+]
+
+TASK_TYPES = [
+    "agent_story", "user_story", "subtask",
+    "research", "review", "documentation"
+]
+
+ASSIGNEES = ["unassigned", "agent", "claude", "mat", "janus"]
+
+PRIORITIES = ["urgent", "normal", "background"]
+
+INITIAL_CHAT = [{
+    "role": "assistant",
+    "content": (
+        "I'm connected with 22 database tools. "
+        "Ask me to create items, update tasks, or check project status."
+    ),
+}]
 
 
 # --- Data helpers ---
@@ -72,82 +95,63 @@ def _all_items_df() -> pd.DataFrame:
     } for item in items])
 
 
+def _load_tasks(status: str = "", assigned_to: str = "") -> list:
+    """Fetch tasks as list of dicts for card rendering."""
+    return list_tasks(status=status, assigned_to=assigned_to, limit=100)
+
+
+def _all_tasks_df() -> pd.DataFrame:
+    """Fetch all tasks for the List View."""
+    tasks = list_tasks(limit=200)
+    if not tasks:
+        return pd.DataFrame(columns=["ID", "Title", "Type", "Assigned", "Status", "Priority"])
+    return pd.DataFrame([{
+        "ID": t["id"][:8],
+        "Title": t["title"],
+        "Type": _fmt(t.get("task_type", "")),
+        "Assigned": _fmt(t.get("assigned_to", "")),
+        "Status": _fmt(t.get("status", "")),
+        "Priority": _fmt(t.get("priority", "")),
+    } for t in tasks])
+
+
 # --- Page builder ---
 
 def build_page():
     """Build the complete JANATPMP single-page layout.
 
     Must be called from within a `with gr.Blocks():` context.
-    Creates left sidebar, right sidebar, and center tabs with all event wiring.
+    Creates contextual left sidebar, right chat sidebar, and center tabs.
     """
-    # State
-    selected_id = gr.State("")
+    # === STATES ===
+    active_tab = gr.State("Projects")
+    selected_project_id = gr.State("")
+    selected_task_id = gr.State("")
     projects_state = gr.State(_load_projects())
+    tasks_state = gr.State(_load_tasks())
+    chat_history = gr.State(list(INITIAL_CHAT))
 
-    # ===== LEFT SIDEBAR =====
-    with gr.Sidebar():
-        gr.Markdown("### Projects")
-
-        with gr.Row():
-            domain_filter = gr.Dropdown(
-                label="Domain", choices=DOMAINS, value="",
-                scale=1, min_width=100
-            )
-            status_filter = gr.Dropdown(
-                label="Status", choices=[""] + STATUSES, value="",
-                scale=1, min_width=100
-            )
-
-        refresh_btn = gr.Button("Refresh", variant="secondary", size="sm")
-
-        @gr.render(inputs=projects_state)
-        def render_project_cards(projects):
-            if not projects:
-                gr.Markdown("*No projects yet.*")
-                return
-            for p in projects:
-                btn = gr.Button(
-                    f"{p['title']}\n{_fmt(p.get('status', ''))}  ·  {_fmt(p.get('entity_type', '')).upper()}",
-                    key=f"proj-{p['id'][:8]}",
-                    size="sm",
-                )
-                def on_card_click(p_id=p["id"]):
-                    return p_id
-                btn.click(on_card_click, outputs=[selected_id], api_visibility="private")
-
-        new_item_btn = gr.Button("+ New Item", variant="primary")
-
-    # ===== RIGHT SIDEBAR =====
+    # === RIGHT SIDEBAR (chat — always visible) ===
     with gr.Sidebar(position="right"):
         gr.Markdown("### Claude")
-        gr.Markdown("*Connected via MCP*")
-        chatbot = gr.Chatbot(
-            value=[{
-                "role": "assistant",
-                "content": (
-                    "I'm connected via MCP with 22 tools. "
-                    "Ask me to create items, update tasks, or check project status."
-                ),
-            }],
-            height=500,
-            label="Chat",
-        )
-        chat_input = gr.Textbox(
-            placeholder="Chat coming soon...",
-            show_label=False,
-            interactive=False,
-        )
+        chatbot = gr.Chatbot(value=list(INITIAL_CHAT), height=500, label="Chat")
+        with gr.Row():
+            chat_input = gr.Textbox(
+                placeholder="Ask Claude anything...",
+                show_label=False, scale=4, interactive=True,
+            )
+            clear_btn = gr.Button("Clear", variant="secondary", size="sm", scale=1)
 
-    # ===== CENTER CONTENT (main body) =====
+    # === CENTER TABS (defined before left sidebar so render can reference them) ===
     with gr.Tabs():
-        with gr.Tab("Projects"):
+        # --- Projects tab ---
+        with gr.Tab("Projects") as projects_tab:
             with gr.Tabs():
                 with gr.Tab("Detail"):
                     detail_header = gr.Markdown(
                         "*Select a project from the sidebar, or create a new item.*"
                     )
 
-                    # --- Detail view (shown when a project is selected) ---
                     with gr.Column(visible=False) as detail_section:
                         detail_id_display = gr.Textbox(
                             label="ID", interactive=False, max_lines=1
@@ -182,7 +186,6 @@ def build_page():
                             interactive=False,
                         )
 
-                    # --- Create form (shown when "+ New Item" is clicked) ---
                     with gr.Column(visible=False) as create_section:
                         with gr.Row():
                             new_type = gr.Dropdown(label="Type", choices=ALL_TYPES, value="project", scale=1)
@@ -205,60 +208,180 @@ def build_page():
                     )
                     all_refresh_btn = gr.Button("Refresh All", variant="secondary", size="sm")
 
-        with gr.Tab("Work"):
-            gr.Markdown("### Work Queue")
-            gr.Markdown("*Kanban board coming in Phase 2.*")
+        # --- Work tab ---
+        with gr.Tab("Work") as work_tab:
+            with gr.Tabs():
+                with gr.Tab("Detail"):
+                    work_header = gr.Markdown(
+                        "*Select a task from the sidebar, or create a new task.*"
+                    )
 
-        with gr.Tab("Knowledge"):
+                    with gr.Column(visible=False) as work_detail_section:
+                        work_id_display = gr.Textbox(
+                            label="ID", interactive=False, max_lines=1
+                        )
+                        with gr.Row():
+                            work_title = gr.Textbox(label="Title", interactive=False, scale=3)
+                            work_status = gr.Dropdown(
+                                label="Status", choices=TASK_STATUSES, interactive=True, scale=1
+                            )
+                            work_assigned = gr.Dropdown(
+                                label="Assigned To", choices=ASSIGNEES, interactive=True, scale=1
+                            )
+                        with gr.Row():
+                            work_type = gr.Textbox(label="Type", interactive=False)
+                            work_priority = gr.Textbox(label="Priority", interactive=False)
+                            work_target = gr.Textbox(label="Target Item", interactive=False)
+
+                        work_desc = gr.Textbox(
+                            label="Description", lines=3, interactive=False
+                        )
+                        work_instructions = gr.Textbox(
+                            label="Agent Instructions", lines=3, interactive=False
+                        )
+
+                        with gr.Row():
+                            work_save_btn = gr.Button("Save Changes", variant="primary")
+                            work_save_msg = gr.Textbox(show_label=False, interactive=False, scale=2)
+
+                    with gr.Column(visible=False) as work_create_section:
+                        with gr.Row():
+                            new_task_type = gr.Dropdown(label="Type", choices=TASK_TYPES, value="user_story", scale=1)
+                            new_task_assigned = gr.Dropdown(label="Assigned To", choices=ASSIGNEES, value="unassigned", scale=1)
+                            new_task_priority = gr.Dropdown(label="Priority", choices=PRIORITIES, value="normal", scale=1)
+                        new_task_title = gr.Textbox(label="Title", placeholder="Task title...")
+                        new_task_desc = gr.Textbox(label="Description", lines=3, placeholder="Optional...")
+                        new_task_target = gr.Textbox(label="Target Item ID", placeholder="Optional...")
+                        new_task_instructions = gr.Textbox(label="Agent Instructions", lines=2, placeholder="Optional...")
+                        with gr.Row():
+                            work_create_btn = gr.Button("Create Task", variant="primary")
+                            work_create_msg = gr.Textbox(show_label=False, interactive=False, scale=2)
+
+                with gr.Tab("List View"):
+                    gr.Markdown("### All Tasks")
+                    all_tasks_table = gr.DataFrame(
+                        value=_all_tasks_df(),
+                        interactive=False,
+                    )
+                    work_list_refresh = gr.Button("Refresh All", variant="secondary", size="sm")
+
+        # --- Knowledge tab ---
+        with gr.Tab("Knowledge") as knowledge_tab:
             gr.Markdown("### Knowledge Base")
             gr.Markdown("*Document browser coming in Phase 3.*")
 
-        build_database_tab()
+        # --- Admin tab ---
+        admin_components = build_database_tab()
 
-    # ===== EVENT WIRING =====
+    # === LEFT SIDEBAR (contextual — defined after center so it can reference components) ===
+    with gr.Sidebar():
+        @gr.render(inputs=[active_tab, projects_state, tasks_state])
+        def render_left(tab, projects, tasks):
+            if tab == "Projects":
+                gr.Markdown("### Projects")
+                with gr.Row():
+                    domain_filter = gr.Dropdown(
+                        label="Domain", choices=DOMAINS, value="",
+                        key="domain-filter", scale=1, min_width=100,
+                    )
+                    status_filter = gr.Dropdown(
+                        label="Status", choices=[""] + STATUSES, value="",
+                        key="status-filter", scale=1, min_width=100,
+                    )
+                refresh_btn = gr.Button("Refresh", variant="secondary", size="sm", key="proj-refresh")
 
-    filter_inputs = [domain_filter, status_filter]
+                if not projects:
+                    gr.Markdown("*No projects yet.*")
+                else:
+                    for p in projects:
+                        btn = gr.Button(
+                            f"{p['title']}\n{_fmt(p.get('status', ''))}  ·  {_fmt(p.get('entity_type', '')).upper()}",
+                            key=f"proj-{p['id'][:8]}",
+                            size="sm",
+                        )
+                        def on_card_click(p_id=p["id"]):
+                            return p_id
+                        btn.click(on_card_click, outputs=[selected_project_id], api_visibility="private")
 
-    def _refresh_projects(domain, status):
-        return _load_projects(domain, status)
+                new_item_btn = gr.Button("+ New Item", variant="primary", key="new-item-btn")
 
-    domain_filter.change(
-        _refresh_projects, inputs=filter_inputs, outputs=[projects_state],
-        api_visibility="private"
-    )
-    status_filter.change(
-        _refresh_projects, inputs=filter_inputs, outputs=[projects_state],
-        api_visibility="private"
-    )
-    refresh_btn.click(
-        _refresh_projects, inputs=filter_inputs, outputs=[projects_state],
-        api_visibility="private"
-    )
+                # Wiring (inside render — components created here)
+                def _refresh_projects(domain, status):
+                    return _load_projects(domain, status)
+                domain_filter.change(_refresh_projects, inputs=[domain_filter, status_filter], outputs=[projects_state], api_visibility="private")
+                status_filter.change(_refresh_projects, inputs=[domain_filter, status_filter], outputs=[projects_state], api_visibility="private")
+                refresh_btn.click(_refresh_projects, inputs=[domain_filter, status_filter], outputs=[projects_state], api_visibility="private")
 
-    # -- "+ New Item" button toggles to create form --
-    def _show_create_form():
-        return (
-            "## New Item",
-            gr.Column(visible=False),
-            gr.Column(visible=True),
-        )
+                new_item_btn.click(
+                    lambda: ("## New Item", gr.Column(visible=False), gr.Column(visible=True)),
+                    outputs=[detail_header, detail_section, create_section],
+                    api_visibility="private",
+                )
 
-    new_item_btn.click(
-        _show_create_form,
-        outputs=[detail_header, detail_section, create_section],
-        api_visibility="private",
-    )
+            elif tab == "Work":
+                gr.Markdown("### Work Queue")
+                with gr.Row():
+                    work_status_filter = gr.Dropdown(
+                        label="Status", choices=[""] + TASK_STATUSES, value="",
+                        key="work-status-filter", scale=1, min_width=100,
+                    )
+                    work_assignee_filter = gr.Dropdown(
+                        label="Assigned", choices=[""] + ASSIGNEES, value="",
+                        key="work-assignee-filter", scale=1, min_width=100,
+                    )
+                work_refresh_btn = gr.Button("Refresh", variant="secondary", size="sm", key="work-refresh")
 
-    # -- Card click loads detail (hides create form) --
+                if not tasks:
+                    gr.Markdown("*No tasks yet.*")
+                else:
+                    for t in tasks:
+                        btn = gr.Button(
+                            f"{t['title']}\n{_fmt(t.get('status', ''))}  ·  {_fmt(t.get('assigned_to', '')).upper()}",
+                            key=f"task-{t['id'][:8]}",
+                            size="sm",
+                        )
+                        def on_task_click(t_id=t["id"]):
+                            return t_id
+                        btn.click(on_task_click, outputs=[selected_task_id], api_visibility="private")
+
+                new_task_btn = gr.Button("+ New Task", variant="primary", key="new-task-btn")
+
+                # Wiring
+                def _refresh_tasks(status, assigned):
+                    return _load_tasks(status, assigned)
+                work_status_filter.change(_refresh_tasks, inputs=[work_status_filter, work_assignee_filter], outputs=[tasks_state], api_visibility="private")
+                work_assignee_filter.change(_refresh_tasks, inputs=[work_status_filter, work_assignee_filter], outputs=[tasks_state], api_visibility="private")
+                work_refresh_btn.click(_refresh_tasks, inputs=[work_status_filter, work_assignee_filter], outputs=[tasks_state], api_visibility="private")
+
+                new_task_btn.click(
+                    lambda: ("## New Task", gr.Column(visible=False), gr.Column(visible=True)),
+                    outputs=[work_header, work_detail_section, work_create_section],
+                    api_visibility="private",
+                )
+
+            elif tab == "Knowledge":
+                gr.Markdown("### Knowledge Base")
+                gr.Markdown("*Coming in Phase 3*")
+
+            elif tab == "Admin":
+                gr.Markdown("### Admin")
+                gr.Markdown("*Settings in center panel*")
+
+    # === TAB TRACKING ===
+    projects_tab.select(lambda: "Projects", outputs=[active_tab], api_visibility="private")
+    work_tab.select(lambda: "Work", outputs=[active_tab], api_visibility="private")
+    knowledge_tab.select(lambda: "Knowledge", outputs=[active_tab], api_visibility="private")
+    admin_components['tab'].select(lambda: "Admin", outputs=[active_tab], api_visibility="private")
+
+    # === PROJECT EVENT WIRING ===
+
     def _load_detail(item_id):
         """Load item detail when selection changes."""
         if not item_id:
             return gr.skip()
-
         item = get_item(item_id)
         if not item:
             return gr.skip()
-
         return (
             f"## {item['title']}",
             gr.Column(visible=True),
@@ -275,9 +398,9 @@ def build_page():
             _children_df(item_id),
         )
 
-    selected_id.change(
+    selected_project_id.change(
         _load_detail,
-        inputs=[selected_id],
+        inputs=[selected_project_id],
         outputs=[
             detail_header, detail_section, create_section,
             detail_id_display, detail_title, detail_status,
@@ -288,7 +411,6 @@ def build_page():
         api_visibility="private",
     )
 
-    # -- Save changes --
     def _on_save(item_id, title, status, priority, description):
         if not item_id:
             return "No item selected"
@@ -303,19 +425,16 @@ def build_page():
 
     save_btn.click(
         _on_save,
-        inputs=[selected_id, detail_title, detail_status, detail_priority, detail_desc],
+        inputs=[selected_project_id, detail_title, detail_status, detail_priority, detail_desc],
         outputs=[save_msg],
         api_visibility="private",
     )
 
-    # -- List View refresh --
     all_refresh_btn.click(
         _all_items_df, outputs=[all_items_table], api_visibility="private"
     )
 
-    # -- Create item (auto-selects new item afterward) --
-    def _on_create(entity_type, domain, title, desc, status, priority, parent_id,
-                   filter_domain, filter_status):
+    def _on_create(entity_type, domain, title, desc, status, priority, parent_id):
         if not title.strip():
             return "Title is required", gr.skip(), gr.skip()
         item_id = create_item(
@@ -325,19 +444,121 @@ def build_page():
             status=status, priority=int(priority),
             parent_id=parent_id.strip() if parent_id else "",
         )
-        return (
-            f"Created {item_id[:8]}",
-            _load_projects(filter_domain, filter_status),
-            item_id,
-        )
+        return f"Created {item_id[:8]}", _load_projects(), item_id
 
     create_btn.click(
         _on_create,
-        inputs=[
-            new_type, new_domain, new_title, new_desc,
-            new_status, new_priority, new_parent,
-            domain_filter, status_filter,
+        inputs=[new_type, new_domain, new_title, new_desc, new_status, new_priority, new_parent],
+        outputs=[create_msg, projects_state, selected_project_id],
+        api_visibility="private",
+    )
+
+    # === WORK EVENT WIRING ===
+
+    def _load_task_detail(task_id):
+        """Load task detail when selection changes."""
+        if not task_id:
+            return gr.skip()
+        task = get_task(task_id)
+        if not task:
+            return gr.skip()
+        return (
+            f"## {task['title']}",
+            gr.Column(visible=True),
+            gr.Column(visible=False),
+            task_id,
+            task.get("title", ""),
+            task.get("status", ""),
+            task.get("assigned_to", ""),
+            _fmt(task.get("task_type", "")),
+            _fmt(task.get("priority", "")),
+            task.get("target_item_id", "")[:8] if task.get("target_item_id") else "",
+            task.get("description", "") or "",
+            task.get("agent_instructions", "") or "",
+            "",
+        )
+
+    selected_task_id.change(
+        _load_task_detail,
+        inputs=[selected_task_id],
+        outputs=[
+            work_header, work_detail_section, work_create_section,
+            work_id_display, work_title, work_status,
+            work_assigned, work_type, work_priority,
+            work_target, work_desc, work_instructions,
+            work_save_msg,
         ],
-        outputs=[create_msg, projects_state, selected_id],
+        api_visibility="private",
+    )
+
+    def _on_task_save(task_id, status, assigned_to):
+        if not task_id:
+            return "No task selected"
+        update_task(task_id=task_id, status=status, assigned_to=assigned_to)
+        return f"Saved {task_id[:8]}"
+
+    work_save_btn.click(
+        _on_task_save,
+        inputs=[selected_task_id, work_status, work_assigned],
+        outputs=[work_save_msg],
+        api_visibility="private",
+    )
+
+    work_list_refresh.click(
+        _all_tasks_df, outputs=[all_tasks_table], api_visibility="private"
+    )
+
+    def _on_task_create(task_type, assigned_to, priority, title, desc, target, instructions):
+        if not title.strip():
+            return "Title is required", gr.skip(), gr.skip()
+        task_id = create_task(
+            task_type=task_type,
+            title=title.strip(),
+            description=desc.strip() if desc else "",
+            assigned_to=assigned_to,
+            target_item_id=target.strip() if target else "",
+            priority=priority,
+            agent_instructions=instructions.strip() if instructions else "",
+        )
+        return f"Created {task_id[:8]}", _load_tasks(), task_id
+
+    work_create_btn.click(
+        _on_task_create,
+        inputs=[
+            new_task_type, new_task_assigned, new_task_priority,
+            new_task_title, new_task_desc, new_task_target, new_task_instructions,
+        ],
+        outputs=[work_create_msg, tasks_state, selected_task_id],
+        api_visibility="private",
+    )
+
+    # === CHAT WIRING ===
+
+    def _handle_chat(message, history, provider, model, api_key, base_url):
+        if not message.strip():
+            return history, history, ""
+        from services.chat import chat
+        updated = chat(provider, api_key, model, message, history, base_url)
+        return updated, updated, ""
+
+    chat_input.submit(
+        _handle_chat,
+        inputs=[
+            chat_input, chat_history,
+            admin_components['provider'],
+            admin_components['model'],
+            admin_components['api_key'],
+            admin_components['base_url'],
+        ],
+        outputs=[chatbot, chat_history, chat_input],
+        api_visibility="private",
+    )
+
+    def _clear_chat():
+        return list(INITIAL_CHAT), list(INITIAL_CHAT)
+
+    clear_btn.click(
+        _clear_chat,
+        outputs=[chatbot, chat_history],
         api_visibility="private",
     )
