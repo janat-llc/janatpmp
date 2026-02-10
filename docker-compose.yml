@@ -5,6 +5,7 @@ services:
       - "7860:7860"
     volumes:
       - .:/app
+      - C:\Janat\Claude\Claude_Export:/data/claude_export:ro
     environment:
       - GRADIO_SERVER_NAME=0.0.0.0
       - GRADIO_MCP_SERVER=True

@@ -9,6 +9,14 @@ from db.operations import (
     create_relationship, get_relationships,
 )
 from tabs.tab_database import build_database_tab
+from services.claude_export import (
+    get_conversations as get_export_conversations,
+    get_conversation_messages,
+    get_export_stats,
+    ingest_from_directory,
+    is_configured as is_export_configured,
+)
+from services.settings import get_setting
 
 
 # --- Constants ---
@@ -353,6 +361,7 @@ def build_page():
                         )
                         with gr.Row():
                             doc_create_btn = gr.Button("Create", variant="primary")
+                            doc_cancel_btn = gr.Button("Cancel", variant="secondary")
                             doc_create_msg = gr.Textbox(
                                 show_label=False, interactive=False, scale=2
                             )
@@ -442,6 +451,50 @@ def build_page():
                             conn_create_btn = gr.Button("Create Connection", variant="primary")
                             conn_create_msg = gr.Textbox(
                                 show_label=False, interactive=False, scale=2
+                            )
+
+                # --- Conversations sub-tab ---
+                with gr.Tab("Conversations"):
+                    conv_configured = is_export_configured()
+
+                    if not conv_configured:
+                        gr.Markdown(
+                            "### Claude Export Not Configured\n\n"
+                            "Set `claude_export_db_path` and `claude_export_json_dir` "
+                            "in **Admin > Settings** to enable conversation browsing."
+                        )
+
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            # Stats
+                            conv_stats_md = gr.Markdown("*Loading stats...*")
+
+                            # Ingest controls
+                            with gr.Accordion("Import / Refresh", open=False):
+                                gr.Markdown(
+                                    "Import conversations from your Claude export JSON files. "
+                                    "Uses INSERT OR REPLACE — safe to re-run."
+                                )
+                                conv_ingest_btn = gr.Button(
+                                    "Ingest from Export Directory", variant="primary"
+                                )
+                                conv_ingest_status = gr.Textbox(
+                                    show_label=False, interactive=False
+                                )
+
+                            # Conversation list
+                            gr.Markdown("### Conversations")
+                            conv_list = gr.DataFrame(
+                                headers=["Name", "Date", "UUID"],
+                                datatype=["str", "str", "str"],
+                                interactive=False,
+                                wrap=True,
+                            )
+
+                        with gr.Column(scale=2):
+                            conv_viewer = gr.Chatbot(
+                                label="Conversation Viewer",
+                                height=600,
                             )
 
         # --- Admin tab ---
@@ -592,8 +645,17 @@ def build_page():
                         "## New Document",
                         gr.Column(visible=False),
                         gr.Column(visible=True),
+                        "",                   # clear title
+                        "",                   # clear content
+                        "",                   # clear status message
+                        "session_notes",      # reset type dropdown
+                        "manual",             # reset source dropdown
                     ),
-                    outputs=[doc_header, doc_detail_section, doc_create_section],
+                    outputs=[
+                        doc_header, doc_detail_section, doc_create_section,
+                        new_doc_title, new_doc_content, doc_create_msg,
+                        new_doc_type, new_doc_source,
+                    ],
                     api_visibility="private",
                 )
 
@@ -1025,6 +1087,75 @@ def build_page():
         ],
         outputs=[conn_create_msg],
         api_visibility="private",
+    )
+
+    # Document cancel button
+    doc_cancel_btn.click(
+        lambda: (
+            "*Select a document from the sidebar, or create a new one.*",
+            gr.Column(visible=False),   # hide detail
+            gr.Column(visible=False),   # hide create form
+            "",                         # clear create message
+            "",                         # clear title field
+            "",                         # clear content field
+        ),
+        outputs=[
+            doc_header, doc_detail_section, doc_create_section,
+            doc_create_msg, new_doc_title, new_doc_content,
+        ],
+        api_visibility="private",
+    )
+
+    # --- Conversations sub-tab wiring ---
+
+    def _load_conv_stats():
+        if not is_export_configured():
+            return "*Not configured*"
+        stats = get_export_stats()
+        return (
+            f"**{stats['conversations']:,}** conversations · "
+            f"**{stats['messages']:,}** messages · "
+            f"~**{stats['est_tokens']:,}** tokens"
+        )
+
+    def _load_conv_list():
+        convs = get_export_conversations()
+        return [[c.get("name", ""), c.get("created_at", "")[:16], c.get("uuid", "")] for c in convs]
+
+    def _load_selected_conversation(evt: gr.SelectData, df):
+        if evt.index:
+            row = evt.index[0]
+            uuid = df.iloc[row, 2]  # 3rd column is UUID
+            return get_conversation_messages(uuid)
+        return []
+
+    def _run_ingest():
+        json_dir = get_setting("claude_export_json_dir")
+        if not json_dir:
+            return "Error: claude_export_json_dir not set in Settings."
+        return ingest_from_directory(json_dir)
+
+    # Load stats and list when Knowledge tab is selected
+    knowledge_tab.select(
+        _load_conv_stats, outputs=[conv_stats_md], api_visibility="private"
+    )
+    knowledge_tab.select(
+        _load_conv_list, outputs=[conv_list], api_visibility="private"
+    )
+
+    # Conversation selection -> load into chatbot viewer
+    conv_list.select(
+        _load_selected_conversation, inputs=[conv_list],
+        outputs=[conv_viewer], api_visibility="private"
+    )
+
+    # Ingest button
+    conv_ingest_btn.click(
+        _run_ingest, outputs=[conv_ingest_status], api_visibility="private"
+    ).then(
+        _load_conv_stats, outputs=[conv_stats_md]
+    ).then(
+        _load_conv_list, outputs=[conv_list]
     )
 
     # === CHAT WIRING ===

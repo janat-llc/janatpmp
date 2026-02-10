@@ -6,7 +6,7 @@
 platform designed for solo architects and engineers working with AI partners. It provides
 persistent project state that AI assistants can read and write via MCP (Model Context Protocol).
 
-**Status:** Phase 3 — Knowledge tab, universal search, entity connections
+**Status:** Phase 3.5 — Claude Export integration, conversation browser, Knowledge bug fixes
 **Origin:** Anthropic "Built with Opus 4.6" Claude Code competition (Feb 2026)
 **Goal:** Strategic command center for consciousness architecture work across multiple domains.
 
@@ -39,6 +39,7 @@ JANATPMP/
 ├── services/
 │   ├── __init__.py
 │   ├── chat.py               # Multi-provider chat with tool use (Anthropic/Gemini/Ollama)
+│   ├── claude_export.py      # Claude Export service: ingest/query external conversation DB
 │   └── settings.py           # Settings service: get/set with base64 for secrets
 ├── docs/
 │   └── janatpmp-mockup.png   # Visual reference for Projects page layout
@@ -134,6 +135,8 @@ stays constant regardless of active tab.
 - `chat_api_key` — Base64-encoded API key (obfuscation, NOT encryption)
 - `chat_base_url` — Override URL for Ollama
 - `chat_system_prompt` — Custom system prompt (empty = use default)
+- `claude_export_db_path` — Path to claude_export.db
+- `claude_export_json_dir` — Path to JSON export directory
 
 **Settings flow:**
 - `services/settings.py` provides `get_setting()` / `set_setting()` with auto base64 for secrets
@@ -156,6 +159,12 @@ The Knowledge tab surfaces documents, search, and entity relationships:
   Uses `search_items()` and `search_documents()` from db/operations.py.
 - **Connections** — Relationship viewer. Look up any entity (item/task/document) by ID
   to see incoming and outgoing relationships. Create new connections inline.
+- **Conversations** — Browse Claude export history via Chatbot viewer. Reads from
+  external `claude_export.db` via `services/claude_export.py`. Ingest from JSON exports.
+
+**Claude Export settings:**
+- `claude_export_db_path` — Path to claude_export.db file
+- `claude_export_json_dir` — Path to directory with JSON exports (users.json, projects.json, conversations.json)
   Uses `get_relationships()` and `create_relationship()` from db/operations.py.
 
 All 6 underlying operations (`create_document`, `get_document`, `list_documents`,

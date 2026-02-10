@@ -9,6 +9,8 @@ DEFAULTS = {
     "chat_api_key": ("", True),       # is_secret=True → base64 encoded
     "chat_base_url": ("http://localhost:11434/v1", False),
     "chat_system_prompt": ("", False),  # Empty = use default from chat.py
+    "claude_export_db_path": ("/data/claude_export/claude_export.db", False),
+    "claude_export_json_dir": ("/data/claude_export", False),
 }
 
 
@@ -30,7 +32,12 @@ def _decode(value: str) -> str:
 
 
 def init_settings():
-    """Insert default settings if they don't exist yet. Call on app startup."""
+    """Insert default settings if they don't exist yet. Call on app startup.
+
+    Uses INSERT OR IGNORE for new keys. For keys with non-empty defaults,
+    also backfills if the stored value is empty (handles new defaults added
+    after initial setup).
+    """
     with get_connection() as conn:
         for key, (default_value, is_secret) in DEFAULTS.items():
             stored = default_value
@@ -40,6 +47,12 @@ def init_settings():
                 "INSERT OR IGNORE INTO settings (key, value, is_secret) VALUES (?, ?, ?)",
                 (key, stored, int(is_secret))
             )
+            # Backfill: if default is non-empty but stored value is empty, update it
+            if default_value:
+                conn.execute(
+                    "UPDATE settings SET value = ? WHERE key = ? AND (value IS NULL OR value = '')",
+                    (stored, key)
+                )
         conn.commit()
 
 
