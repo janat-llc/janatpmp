@@ -31,24 +31,45 @@ def get_connection():
 
 def init_database():
     """Initialize database schema if tables don't exist.
-    Safe to call multiple times. Cleans orphaned WAL/journal files."""
+    Safe to call multiple times. Cleans orphaned WAL/journal files.
+    Also creates the settings table and seeds defaults."""
     schema_path = Path(__file__).parent / "schema.sql"
-    
+
     # Clean orphaned WAL files if DB was deleted but journals remain
     if not DB_PATH.exists():
         for suffix in ['-wal', '-shm', '-journal']:
             p = Path(str(DB_PATH) + suffix)
             if p.exists():
                 p.unlink()
-    
+
     with get_connection() as conn:
         cursor = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='items'"
         )
-        if cursor.fetchone() is not None:
-            return  # Already initialized
-        schema_sql = schema_path.read_text(encoding="utf-8")
-        conn.executescript(schema_sql)
+        if cursor.fetchone() is None:
+            schema_sql = schema_path.read_text(encoding="utf-8")
+            conn.executescript(schema_sql)
+        else:
+            # Ensure settings table exists on existing databases (idempotent DDL)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT '',
+                    is_secret INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS settings_updated_at AFTER UPDATE ON settings
+                BEGIN
+                    UPDATE settings SET updated_at = datetime('now') WHERE key = NEW.key;
+                END
+            """)
+            conn.execute("""
+                INSERT OR IGNORE INTO schema_version (version, description)
+                VALUES ('0.2.0', 'Add settings table for persistent configuration')
+            """)
+            conn.commit()
 
 
 # Initialize on import
@@ -818,5 +839,59 @@ def list_backups() -> list:
             "created": datetime.fromtimestamp(stat.st_mtime).isoformat()
         })
     return backups
+
+
+# =============================================================================
+# CONTEXT SNAPSHOT (internal — used by chat.py, NOT exposed via MCP)
+# =============================================================================
+
+def get_context_snapshot() -> str:
+    """Build a context string of active items and pending tasks for system prompt injection.
+
+    Returns a formatted string summarizing:
+    - Active/in-progress items (title, domain, status)
+    - Pending/processing tasks (title, assigned_to, status)
+
+    This is injected into the chat system prompt so the AI has project awareness
+    without the user needing to ask "what projects exist?" every conversation.
+    """
+    with get_connection() as conn:
+        # Active items (not completed/archived/shipped)
+        items = conn.execute(
+            """SELECT title, domain, status, entity_type, priority
+               FROM items
+               WHERE status NOT IN ('completed', 'shipped', 'archived')
+               ORDER BY priority ASC, updated_at DESC
+               LIMIT 20""",
+        ).fetchall()
+
+        # Pending/active tasks
+        tasks = conn.execute(
+            """SELECT title, assigned_to, status, priority
+               FROM tasks
+               WHERE status IN ('pending', 'processing', 'blocked', 'review')
+               ORDER BY
+                   CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
+                   created_at DESC
+               LIMIT 20""",
+        ).fetchall()
+
+    lines = []
+    if items:
+        lines.append(f"Active Items ({len(items)}):")
+        for i in items:
+            lines.append(f"  - [{i['domain']}] {i['title']} ({i['status']}, P{i['priority']})")
+    else:
+        lines.append("No active items.")
+
+    if tasks:
+        lines.append(f"\nPending Tasks ({len(tasks)}):")
+        for t in tasks:
+            assigned = t['assigned_to'] if t['assigned_to'] != 'unassigned' else 'unassigned'
+            lines.append(f"  - {t['title']} ({t['status']}, {assigned})")
+    else:
+        lines.append("\nNo pending tasks.")
+
+    return "\n".join(lines)
 
 

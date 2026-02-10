@@ -4,6 +4,9 @@ Supported providers:
 - anthropic: Claude models (Opus 4, Sonnet 4, Haiku) — native tool use
 - gemini: Google Gemini models (Flash, Pro) — function calling via google-genai
 - ollama: Local models via OpenAI-compatible API (Nemotron, etc.) — tool use if model supports it
+
+Settings (provider, model, API key, etc.) are read from the settings DB on each
+chat() call — no restart needed when settings change.
 """
 import inspect
 import json
@@ -138,7 +141,7 @@ TOOL_DEFINITIONS = _build_tool_definitions()
 
 # --- System Prompt ---
 
-SYSTEM_PROMPT = """You are an AI assistant embedded in JANATPMP (Janat Project Management Platform).
+DEFAULT_SYSTEM_PROMPT = """You are an AI assistant embedded in JANATPMP (Janat Project Management Platform).
 You help Mat manage projects, tasks, and documents across multiple domains.
 
 You have access to 22 database tools. Use them freely when asked to create, update, search,
@@ -154,6 +157,24 @@ Domains: literature, janatpmp, janat, atlas, nexusweaver, websites, social, spea
 
 When listing or searching, present results concisely. When creating, confirm the ID and key fields.
 Be direct and helpful. You are a collaborator, not just an assistant."""
+
+
+def _build_system_prompt() -> str:
+    """Compose the full system prompt from default + custom + auto-context."""
+    from services.settings import get_setting
+    from db.operations import get_context_snapshot
+
+    base = DEFAULT_SYSTEM_PROMPT
+
+    custom = get_setting("chat_system_prompt")
+    if custom and custom.strip():
+        base += f"\n\nAdditional Instructions:\n{custom.strip()}"
+
+    context = get_context_snapshot()
+    if context:
+        base += f"\n\nCurrent Project State:\n{context}"
+
+    return base
 
 
 # --- Provider Presets ---
@@ -257,7 +278,7 @@ def _execute_tool(tool_name: str, tool_input: dict) -> tuple[str, bool]:
 
 # --- Provider-Specific Chat Implementations ---
 
-def _chat_anthropic(api_key: str, model: str, history: list[dict]) -> list[dict]:
+def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt: str) -> list[dict]:
     """Run chat loop using Anthropic API with native tool use."""
     from anthropic import Anthropic
     client = Anthropic(api_key=api_key.strip())
@@ -275,7 +296,7 @@ def _chat_anthropic(api_key: str, model: str, history: list[dict]) -> list[dict]
         response = client.messages.create(
             model=model,
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             tools=_tools_anthropic(),
             messages=api_messages,
         )
@@ -311,7 +332,7 @@ def _chat_anthropic(api_key: str, model: str, history: list[dict]) -> list[dict]
     return history
 
 
-def _chat_gemini(api_key: str, model: str, history: list[dict]) -> list[dict]:
+def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: str) -> list[dict]:
     """Run chat loop using Google Gemini API with function calling."""
     from google import genai
     from google.genai import types
@@ -330,7 +351,7 @@ def _chat_gemini(api_key: str, model: str, history: list[dict]) -> list[dict]:
 
     tools = _tools_gemini()
     config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_PROMPT,
+        system_instruction=system_prompt,
         tools=tools,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     )
@@ -375,13 +396,13 @@ def _chat_gemini(api_key: str, model: str, history: list[dict]) -> list[dict]:
     return history
 
 
-def _chat_ollama(base_url: str, model: str, history: list[dict]) -> list[dict]:
+def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: str) -> list[dict]:
     """Run chat loop using Ollama via OpenAI-compatible API.
     Tool use depends on model capability — gracefully falls back to no tools."""
     from openai import OpenAI
     client = OpenAI(api_key="ollama", base_url=base_url)
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": system_prompt}]
     for msg in history:
         role = msg.get("role", "")
         content = msg.get("content", "")
@@ -433,33 +454,30 @@ def _chat_ollama(base_url: str, model: str, history: list[dict]) -> list[dict]:
 
 # --- Main Chat Entry Point ---
 
-def chat(
-    provider: str,
-    api_key: str,
-    model: str,
-    message: str,
-    history: list[dict],
-    base_url: str = "",
-) -> list[dict]:
-    """Send a message and run the full tool-use loop.
+def chat(message: str, history: list[dict]) -> list[dict]:
+    """Send a message using settings from the database.
 
     Args:
-        provider: One of 'anthropic', 'gemini', 'ollama'.
-        api_key: API key (ignored for ollama).
-        model: Model identifier string.
         message: User's new message text.
         history: Current conversation history in gr.Chatbot format.
-        base_url: Override base URL (used for ollama, default localhost:11434).
 
     Returns:
         Updated history with new user message and all assistant responses.
     """
+    from services.settings import get_setting
+
+    provider = get_setting("chat_provider")
+    api_key = get_setting("chat_api_key")
+    model = get_setting("chat_model")
+    base_url = get_setting("chat_base_url")
+    system_prompt = _build_system_prompt()
+
     # Validate API key for providers that need it
     preset = PROVIDER_PRESETS.get(provider, {})
     if preset.get("needs_api_key") and (not api_key or not api_key.strip()):
         return history + [
             {"role": "user", "content": message},
-            {"role": "assistant", "content": f"No API key set. Add your {preset.get('name', provider)} API key in the Admin tab."},
+            {"role": "assistant", "content": f"No API key set. Add your {preset.get('name', provider)} API key in the Admin tab sidebar."},
         ]
 
     # Add user message
@@ -467,12 +485,12 @@ def chat(
 
     try:
         if provider == "anthropic":
-            return _chat_anthropic(api_key, model, history)
+            return _chat_anthropic(api_key, model, history, system_prompt)
         elif provider == "gemini":
-            return _chat_gemini(api_key, model, history)
+            return _chat_gemini(api_key, model, history, system_prompt)
         elif provider == "ollama":
             url = base_url or preset.get("base_url", "http://localhost:11434/v1")
-            return _chat_ollama(url, model, history)
+            return _chat_ollama(url, model, history, system_prompt)
         else:
             history.append({"role": "assistant", "content": f"Unknown provider: {provider}"})
             return history
