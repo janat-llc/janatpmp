@@ -1,4 +1,4 @@
-"""Database tab -- Stats, schema, backup, restore, reset."""
+"""Admin tab -- Model settings, stats, schema, backup, restore, reset."""
 import json
 import gradio as gr
 import pandas as pd
@@ -69,8 +69,62 @@ def _handle_reset():
 
 
 def build_database_tab():
-    """Build the Database tab. Returns dict of components."""
-    with gr.Tab("Admin"):
+    """Build the Admin tab. Returns dict of components including model config."""
+    with gr.Tab("Admin") as admin_tab:
+        # Model Settings
+        with gr.Accordion("Model Settings", open=True):
+            gr.Markdown("Configure the AI model for the sidebar chat.")
+            with gr.Row():
+                provider_dropdown = gr.Dropdown(
+                    choices=["anthropic", "gemini", "ollama"],
+                    value="anthropic",
+                    label="Provider",
+                    interactive=True,
+                )
+                model_dropdown = gr.Dropdown(
+                    choices=[
+                        "claude-sonnet-4-20250514",
+                        "claude-haiku-4-5-20251001",
+                        "claude-opus-4-6",
+                    ],
+                    value="claude-sonnet-4-20250514",
+                    label="Model",
+                    allow_custom_value=True,
+                    interactive=True,
+                )
+            api_key_input = gr.Textbox(
+                label="API Key",
+                type="password",
+                placeholder="sk-ant-... or AIza...",
+                interactive=True,
+            )
+            base_url_input = gr.Textbox(
+                label="Base URL (Ollama only)",
+                value="http://localhost:11434/v1",
+                visible=False,
+                interactive=True,
+            )
+
+            def _on_provider_change(provider):
+                from services.chat import PROVIDER_PRESETS
+                preset = PROVIDER_PRESETS.get(provider, {})
+                models = preset.get("models", [])
+                default = preset.get("default_model", "")
+                needs_key = preset.get("needs_api_key", True)
+                is_ollama = provider == "ollama"
+                return (
+                    gr.Dropdown(choices=models, value=default),
+                    gr.Textbox(visible=needs_key),
+                    gr.Textbox(visible=is_ollama),
+                )
+
+            provider_dropdown.change(
+                _on_provider_change,
+                inputs=[provider_dropdown],
+                outputs=[model_dropdown, api_key_input, base_url_input],
+                api_visibility="private",
+            )
+
         with gr.Row():
             # Left: Stats and Schema
             with gr.Column(scale=1):
@@ -128,8 +182,13 @@ def build_database_tab():
         )
 
     return {
+        'tab': admin_tab,
+        'provider': provider_dropdown,
+        'model': model_dropdown,
+        'api_key': api_key_input,
+        'base_url': base_url_input,
         'stats': stats_display,
         'schema': schema_display,
         'backups_table': backups_table,
-        'restore_dropdown': restore_dropdown
+        'restore_dropdown': restore_dropdown,
     }
