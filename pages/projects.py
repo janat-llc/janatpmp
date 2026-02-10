@@ -135,12 +135,10 @@ def build_page():
     with gr.Sidebar(position="right"):
         gr.Markdown("### Claude")
         chatbot = gr.Chatbot(value=list(INITIAL_CHAT), height=500, label="Chat")
-        with gr.Row():
-            chat_input = gr.Textbox(
-                placeholder="Ask Claude anything...",
-                show_label=False, scale=4, interactive=True,
-            )
-            clear_btn = gr.Button("Clear", variant="secondary", size="sm", scale=1)
+        chat_input = gr.Textbox(
+            placeholder="Ask Claude anything...",
+            show_label=False, interactive=True, max_lines=3,
+        )
 
     # === CENTER TABS (defined before left sidebar so render can reference them) ===
     with gr.Tabs():
@@ -618,11 +616,4 @@ def build_page():
         api_visibility="private",
     )
 
-    def _clear_chat():
-        return list(INITIAL_CHAT), list(INITIAL_CHAT)
 
-    clear_btn.click(
-        _clear_chat,
-        outputs=[chatbot, chat_history],
-        api_visibility="private",
-    )

@@ -55,4 +55,12 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.api(list_backups)
 
 if __name__ == "__main__":
-    demo.launch(mcp_server=True, server_name="0.0.0.0", theme=gr.themes.Soft())
+    demo.launch(
+        mcp_server=True,
+        server_name="0.0.0.0",
+        theme=gr.themes.Soft(),
+        css="""
+            .sidebar.right .sidebar-content { padding: 8px 12px !important; }
+            .sidebar.right .message-row { max-width: 100% !important; }
+        """,
+    )
