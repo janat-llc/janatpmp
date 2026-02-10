@@ -103,37 +103,72 @@ def build_database_tab():
                 api_visibility="private",
             )
 
-        with gr.Row():
-            # Left: Stats and Schema
-            with gr.Column(scale=1):
-                with gr.Row():
-                    gr.Markdown("### Database Stats")
-                    refresh_stats_btn = gr.Button("Refresh", variant="secondary", size="sm")
-                stats_display = gr.JSON(value=_load_stats(), label="Stats")
-                with gr.Accordion("Schema Info", open=False):
-                    schema_display = gr.Code(value=_load_schema(), label="Schema", language="json", interactive=False, max_lines=30)
+        # Settings section
+        with gr.Accordion("Settings", open=False):
+            gr.Markdown("Configure paths for Claude Export integration.")
+            from services.settings import get_setting as _get_setting
+            setting_export_db = gr.Textbox(
+                label="Claude Export DB Path",
+                value=_get_setting("claude_export_db_path"),
+                placeholder="/data/claude_export/claude_export.db",
+                interactive=True,
+            )
+            setting_export_dir = gr.Textbox(
+                label="Claude Export JSON Directory",
+                value=_get_setting("claude_export_json_dir"),
+                placeholder="/data/claude_export",
+                interactive=True,
+            )
+            with gr.Row():
+                save_settings_btn = gr.Button("Save Settings", variant="primary")
+                settings_status = gr.Textbox(show_label=False, interactive=False, scale=2)
 
-            # Right: Lifecycle controls
-            with gr.Column(scale=1):
-                gr.Markdown("### Backup & Restore")
-                backup_btn = gr.Button("Backup Now", variant="primary")
-                db_status_msg = gr.Textbox(label="Status", interactive=False)
+            def _save_export_settings(db_path, json_dir):
+                from services.settings import set_setting
+                set_setting("claude_export_db_path", db_path.strip())
+                set_setting("claude_export_json_dir", json_dir.strip())
+                return "Settings saved."
 
-                backups_table = gr.DataFrame(
-                    value=_backups_to_df(),
-                    interactive=False, label="Available Backups"
-                )
+            save_settings_btn.click(
+                _save_export_settings,
+                inputs=[setting_export_db, setting_export_dir],
+                outputs=[settings_status],
+                api_visibility="private",
+            )
 
-                restore_dropdown = gr.Dropdown(
-                    label="Select Backup", choices=_backup_names(), allow_custom_value=True
-                )
-                restore_btn = gr.Button("Restore Selected Backup")
+        # Database section (collapsible)
+        with gr.Accordion("Database", open=False):
+            with gr.Row():
+                # Left: Stats and Schema
+                with gr.Column(scale=1):
+                    with gr.Row():
+                        gr.Markdown("### Database Stats")
+                        refresh_stats_btn = gr.Button("Refresh", variant="secondary", size="sm")
+                    stats_display = gr.JSON(value=_load_stats(), label="Stats")
+                    with gr.Accordion("Schema Info", open=False):
+                        schema_display = gr.Code(value=_load_schema(), label="Schema", language="json", interactive=False, max_lines=30)
 
-                gr.Markdown("---")
-                gr.Markdown("### Reset Database")
-                gr.Markdown("Deletes all data and recreates schema. A backup is created automatically.")
-                reset_btn = gr.Button("Reset Database", variant="stop")
-                reset_status_msg = gr.Textbox(label="Reset Status", interactive=False)
+                # Right: Lifecycle controls
+                with gr.Column(scale=1):
+                    gr.Markdown("### Backup & Restore")
+                    backup_btn = gr.Button("Backup Now", variant="primary")
+                    db_status_msg = gr.Textbox(label="Status", interactive=False)
+
+                    backups_table = gr.DataFrame(
+                        value=_backups_to_df(),
+                        interactive=False, label="Available Backups"
+                    )
+
+                    restore_dropdown = gr.Dropdown(
+                        label="Select Backup", choices=_backup_names(), allow_custom_value=True
+                    )
+                    restore_btn = gr.Button("Restore Selected Backup")
+
+                    gr.Markdown("---")
+                    gr.Markdown("### Reset Database")
+                    gr.Markdown("Deletes all data and recreates schema. A backup is created automatically.")
+                    reset_btn = gr.Button("Reset Database", variant="stop")
+                    reset_status_msg = gr.Textbox(label="Reset Status", interactive=False)
 
         # Wiring -- outputs stay within this tab
         def _handle_refresh():
