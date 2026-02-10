@@ -4,6 +4,9 @@ import pandas as pd
 from db.operations import (
     list_items, get_item, create_item, update_item, delete_item,
     list_tasks, get_task, create_task, update_task,
+    list_documents, get_document, create_document,
+    search_items, search_documents,
+    create_relationship, get_relationships,
 )
 from tabs.tab_database import build_database_tab
 
@@ -43,6 +46,15 @@ TASK_TYPES = [
 ASSIGNEES = ["unassigned", "agent", "claude", "mat", "janus"]
 
 PRIORITIES = ["urgent", "normal", "background"]
+
+DOC_TYPES = [
+    "conversation", "file", "artifact", "research",
+    "agent_output", "session_notes", "code"
+]
+
+DOC_SOURCES = [
+    "claude_exporter", "upload", "agent", "generated", "manual"
+]
 
 INITIAL_CHAT = [{
     "role": "assistant",
@@ -115,6 +127,25 @@ def _all_tasks_df() -> pd.DataFrame:
     } for t in tasks])
 
 
+def _load_documents(doc_type: str = "", source: str = "") -> list:
+    """Fetch documents as list of dicts for sidebar card rendering."""
+    return list_documents(doc_type=doc_type, source=source, limit=100)
+
+
+def _all_docs_df() -> pd.DataFrame:
+    """Fetch all documents for the List View."""
+    docs = list_documents(limit=200)
+    if not docs:
+        return pd.DataFrame(columns=["ID", "Title", "Type", "Source", "Created"])
+    return pd.DataFrame([{
+        "ID": d["id"][:8],
+        "Title": d["title"],
+        "Type": _fmt(d.get("doc_type", "")),
+        "Source": _fmt(d.get("source", "")),
+        "Created": d.get("created_at", "")[:16] if d.get("created_at") else "",
+    } for d in docs])
+
+
 # --- Page builder ---
 
 def build_page():
@@ -129,6 +160,8 @@ def build_page():
     selected_task_id = gr.State("")
     projects_state = gr.State(_load_projects())
     tasks_state = gr.State(_load_tasks())
+    selected_doc_id = gr.State("")
+    docs_state = gr.State(_load_documents())
     chat_history = gr.State(list(INITIAL_CHAT))
 
     # === RIGHT SIDEBAR (chat — always visible) ===
@@ -265,16 +298,159 @@ def build_page():
 
         # --- Knowledge tab ---
         with gr.Tab("Knowledge") as knowledge_tab:
-            gr.Markdown("### Knowledge Base")
-            gr.Markdown("*Document browser coming in Phase 3.*")
+            with gr.Tabs():
+                # --- Documents sub-tab ---
+                with gr.Tab("Documents"):
+                    doc_header = gr.Markdown(
+                        "*Select a document from the sidebar, or create a new one.*"
+                    )
+
+                    with gr.Column(visible=False) as doc_detail_section:
+                        doc_id_display = gr.Textbox(
+                            label="ID", interactive=False, max_lines=1
+                        )
+                        with gr.Row():
+                            doc_title = gr.Textbox(
+                                label="Title", interactive=True, scale=3
+                            )
+                            doc_type_display = gr.Textbox(
+                                label="Type", interactive=False, scale=1
+                            )
+                            doc_source_display = gr.Textbox(
+                                label="Source", interactive=False, scale=1
+                            )
+
+                        doc_content = gr.Textbox(
+                            label="Content", lines=15, interactive=False,
+                        )
+
+                        with gr.Accordion("Metadata", open=False):
+                            with gr.Row():
+                                doc_file_path = gr.Textbox(
+                                    label="File Path", interactive=False
+                                )
+                                doc_created = gr.Textbox(
+                                    label="Created", interactive=False
+                                )
+
+                    # --- Create Document form ---
+                    with gr.Column(visible=False) as doc_create_section:
+                        with gr.Row():
+                            new_doc_type = gr.Dropdown(
+                                label="Type", choices=DOC_TYPES,
+                                value="session_notes", scale=1
+                            )
+                            new_doc_source = gr.Dropdown(
+                                label="Source", choices=DOC_SOURCES,
+                                value="manual", scale=1
+                            )
+                        new_doc_title = gr.Textbox(
+                            label="Title", placeholder="Document title..."
+                        )
+                        new_doc_content = gr.Textbox(
+                            label="Content", lines=10,
+                            placeholder="Document content..."
+                        )
+                        with gr.Row():
+                            doc_create_btn = gr.Button("Create", variant="primary")
+                            doc_create_msg = gr.Textbox(
+                                show_label=False, interactive=False, scale=2
+                            )
+
+                # --- Documents List View sub-tab ---
+                with gr.Tab("List View"):
+                    gr.Markdown("### All Documents")
+                    all_docs_table = gr.DataFrame(
+                        value=_all_docs_df(), interactive=False,
+                    )
+                    docs_refresh_btn = gr.Button(
+                        "Refresh All", variant="secondary", size="sm"
+                    )
+
+                # --- Search sub-tab ---
+                with gr.Tab("Search"):
+                    gr.Markdown("### Universal Search")
+                    gr.Markdown("Search across all items and documents using full-text search.")
+                    with gr.Row():
+                        search_input = gr.Textbox(
+                            label="Search Query",
+                            placeholder='e.g. "consciousness" or "gradio deploy"',
+                            scale=4,
+                        )
+                        search_btn = gr.Button("Search", variant="primary", scale=1)
+
+                    search_items_results = gr.DataFrame(
+                        value=pd.DataFrame(
+                            columns=["ID", "Title", "Domain", "Type", "Status"]
+                        ),
+                        label="Items",
+                        interactive=False,
+                    )
+                    search_docs_results = gr.DataFrame(
+                        value=pd.DataFrame(
+                            columns=["ID", "Title", "Type", "Source", "Created"]
+                        ),
+                        label="Documents",
+                        interactive=False,
+                    )
+
+                # --- Connections sub-tab ---
+                with gr.Tab("Connections"):
+                    gr.Markdown("### Entity Connections")
+                    gr.Markdown("View relationships for any item, task, or document.")
+                    with gr.Row():
+                        conn_entity_type = gr.Dropdown(
+                            choices=["item", "task", "document"],
+                            value="item", label="Entity Type", scale=1
+                        )
+                        conn_entity_id = gr.Textbox(
+                            label="Entity ID",
+                            placeholder="Paste full ID or 8-char prefix...",
+                            scale=2,
+                        )
+                        conn_lookup_btn = gr.Button("Look Up", variant="primary", scale=1)
+                    connections_table = gr.DataFrame(
+                        value=pd.DataFrame(
+                            columns=[
+                                "Relationship", "Direction",
+                                "Connected Type", "Connected ID", "Strength"
+                            ]
+                        ),
+                        label="Connections",
+                        interactive=False,
+                    )
+                    with gr.Accordion("+ Add Connection", open=False):
+                        with gr.Row():
+                            conn_target_type = gr.Dropdown(
+                                choices=["item", "task", "document"],
+                                value="item", label="Target Type", scale=1
+                            )
+                            conn_target_id = gr.Textbox(
+                                label="Target ID",
+                                placeholder="Target entity ID...",
+                                scale=2,
+                            )
+                        conn_rel_type = gr.Dropdown(
+                            choices=[
+                                "blocks", "enables", "informs", "references",
+                                "implements", "documents", "depends_on",
+                                "parent_of", "attached_to"
+                            ],
+                            value="references", label="Relationship Type",
+                        )
+                        with gr.Row():
+                            conn_create_btn = gr.Button("Create Connection", variant="primary")
+                            conn_create_msg = gr.Textbox(
+                                show_label=False, interactive=False, scale=2
+                            )
 
         # --- Admin tab ---
         admin_components = build_database_tab()
 
     # === LEFT SIDEBAR (contextual — defined after center so it can reference components) ===
     with gr.Sidebar():
-        @gr.render(inputs=[active_tab, projects_state, tasks_state])
-        def render_left(tab, projects, tasks):
+        @gr.render(inputs=[active_tab, projects_state, tasks_state, docs_state])
+        def render_left(tab, projects, tasks, docs):
             if tab == "Projects":
                 gr.Markdown("### Projects")
                 with gr.Row():
@@ -358,8 +534,68 @@ def build_page():
                 )
 
             elif tab == "Knowledge":
-                gr.Markdown("### Knowledge Base")
-                gr.Markdown("*Coming in Phase 3*")
+                gr.Markdown("### Documents")
+                with gr.Row():
+                    doc_type_filter = gr.Dropdown(
+                        label="Type", choices=[""] + DOC_TYPES, value="",
+                        key="doc-type-filter", scale=1, min_width=100,
+                    )
+                    doc_source_filter = gr.Dropdown(
+                        label="Source", choices=[""] + DOC_SOURCES, value="",
+                        key="doc-source-filter", scale=1, min_width=100,
+                    )
+                docs_sidebar_refresh = gr.Button(
+                    "Refresh", variant="secondary", size="sm", key="docs-refresh"
+                )
+
+                if not docs:
+                    gr.Markdown("*No documents yet.*")
+                else:
+                    for d in docs:
+                        btn = gr.Button(
+                            f"{d['title']}\n{_fmt(d.get('doc_type', ''))}  ·  {_fmt(d.get('source', '')).upper()}",
+                            key=f"doc-{d['id'][:8]}",
+                            size="sm",
+                        )
+                        def on_doc_click(d_id=d["id"]):
+                            return d_id
+                        btn.click(
+                            on_doc_click, outputs=[selected_doc_id],
+                            api_visibility="private"
+                        )
+
+                new_doc_btn = gr.Button(
+                    "+ New Document", variant="primary", key="new-doc-btn"
+                )
+
+                # Wiring (inside render)
+                def _refresh_docs(dtype, source):
+                    return _load_documents(dtype, source)
+                doc_type_filter.change(
+                    _refresh_docs,
+                    inputs=[doc_type_filter, doc_source_filter],
+                    outputs=[docs_state], api_visibility="private"
+                )
+                doc_source_filter.change(
+                    _refresh_docs,
+                    inputs=[doc_type_filter, doc_source_filter],
+                    outputs=[docs_state], api_visibility="private"
+                )
+                docs_sidebar_refresh.click(
+                    _refresh_docs,
+                    inputs=[doc_type_filter, doc_source_filter],
+                    outputs=[docs_state], api_visibility="private"
+                )
+
+                new_doc_btn.click(
+                    lambda: (
+                        "## New Document",
+                        gr.Column(visible=False),
+                        gr.Column(visible=True),
+                    ),
+                    outputs=[doc_header, doc_detail_section, doc_create_section],
+                    api_visibility="private",
+                )
 
             elif tab == "Admin":
                 gr.Markdown("### Quick Settings")
@@ -597,6 +833,197 @@ def build_page():
             new_task_title, new_task_desc, new_task_target, new_task_instructions,
         ],
         outputs=[work_create_msg, tasks_state, selected_task_id],
+        api_visibility="private",
+    )
+
+    # === KNOWLEDGE EVENT WIRING ===
+
+    # Document detail loading
+    def _load_doc_detail(doc_id):
+        """Load document detail when selection changes."""
+        if not doc_id:
+            return gr.skip()
+        doc = get_document(doc_id)
+        if not doc:
+            return gr.skip()
+        return (
+            f"## {doc['title']}",
+            gr.Column(visible=True),
+            gr.Column(visible=False),
+            doc_id,
+            doc.get("title", ""),
+            _fmt(doc.get("doc_type", "")),
+            _fmt(doc.get("source", "")),
+            doc.get("content", "") or "",
+            doc.get("file_path", "") or "",
+            doc.get("created_at", "")[:16] if doc.get("created_at") else "",
+        )
+
+    selected_doc_id.change(
+        _load_doc_detail,
+        inputs=[selected_doc_id],
+        outputs=[
+            doc_header, doc_detail_section, doc_create_section,
+            doc_id_display, doc_title, doc_type_display,
+            doc_source_display, doc_content,
+            doc_file_path, doc_created,
+        ],
+        api_visibility="private",
+    )
+
+    # Document creation
+    def _on_doc_create(doc_type, source, title, content):
+        if not title.strip():
+            return "Title is required", gr.skip(), gr.skip()
+        doc_id = create_document(
+            doc_type=doc_type,
+            source=source,
+            title=title.strip(),
+            content=content.strip() if content else "",
+        )
+        return f"Created {doc_id[:8]}", _load_documents(), doc_id
+
+    doc_create_btn.click(
+        _on_doc_create,
+        inputs=[new_doc_type, new_doc_source, new_doc_title, new_doc_content],
+        outputs=[doc_create_msg, docs_state, selected_doc_id],
+        api_visibility="private",
+    )
+
+    # Document list refresh
+    docs_refresh_btn.click(
+        _all_docs_df, outputs=[all_docs_table], api_visibility="private"
+    )
+
+    # Universal search
+    def _run_search(query):
+        if not query or not query.strip():
+            empty_items = pd.DataFrame(
+                columns=["ID", "Title", "Domain", "Type", "Status"]
+            )
+            empty_docs = pd.DataFrame(
+                columns=["ID", "Title", "Type", "Source", "Created"]
+            )
+            return empty_items, empty_docs
+
+        q = query.strip()
+
+        # Search items via FTS5
+        try:
+            items = search_items(q, limit=50)
+        except Exception:
+            items = []
+        if items:
+            items_df = pd.DataFrame([{
+                "ID": i["id"][:8],
+                "Title": i["title"],
+                "Domain": _fmt(i.get("domain", "")),
+                "Type": _fmt(i.get("entity_type", "")),
+                "Status": _fmt(i.get("status", "")),
+            } for i in items])
+        else:
+            items_df = pd.DataFrame(
+                columns=["ID", "Title", "Domain", "Type", "Status"]
+            )
+
+        # Search documents via FTS5
+        try:
+            found_docs = search_documents(q, limit=50)
+        except Exception:
+            found_docs = []
+        if found_docs:
+            docs_df = pd.DataFrame([{
+                "ID": d["id"][:8],
+                "Title": d["title"],
+                "Type": _fmt(d.get("doc_type", "")),
+                "Source": _fmt(d.get("source", "")),
+                "Created": d.get("created_at", "")[:16] if d.get("created_at") else "",
+            } for d in found_docs])
+        else:
+            docs_df = pd.DataFrame(
+                columns=["ID", "Title", "Type", "Source", "Created"]
+            )
+
+        return items_df, docs_df
+
+    search_btn.click(
+        _run_search,
+        inputs=[search_input],
+        outputs=[search_items_results, search_docs_results],
+        api_visibility="private",
+    )
+    search_input.submit(
+        _run_search,
+        inputs=[search_input],
+        outputs=[search_items_results, search_docs_results],
+        api_visibility="private",
+    )
+
+    # Connections lookup
+    def _lookup_connections(entity_type, entity_id):
+        if not entity_id or not entity_id.strip():
+            return pd.DataFrame(
+                columns=["Relationship", "Direction", "Connected Type", "Connected ID", "Strength"]
+            )
+
+        eid = entity_id.strip()
+        rels = get_relationships(entity_type=entity_type, entity_id=eid)
+
+        if not rels:
+            return pd.DataFrame(
+                columns=["Relationship", "Direction", "Connected Type", "Connected ID", "Strength"]
+            )
+
+        rows = []
+        for r in rels:
+            if r["source_id"] == eid:
+                rows.append({
+                    "Relationship": _fmt(r["relationship_type"]),
+                    "Direction": "-> outgoing",
+                    "Connected Type": r["target_type"],
+                    "Connected ID": r["target_id"][:8],
+                    "Strength": r.get("strength", "hard"),
+                })
+            else:
+                rows.append({
+                    "Relationship": _fmt(r["relationship_type"]),
+                    "Direction": "<- incoming",
+                    "Connected Type": r["source_type"],
+                    "Connected ID": r["source_id"][:8],
+                    "Strength": r.get("strength", "hard"),
+                })
+        return pd.DataFrame(rows)
+
+    conn_lookup_btn.click(
+        _lookup_connections,
+        inputs=[conn_entity_type, conn_entity_id],
+        outputs=[connections_table],
+        api_visibility="private",
+    )
+
+    # Create connection
+    def _on_conn_create(source_type, source_id, target_type, target_id, rel_type):
+        if not source_id.strip() or not target_id.strip():
+            return "Both entity ID and target ID are required"
+        try:
+            rel_id = create_relationship(
+                source_type=source_type,
+                source_id=source_id.strip(),
+                target_type=target_type,
+                target_id=target_id.strip(),
+                relationship_type=rel_type,
+            )
+            return f"Created connection {rel_id[:8]}"
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    conn_create_btn.click(
+        _on_conn_create,
+        inputs=[
+            conn_entity_type, conn_entity_id,
+            conn_target_type, conn_target_id, conn_rel_type,
+        ],
+        outputs=[conn_create_msg],
         api_visibility="private",
     )
 

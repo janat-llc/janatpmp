@@ -6,7 +6,7 @@
 platform designed for solo architects and engineers working with AI partners. It provides
 persistent project state that AI assistants can read and write via MCP (Model Context Protocol).
 
-**Status:** Phase 2.5 — settings persistence, system prompt editor, auto-context injection
+**Status:** Phase 3 — Knowledge tab, universal search, entity connections
 **Origin:** Anthropic "Built with Opus 4.6" Claude Code competition (Feb 2026)
 **Goal:** Strategic command center for consciousness architecture work across multiple domains.
 
@@ -117,7 +117,7 @@ The center content is just the main Blocks body (no Row/Column wrapper needed).
 |-----|-------------|--------|--------|
 | **Projects** | Project cards, filters, + New | Detail editor, List View | ✅ Working |
 | **Work** | Task cards, filters, + New Task | Task detail, List View | ✅ Working |
-| **Knowledge** | Placeholder | Placeholder | Stub only |
+| **Knowledge** | Document cards, filters, + New Doc | Documents (Detail/List), Search, Connections | ✅ Working |
 | **Admin** | Quick Settings (provider/model/key) | System Prompt editor, Stats, Backup/Restore | ✅ Working |
 
 ### Contextual Left Sidebar
@@ -145,6 +145,22 @@ stays constant regardless of active tab.
 - `db/operations.py:get_context_snapshot()` builds a summary of active items + pending tasks
 - `services/chat.py:_build_system_prompt()` composes: default prompt + custom prompt + auto-context
 - Fresh context is injected per message, so the AI always knows current project state
+
+### Knowledge Tab
+
+The Knowledge tab surfaces documents, search, and entity relationships:
+
+- **Documents** — CRUD for session notes, research, artifacts, conversation imports, code.
+  Same sidebar-card + detail pattern as Projects and Work tabs.
+- **Search** — Universal FTS5 search across items AND documents simultaneously.
+  Uses `search_items()` and `search_documents()` from db/operations.py.
+- **Connections** — Relationship viewer. Look up any entity (item/task/document) by ID
+  to see incoming and outgoing relationships. Create new connections inline.
+  Uses `get_relationships()` and `create_relationship()` from db/operations.py.
+
+All 6 underlying operations (`create_document`, `get_document`, `list_documents`,
+`search_documents`, `create_relationship`, `get_relationships`) were built in Phase 1
+and exposed via MCP — Phase 3 only adds the UI layer.
 
 ### Data Flow
 
