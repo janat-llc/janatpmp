@@ -21,8 +21,10 @@ from db.operations import (
 )
 from pages.projects import build_page
 
-# Initialize database BEFORE building UI
+# Initialize database and settings BEFORE building UI
 init_database()
+from services.settings import init_settings
+init_settings()
 
 # Build single-page application
 with gr.Blocks(title="JANATPMP") as demo:

@@ -6,7 +6,7 @@
 platform designed for solo architects and engineers working with AI partners. It provides
 persistent project state that AI assistants can read and write via MCP (Model Context Protocol).
 
-**Status:** Phase 1 complete — tab-based UI with dual sidebars, 22 MCP tools operational
+**Status:** Phase 2.5 — settings persistence, system prompt editor, auto-context injection
 **Origin:** Anthropic "Built with Opus 4.6" Claude Code competition (Feb 2026)
 **Goal:** Strategic command center for consciousness architecture work across multiple domains.
 
@@ -36,6 +36,10 @@ JANATPMP/
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups
 │   └── __init__.py
+├── services/
+│   ├── __init__.py
+│   ├── chat.py               # Multi-provider chat with tool use (Anthropic/Gemini/Ollama)
+│   └── settings.py           # Settings service: get/set with base64 for secrets
 ├── docs/
 │   └── janatpmp-mockup.png   # Visual reference for Projects page layout
 ├── completed/                # Archived TODO files
@@ -112,36 +116,35 @@ The center content is just the main Blocks body (no Row/Column wrapper needed).
 | Tab | Left Sidebar | Center | Status |
 |-----|-------------|--------|--------|
 | **Projects** | Project cards, filters, + New | Detail editor, List View | ✅ Working |
-| **Work** | (same as Projects for now) | Placeholder | Stub only |
-| **Knowledge** | (same as Projects for now) | Placeholder | Stub only |
-| **Database** | (same as Projects for now) | Stats, backups, lifecycle | ✅ Working |
+| **Work** | Task cards, filters, + New Task | Task detail, List View | ✅ Working |
+| **Knowledge** | Placeholder | Placeholder | Stub only |
+| **Admin** | Quick Settings (provider/model/key) | System Prompt editor, Stats, Backup/Restore | ✅ Working |
 
-### Phase 2 Vision: Contextual Left Sidebar
+### Contextual Left Sidebar
 
-Currently the left sidebar is static (always shows project list). The design intent
-is for it to become **contextual** — changing content based on the active tab:
+The left sidebar uses `@gr.render(inputs=[active_tab, projects_state, tasks_state])`
+to dynamically switch content based on the active tab. The right sidebar (Claude chat)
+stays constant regardless of active tab.
 
-| Tab | Left Sidebar Content |
-|-----|---------------------|
-| **Projects** | Project cards, domain/status filters, + New Item |
-| **Work** | Task list, assignee filter, + New Task |
-| **Knowledge** | Documents list, chat history search |
-| **Admin** | Field management, schema tools |
+### Settings & Chat Architecture
 
-**Implementation pattern** (for when this is built):
-```python
-with gr.Sidebar(position="left"):
-    @gr.render(inputs=active_tab)
-    def render_left_panel(tab):
-        if tab == "Projects":
-            # project cards, filters, create form
-        elif tab == "Work":
-            # task list, assignee filter
-        ...
-```
+**Settings table** (`settings` in SQLite) — key-value store for persistent configuration:
+- `chat_provider` — "anthropic", "gemini", or "ollama"
+- `chat_model` — Model identifier string
+- `chat_api_key` — Base64-encoded API key (obfuscation, NOT encryption)
+- `chat_base_url` — Override URL for Ollama
+- `chat_system_prompt` — Custom system prompt (empty = use default)
 
-The right sidebar (Claude chat) stays constant regardless of active tab.
-The "Database" tab will also be renamed to "Admin" in this phase.
+**Settings flow:**
+- `services/settings.py` provides `get_setting()` / `set_setting()` with auto base64 for secrets
+- Admin sidebar quick-settings save on change (no save button needed)
+- Chat reads settings from DB on each message — no restart needed
+- `init_database()` calls `init_settings()` to seed defaults on first run
+
+**Chat auto-context injection:**
+- `db/operations.py:get_context_snapshot()` builds a summary of active items + pending tasks
+- `services/chat.py:_build_system_prompt()` composes: default prompt + custom prompt + auto-context
+- Fresh context is injected per message, so the AI always knows current project state
 
 ### Data Flow
 
@@ -169,6 +172,7 @@ db/operations.py → 22 functions → three surfaces:
 - `documents` — Conversations, files, artifacts, research. FTS5 enabled.
 - `relationships` — Universal connector between any two entities. Typed relationships
   (blocks, enables, informs, etc.) with hard/soft strength.
+- `settings` — Key-value application configuration. Base64 for secrets. Auto-updated timestamps.
 - `cdc_outbox` — Change Data Capture for future Qdrant/Neo4j sync.
 - `schema_version` — Migration tracking.
 

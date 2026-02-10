@@ -555,5 +555,25 @@ CREATE TABLE schema_version (
     description TEXT
 );
 
-INSERT INTO schema_version (version, description) VALUES
+INSERT OR IGNORE INTO schema_version (version, description) VALUES
     ('0.1.0', 'Initial schema: Items, Tasks, Documents, Relationships, CDC Outbox');
+
+-- ============================================================================
+-- SETTINGS: Application configuration (key-value store)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    is_secret INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Auto-update timestamp
+CREATE TRIGGER IF NOT EXISTS settings_updated_at AFTER UPDATE ON settings
+BEGIN
+    UPDATE settings SET updated_at = datetime('now') WHERE key = NEW.key;
+END;
+
+INSERT OR IGNORE INTO schema_version (version, description) VALUES
+    ('0.2.0', 'Add settings table for persistent configuration');

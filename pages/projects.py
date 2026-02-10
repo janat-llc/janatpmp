@@ -364,8 +364,78 @@ def build_page():
                 gr.Markdown("*Coming in Phase 3*")
 
             elif tab == "Admin":
-                gr.Markdown("### Admin")
-                gr.Markdown("*Settings in center panel*")
+                gr.Markdown("### Quick Settings")
+                from services.settings import get_setting, set_setting
+                from services.chat import PROVIDER_PRESETS
+
+                current_provider = get_setting("chat_provider")
+                current_model = get_setting("chat_model")
+                current_key = get_setting("chat_api_key")
+                current_url = get_setting("chat_base_url")
+
+                preset = PROVIDER_PRESETS.get(current_provider, {})
+
+                sidebar_provider = gr.Dropdown(
+                    choices=["anthropic", "gemini", "ollama"],
+                    value=current_provider,
+                    label="Provider",
+                    key="admin-provider",
+                    interactive=True,
+                )
+                sidebar_model = gr.Dropdown(
+                    choices=preset.get("models", []),
+                    value=current_model,
+                    label="Model",
+                    key="admin-model",
+                    allow_custom_value=True,
+                    interactive=True,
+                )
+                sidebar_api_key = gr.Textbox(
+                    value=current_key,
+                    label="API Key",
+                    type="password",
+                    placeholder="sk-ant-... or AIza...",
+                    key="admin-api-key",
+                    interactive=True,
+                    visible=preset.get("needs_api_key", True),
+                )
+                sidebar_base_url = gr.Textbox(
+                    value=current_url,
+                    label="Base URL",
+                    key="admin-base-url",
+                    interactive=True,
+                    visible=(current_provider == "ollama"),
+                )
+
+                def _save_provider(provider):
+                    set_setting("chat_provider", provider)
+                    p = PROVIDER_PRESETS.get(provider, {})
+                    default_model = p.get("default_model", "")
+                    set_setting("chat_model", default_model)
+                    return (
+                        gr.Dropdown(choices=p.get("models", []), value=default_model),
+                        gr.Textbox(visible=p.get("needs_api_key", True)),
+                        gr.Textbox(visible=(provider == "ollama")),
+                    )
+
+                def _save_model(model):
+                    set_setting("chat_model", model)
+
+                def _save_api_key(key):
+                    set_setting("chat_api_key", key)
+
+                def _save_base_url(url):
+                    set_setting("chat_base_url", url)
+
+                sidebar_provider.change(
+                    _save_provider,
+                    inputs=[sidebar_provider],
+                    outputs=[sidebar_model, sidebar_api_key, sidebar_base_url],
+                    api_visibility="private",
+                )
+                sidebar_model.change(_save_model, inputs=[sidebar_model], api_visibility="private")
+                sidebar_api_key.change(_save_api_key, inputs=[sidebar_api_key], api_visibility="private")
+                sidebar_base_url.change(_save_base_url, inputs=[sidebar_base_url], api_visibility="private")
 
     # === TAB TRACKING ===
     projects_tab.select(lambda: "Projects", outputs=[active_tab], api_visibility="private")
@@ -534,22 +604,16 @@ def build_page():
 
     # === CHAT WIRING ===
 
-    def _handle_chat(message, history, provider, model, api_key, base_url):
+    def _handle_chat(message, history):
         if not message.strip():
             return history, history, ""
         from services.chat import chat
-        updated = chat(provider, api_key, model, message, history, base_url)
+        updated = chat(message, history)
         return updated, updated, ""
 
     chat_input.submit(
         _handle_chat,
-        inputs=[
-            chat_input, chat_history,
-            admin_components['provider'],
-            admin_components['model'],
-            admin_components['api_key'],
-            admin_components['base_url'],
-        ],
+        inputs=[chat_input, chat_history],
         outputs=[chatbot, chat_history, chat_input],
         api_visibility="private",
     )
