@@ -71,6 +71,16 @@ def init_database():
             """)
             conn.commit()
 
+            # Migration 0.3.0: conversations + messages tables
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
+            )
+            if cursor.fetchone() is None:
+                migration_path = Path(__file__).parent / "migrations" / "0.3.0_conversations.sql"
+                if migration_path.exists():
+                    migration_sql = migration_path.read_text(encoding="utf-8")
+                    conn.executescript(migration_sql)
+
 
 # Initialize on import
 init_database()

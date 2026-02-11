@@ -6,7 +6,7 @@
 platform designed for solo architects and engineers working with AI partners. It provides
 persistent project state that AI assistants can read and write via MCP (Model Context Protocol).
 
-**Status:** Phase 3.5 — Claude Export integration, conversation browser, Knowledge bug fixes
+**Status:** v1.0 (Hackathon Sprint — Feb 10-16, 2026)
 **Origin:** Anthropic "Built with Opus 4.6" Claude Code competition (Feb 2026)
 **Goal:** Strategic command center for consciousness architecture work across multiple domains.
 
@@ -32,7 +32,10 @@ JANATPMP/
 │   ├── schema.sql            # Database schema DDL (NO seed data)
 │   ├── seed_data.sql         # Optional seed data (separate from schema)
 │   ├── operations.py         # All CRUD + lifecycle functions (22 operations)
+│   ├── chat_operations.py    # Conversation + message CRUD (Phase 4B)
 │   ├── test_operations.py    # Tests
+│   ├── migrations/           # Versioned schema migrations
+│   │   └── 0.3.0_conversations.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups
 │   └── __init__.py
@@ -66,17 +69,17 @@ This approach was chosen over multi-page routing (`demo.route()`) because:
 - No page reload flicker between views
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  [Projects]  [Work]  [Knowledge]  [Admin]    ← gr.Tabs()    │
-├──────────┬──────────────────────────────┬────────────────────┤
-│  LEFT    │     CENTER CONTENT           │  RIGHT             │
-│  SIDEBAR │                              │  SIDEBAR           │
-│          │  Content changes per tab     │                    │
-│  Project │  selected. Each top-level    │  Claude Chat       │
-│  cards   │  tab can have sub-tabs       │  (MCP placeholder) │
-│  Filters │  (Detail/List View, etc.)    │                    │
-│  +New    │                              │                    │
-└──────────┴──────────────────────────────┴────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│  [Projects] [Work] [Knowledge] [Chat] [Admin]  ← gr.Tabs()    │
+├──────────┬───────────────────────────────────┬───────────────────────┤
+│  LEFT    │     CENTER CONTENT              │  RIGHT                │
+│  SIDEBAR │                                 │  SIDEBAR              │
+│          │  Content changes per tab        │                       │
+│  Context │  selected. Each top-level       │  Claude Chat (default) │
+│  cards   │  tab can have sub-tabs          │  OR Chat Settings      │
+│  Filters │  (Detail/List View, etc.)       │  (when Chat tab active)│
+│  +New    │                                 │                       │
+└──────────┴───────────────────────────────────┴───────────────────────┘
 ```
 
 **Implementation in code:**
@@ -105,27 +108,33 @@ def build_page():
             ...
         with gr.Tab("Knowledge"):
             ...
-        build_database_tab()  # "Database" tab from tabs/tab_database.py
+        with gr.Tab("Chat"):
+            ...  # Independent provider/model, full-width chatbot
+        build_database_tab()  # "Admin" tab from tabs/tab_database.py
 ```
 
 **Use `gr.Sidebar` for both side panels — NOT `gr.Column` in a `gr.Row`.**
 Sidebar is collapsible, mobile-friendly, and purpose-built for this layout.
 The center content is just the main Blocks body (no Row/Column wrapper needed).
 
-### Four Tabs (current state)
+### Five Tabs (current state)
 
 | Tab | Left Sidebar | Center | Status |
 |-----|-------------|--------|--------|
 | **Projects** | Project cards, filters, + New | Detail editor, List View | ✅ Working |
 | **Work** | Task cards, filters, + New Task | Task detail, List View | ✅ Working |
-| **Knowledge** | Document cards, filters, + New Doc | Documents (Detail/List), Search, Connections | ✅ Working |
+| **Knowledge** | Document cards, filters, + New Doc | Documents (Detail/List), Search, Connections, Conversations | ✅ Working |
+| **Chat** | Conversation history list, + New Chat | Full-width chatbot (Enter=send), triplet persistence | ✅ Working |
 | **Admin** | Quick Settings (provider/model/key) | System Prompt editor, Stats, Backup/Restore | ✅ Working |
 
-### Contextual Left Sidebar
+### Contextual Sidebars
 
 The left sidebar uses `@gr.render(inputs=[active_tab, projects_state, tasks_state])`
-to dynamically switch content based on the active tab. The right sidebar (Claude chat)
-stays constant regardless of active tab.
+to dynamically switch content based on the active tab. The right sidebar is also
+contextual: it shows Claude quick-chat on all tabs EXCEPT Chat, where it transforms
+into a Chat Settings panel (provider, model, temperature, top_p, system prompt append,
+tool toggles). Both sidebars use state bridge patterns — render-created components
+sync to gr.State via .change listeners for cross-component data flow.
 
 ### Settings & Chat Architecture
 
@@ -197,6 +206,14 @@ db/operations.py → 22 functions → three surfaces:
 - `documents` — Conversations, files, artifacts, research. FTS5 enabled.
 - `relationships` — Universal connector between any two entities. Typed relationships
   (blocks, enables, informs, etc.) with hard/soft strength.
+- `conversations` — Chat sessions from any source (platform, claude_export, imported).
+  Stores provider/model snapshot, system_prompt_append, temperature, top_p, max_tokens.
+  Fields: source (platform/claude_export/imported), conversation_uri (Claude Export linkage),
+  is_active (1=visible, 0=archived), message_count.
+- `messages` — Triplet message schema for training data pipeline. Each turn stores:
+  user_prompt, model_reasoning (chain-of-thought/think blocks), model_response (visible reply).
+  Per-turn provider/model snapshot, token counts (prompt/reasoning/response), tools_called JSON.
+  Ordered by (conversation_id, sequence). FTS5 on user_prompt + model_response.
 - `settings` — Key-value application configuration. Base64 for secrets. Auto-updated timestamps.
 - `cdc_outbox` — Change Data Capture for future Qdrant/Neo4j sync.
 - `schema_version` — Migration tracking.
@@ -222,6 +239,38 @@ docker-compose up -d           # detached
 docker-compose down
 docker-compose logs -f
 ```
+
+## Git Workflow
+
+### Branch Naming
+`feature/phase{version}-{description}` — examples:
+- `feature/phase4b-chat-experience`
+- `feature/phase5-claude-export-ingestion`
+
+### Starting Work
+1. Ensure you're on `main` and it's up to date
+2. Create feature branch: `git checkout -b feature/phase{X}-{name}`
+3. Do all work on the feature branch
+
+### Completing Work
+1. Verify everything runs: `docker compose down && docker compose up -d --build`
+2. Commit with descriptive message: `git add -A && git commit -m "Phase {X}: {summary of changes}"`
+3. Merge to main: `git checkout main && git merge feature/phase{X}-{name}`
+4. Delete feature branch: `git branch -d feature/phase{X}-{name}`
+5. Move completed TODO to `completed/` directory
+
+### Commit Message Format
+`Phase {version}: {one-line summary}` — examples:
+- `Phase 4B: Chat experience redesign — triplet message schema, conversation persistence, AI Studio layout`
+- `Phase 3: Knowledge tab — documents UI, universal search, connections viewer`
+
+For smaller fixes within a phase: `Phase {version}: Fix {description}`
+
+### Rules
+- Never commit directly to `main` — always use a feature branch
+- One phase = one branch = one merge
+- If a phase has sub-phases (4A, 4B), each gets its own branch
+- Completed TODO files move to `completed/` as part of the merge commit
 
 ## Conventions
 
@@ -255,6 +304,14 @@ docker-compose logs -f
 - **Volume:** `.:/app` for live code changes without rebuild
 - **MCP:** Enabled via `GRADIO_MCP_SERVER=True` environment variable
 - **CMD:** `gradio app.py` (uses Gradio's built-in server)
+- **Container names:** `janatpmp-core` (app), `janatpmp-ollama` (LLM)
+  - Docker service `core` (was `janatpmp` before Phase 4 rename)
+- **Ollama:** `janatpmp-ollama` container on port 11435, shares `ollama_data` external volume
+  - Internal URL: `http://ollama:11434/v1` (Docker DNS)
+  - External URL: `http://localhost:11435` (host access for testing)
+  - GPU passthrough via NVIDIA Container Toolkit
+  - Available models: nemotron-3-nano (default), deepseek-r1:7b-qwen-distill-q4_K_M,
+    deepseek-r1:latest, qwen3:4b-instruct-2507-q4_K_M, phi4-mini-reasoning:latest
 
 ## Gradio Development Patterns (CRITICAL — READ BEFORE WRITING UI CODE)
 
@@ -361,8 +418,9 @@ with gr.Blocks() as demo:
 demo.launch(mcp_server=True)
 ```
 
-All 22 functions in `db/operations.py` are exposed via `gr.api()`. They MUST have
-Google-style docstrings with Args/Returns for MCP tool generation.
+All 22 functions in `db/operations.py` plus 8 chat operations from `db/chat_operations.py`
+are exposed via `gr.api()` (32 total MCP tools). They MUST have Google-style docstrings
+with Args/Returns for MCP tool generation.
 
 ### Common Mistakes to Avoid
 
@@ -387,6 +445,64 @@ Google-style docstrings with Args/Returns for MCP tool generation.
 - Do NOT modify `db/operations.py` or `db/schema.sql` unless the TODO explicitly requires it
 - Do NOT add new pip dependencies unless the TODO explicitly requires it
 - When in doubt, ask — don't guess
+
+## Phase 4B Architecture Decisions
+
+### Triplet Message Schema (Training Data Pipeline)
+Every conversation turn stores three distinct artifacts:
+- **user_prompt**: what was asked
+- **model_reasoning**: chain-of-thought / thinking tokens (e.g. `<think>` blocks from deepseek-r1)
+- **model_response**: the visible reply
+
+This enables fine-tuning Nemotron on its own reasoning patterns. Can extract prompt→reasoning,
+reasoning→response, or full triplets for different training objectives.
+
+### Conversation Sources
+The `conversations` table holds ALL conversation history, not just platform chats:
+- `source='platform'`: Created in Chat tab
+- `source='claude_export'`: 600+ conversations imported from Claude Export
+- `source='imported'`: From other sources (Gemini, etc.)
+
+Any conversation, regardless of source, can be loaded into Chat UI and discussed with
+any provider/model. Claude Export ingestion creates conversations + messages records
+alongside the existing documents pipeline in services/claude_export.py.
+
+### System Prompt Layering
+Base system prompt lives in Admin settings (platform context, tool descriptions).
+Per-conversation append field allows scoping to specific project/persona.
+At inference: `base_prompt + "\n\n" + session_append`.
+
+### Chat Flow
+1. User types message, presses Enter
+2. If no active conversation, auto-create one (title = first 50 chars of first prompt)
+3. Call `chat()` with override params (provider, model, temperature, top_p, max_tokens, system_prompt_append) — no temp DB setting changes
+4. Parse reasoning from response via `parse_reasoning()` (`<think>` block extraction)
+5. Collect tool names from "Using `tool`..." status messages
+6. Store triplet via `add_message()` (user_prompt, model_reasoning, model_response, tools_called)
+7. Update conversations list in left sidebar
+
+### "New Chat" Semantics
+Not "Clear Chat" — "New Chat" verifies current conversation is persisted, creates a new
+conversation record, clears the display, sets the new one as active. Never destructive.
+
+### Database Operations (db/chat_operations.py)
+- `create_conversation()`, `get_conversation()`, `list_conversations()`, `update_conversation()`, `delete_conversation()`, `search_conversations()` (FTS)
+- `add_message()`, `get_messages()`, `get_next_sequence()`
+- `parse_reasoning(raw_response)` → `tuple[str, str]` — extracts `<think>` blocks
+- Follows existing patterns: hex randomblob IDs, datetime('now'), FTS, CDC outbox triggers
+
+### Tool Routing (Future — Noted, Not Solved)
+Some tool calls route to Nemotron locally, others to Claude (via MCP), others to Gemini.
+Schema captures routing data (tools_called JSON, per-turn provider/model snapshots).
+Tool toggles in right sidebar control availability per-session. Full routing is its own phase.
+
+### Critical Implementation Notes
+- Relationships table CHECK constraint must be updated to allow 'conversation' and 'message'
+  entity types. SQLite has no ALTER CONSTRAINT — requires table recreation (create new,
+  copy data, drop old, rename).
+- Event listeners for render-created components MUST be inside the render function.
+- Import scoping: NEVER local imports inside render_left for names already imported at
+  module level (causes UnboundLocalError due to Python scoping).
 
 ## Future Architecture (not in scope, for context only)
 

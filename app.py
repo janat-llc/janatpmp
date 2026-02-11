@@ -19,6 +19,11 @@ from db.operations import (
     get_stats, get_schema_info,
     backup_database, reset_database, restore_database, list_backups,
 )
+from db.chat_operations import (
+    create_conversation, get_conversation, list_conversations,
+    update_conversation, delete_conversation, search_conversations,
+    add_message, get_messages,
+)
 from pages.projects import build_page
 
 # Initialize database and settings BEFORE building UI
@@ -53,6 +58,16 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.api(reset_database)
     gr.api(restore_database)
     gr.api(list_backups)
+
+    # Chat operations (Phase 4B)
+    gr.api(create_conversation)
+    gr.api(get_conversation)
+    gr.api(list_conversations)
+    gr.api(update_conversation)
+    gr.api(delete_conversation)
+    gr.api(search_conversations)
+    gr.api(add_message)
+    gr.api(get_messages)
 
 if __name__ == "__main__":
     demo.launch(

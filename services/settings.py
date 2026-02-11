@@ -7,7 +7,7 @@ DEFAULTS = {
     "chat_provider": ("anthropic", False),
     "chat_model": ("claude-sonnet-4-20250514", False),
     "chat_api_key": ("", True),       # is_secret=True → base64 encoded
-    "chat_base_url": ("http://localhost:11434/v1", False),
+    "chat_base_url": ("http://ollama:11434/v1", False),
     "chat_system_prompt": ("", False),  # Empty = use default from chat.py
     "claude_export_db_path": ("/data/claude_export/claude_export.db", False),
     "claude_export_json_dir": ("/data/claude_export", False),

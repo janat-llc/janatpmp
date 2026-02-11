@@ -207,13 +207,15 @@ PROVIDER_PRESETS = {
     "ollama": {
         "name": "Ollama (Local)",
         "models": [
-            "nemotron:latest",
-            "llama3.1:latest",
-            "qwen2.5:latest",
+            "nemotron-3-nano:latest",
+            "deepseek-r1:7b-qwen-distill-q4_K_M",
+            "deepseek-r1:latest",
+            "qwen3:4b-instruct-2507-q4_K_M",
+            "phi4-mini-reasoning:latest",
         ],
-        "default_model": "nemotron:latest",
+        "default_model": "nemotron-3-nano:latest",
         "needs_api_key": False,
-        "base_url": "http://localhost:11434/v1",
+        "base_url": "http://ollama:11434/v1",
     },
 }
 
@@ -278,7 +280,8 @@ def _execute_tool(tool_name: str, tool_input: dict) -> tuple[str, bool]:
 
 # --- Provider-Specific Chat Implementations ---
 
-def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt: str) -> list[dict]:
+def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt: str,
+                    temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 2048) -> list[dict]:
     """Run chat loop using Anthropic API with native tool use."""
     from anthropic import Anthropic
     client = Anthropic(api_key=api_key.strip())
@@ -295,10 +298,12 @@ def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt
     for _ in range(max_iterations):
         response = client.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=max_tokens,
             system=system_prompt,
             tools=_tools_anthropic(),
             messages=api_messages,
+            temperature=temperature,
+            top_p=top_p,
         )
 
         text_parts = []
@@ -332,7 +337,8 @@ def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt
     return history
 
 
-def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: str) -> list[dict]:
+def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: str,
+                 temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 2048) -> list[dict]:
     """Run chat loop using Google Gemini API with function calling."""
     from google import genai
     from google.genai import types
@@ -354,6 +360,9 @@ def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: s
         system_instruction=system_prompt,
         tools=tools,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        temperature=temperature,
+        top_p=top_p,
+        max_output_tokens=max_tokens,
     )
 
     max_iterations = 10
@@ -396,7 +405,8 @@ def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: s
     return history
 
 
-def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: str) -> list[dict]:
+def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: str,
+                 temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 2048) -> list[dict]:
     """Run chat loop using Ollama via OpenAI-compatible API.
     Tool use depends on model capability — gracefully falls back to no tools."""
     from openai import OpenAI
@@ -418,12 +428,18 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
                 model=model,
                 messages=messages,
                 tools=tools if tools else None,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
             )
         except Exception:
             # If tool use fails (model doesn't support it), retry without tools
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
             )
 
         choice = response.choices[0]
@@ -454,23 +470,34 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
 
 # --- Main Chat Entry Point ---
 
-def chat(message: str, history: list[dict]) -> list[dict]:
-    """Send a message using settings from the database.
+def chat(message: str, history: list[dict],
+         provider_override: str = "", model_override: str = "",
+         temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 2048,
+         system_prompt_append: str = "") -> list[dict]:
+    """Send a message using settings from the database (with optional overrides).
 
     Args:
         message: User's new message text.
         history: Current conversation history in gr.Chatbot format.
+        provider_override: Override provider (empty = use DB setting).
+        model_override: Override model (empty = use DB setting).
+        temperature: Sampling temperature.
+        top_p: Top-p nucleus sampling.
+        max_tokens: Maximum response tokens.
+        system_prompt_append: Per-conversation system prompt addition.
 
     Returns:
         Updated history with new user message and all assistant responses.
     """
     from services.settings import get_setting
 
-    provider = get_setting("chat_provider")
+    provider = provider_override or get_setting("chat_provider")
     api_key = get_setting("chat_api_key")
-    model = get_setting("chat_model")
+    model = model_override or get_setting("chat_model")
     base_url = get_setting("chat_base_url")
     system_prompt = _build_system_prompt()
+    if system_prompt_append and system_prompt_append.strip():
+        system_prompt += f"\n\n{system_prompt_append.strip()}"
 
     # Validate API key for providers that need it
     preset = PROVIDER_PRESETS.get(provider, {})
@@ -485,12 +512,12 @@ def chat(message: str, history: list[dict]) -> list[dict]:
 
     try:
         if provider == "anthropic":
-            return _chat_anthropic(api_key, model, history, system_prompt)
+            return _chat_anthropic(api_key, model, history, system_prompt, temperature, top_p, max_tokens)
         elif provider == "gemini":
-            return _chat_gemini(api_key, model, history, system_prompt)
+            return _chat_gemini(api_key, model, history, system_prompt, temperature, top_p, max_tokens)
         elif provider == "ollama":
-            url = base_url or preset.get("base_url", "http://localhost:11434/v1")
-            return _chat_ollama(url, model, history, system_prompt)
+            url = base_url or preset.get("base_url", "http://ollama:11434/v1")
+            return _chat_ollama(url, model, history, system_prompt, temperature, top_p, max_tokens)
         else:
             history.append({"role": "assistant", "content": f"Unknown provider: {provider}"})
             return history

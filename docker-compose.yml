@@ -1,6 +1,7 @@
 services:
-  janatpmp:
+  core:
     build: .
+    container_name: janatpmp-core
     ports:
       - "7860:7860"
     volumes:
@@ -9,4 +10,36 @@ services:
     environment:
       - GRADIO_SERVER_NAME=0.0.0.0
       - GRADIO_MCP_SERVER=True
+    depends_on:
+      - ollama
     restart: unless-stopped
+    networks:
+      - janatpmp_network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: janatpmp-ollama
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - OLLAMA_FLASH_ATTENTION=1
+    restart: unless-stopped
+    networks:
+      - janatpmp_network
+
+volumes:
+  ollama_data:
+    external: true
+
+networks:
+  janatpmp_network:
+    driver: bridge

@@ -1,4 +1,5 @@
 """Main page layout — contextual sidebar, center tabs, Claude chat."""
+import json
 import gradio as gr
 import pandas as pd
 from db.operations import (
@@ -16,7 +17,13 @@ from services.claude_export import (
     ingest_from_directory,
     is_configured as is_export_configured,
 )
-from services.settings import get_setting
+from services.settings import get_setting, set_setting
+from services.chat import PROVIDER_PRESETS
+from db.chat_operations import (
+    create_conversation, get_conversation, list_conversations,
+    update_conversation, add_message, get_messages,
+    parse_reasoning, search_conversations,
+)
 
 
 # --- Constants ---
@@ -171,15 +178,55 @@ def build_page():
     selected_doc_id = gr.State("")
     docs_state = gr.State(_load_documents())
     chat_history = gr.State(list(INITIAL_CHAT))
+    chat_tab_history = gr.State(list(INITIAL_CHAT))
+    active_conversation_id = gr.State("")
+    conversations_state = gr.State(list_conversations(limit=30))
+    chat_tab_provider_state = gr.State("ollama")
+    chat_tab_model_state = gr.State(PROVIDER_PRESETS.get("ollama", {}).get("default_model", "nemotron-3-nano:latest"))
+    chat_tab_temperature = gr.State(0.7)
+    chat_tab_top_p = gr.State(0.9)
+    chat_tab_max_tokens = gr.State(2048)
+    chat_tab_system_append = gr.State("")
 
-    # === RIGHT SIDEBAR (chat — always visible) ===
+    # === RIGHT SIDEBAR (conditional — Claude chat or Chat Settings) ===
     with gr.Sidebar(position="right"):
-        gr.Markdown("### Claude")
-        chatbot = gr.Chatbot(value=list(INITIAL_CHAT), height=500, label="Chat")
-        chat_input = gr.Textbox(
-            placeholder="Ask Claude anything...",
-            show_label=False, interactive=True, max_lines=3,
-        )
+        # Section A: Claude quick-chat (visible on all tabs except Chat)
+        with gr.Column() as right_chat_section:
+            gr.Markdown("### Claude")
+            chatbot = gr.Chatbot(value=list(INITIAL_CHAT), height=500, label="Chat")
+            chat_input = gr.Textbox(
+                placeholder="Ask Claude anything...",
+                show_label=False, interactive=True, max_lines=3,
+            )
+        # Section B: Chat Settings (visible only on Chat tab)
+        with gr.Column(visible=False) as right_settings_section:
+            gr.Markdown("### Chat Settings")
+            rs_provider = gr.Dropdown(
+                choices=["anthropic", "gemini", "ollama"],
+                value="ollama", label="Provider", interactive=True,
+            )
+            rs_model = gr.Dropdown(
+                choices=PROVIDER_PRESETS.get("ollama", {}).get("models", []),
+                value=PROVIDER_PRESETS.get("ollama", {}).get("default_model", ""),
+                label="Model", interactive=True, allow_custom_value=True,
+            )
+            rs_temperature = gr.Slider(
+                label="Temperature", minimum=0.0, maximum=2.0,
+                step=0.1, value=0.7, interactive=True,
+            )
+            rs_top_p = gr.Slider(
+                label="Top P", minimum=0.0, maximum=1.0,
+                step=0.05, value=0.9, interactive=True,
+            )
+            rs_max_tokens = gr.Slider(
+                label="Max Tokens", minimum=256, maximum=8192,
+                step=256, value=2048, interactive=True,
+            )
+            rs_system_append = gr.Textbox(
+                label="System Prompt (session)",
+                placeholder="Additional instructions for this conversation...",
+                lines=3, interactive=True,
+            )
 
     # === CENTER TABS (defined before left sidebar so render can reference them) ===
     with gr.Tabs():
@@ -497,13 +544,28 @@ def build_page():
                                 height=600,
                             )
 
+        # --- Chat tab ---
+        with gr.Tab("Chat") as chat_tab:
+            chat_tab_chatbot = gr.Chatbot(
+                value=list(INITIAL_CHAT),
+                height=600,
+                label="Chat",
+            )
+            chat_tab_input = gr.Textbox(
+                placeholder="Ask anything... (Enter to send, Shift+Enter for newline)",
+                show_label=False,
+                interactive=True,
+                max_lines=5,
+            )
+            chat_tab_status = gr.Markdown("*Ready*")
+
         # --- Admin tab ---
         admin_components = build_database_tab()
 
     # === LEFT SIDEBAR (contextual — defined after center so it can reference components) ===
     with gr.Sidebar():
-        @gr.render(inputs=[active_tab, projects_state, tasks_state, docs_state])
-        def render_left(tab, projects, tasks, docs):
+        @gr.render(inputs=[active_tab, projects_state, tasks_state, docs_state, conversations_state, active_conversation_id])
+        def render_left(tab, projects, tasks, docs, conversations, active_conv_id):
             if tab == "Projects":
                 gr.Markdown("### Projects")
                 with gr.Row():
@@ -659,10 +721,48 @@ def build_page():
                     api_visibility="private",
                 )
 
+            elif tab == "Chat":
+                gr.Markdown("### Conversations")
+                new_chat_btn = gr.Button("+ New Chat", variant="primary", size="sm", key="new-chat-btn")
+
+                if not conversations:
+                    gr.Markdown("*No conversations yet. Send a message to start.*")
+                else:
+                    for conv in conversations:
+                        title = (conv.get('title') or 'New Chat')[:40]
+                        date = (conv.get('updated_at') or '')[:10]
+                        is_active = conv['id'] == active_conv_id
+                        conv_btn = gr.Button(
+                            f"{title}\n{date}",
+                            key=f"conv-{conv['id'][:8]}",
+                            size="sm",
+                            variant="primary" if is_active else "secondary",
+                        )
+                        def on_conv_click(c_id=conv["id"]):
+                            msgs = get_messages(c_id)
+                            history = []
+                            for m in msgs:
+                                history.append({"role": "user", "content": m["user_prompt"]})
+                                resp = m.get("model_response", "")
+                                if resp:
+                                    history.append({"role": "assistant", "content": resp})
+                            return c_id, history or list(INITIAL_CHAT), history or list(INITIAL_CHAT)
+                        conv_btn.click(
+                            on_conv_click,
+                            outputs=[active_conversation_id, chat_tab_chatbot, chat_tab_history],
+                            api_visibility="private",
+                        )
+
+                def _new_chat():
+                    return "", list(INITIAL_CHAT), list(INITIAL_CHAT), list_conversations(limit=30)
+                new_chat_btn.click(
+                    _new_chat,
+                    outputs=[active_conversation_id, chat_tab_chatbot, chat_tab_history, conversations_state],
+                    api_visibility="private",
+                )
+
             elif tab == "Admin":
                 gr.Markdown("### Quick Settings")
-                from services.settings import get_setting, set_setting
-                from services.chat import PROVIDER_PRESETS
 
                 current_provider = get_setting("chat_provider")
                 current_model = get_setting("chat_model")
@@ -733,11 +833,47 @@ def build_page():
                 sidebar_api_key.change(_save_api_key, inputs=[sidebar_api_key], api_visibility="private")
                 sidebar_base_url.change(_save_base_url, inputs=[sidebar_base_url], api_visibility="private")
 
-    # === TAB TRACKING ===
-    projects_tab.select(lambda: "Projects", outputs=[active_tab], api_visibility="private")
-    work_tab.select(lambda: "Work", outputs=[active_tab], api_visibility="private")
-    knowledge_tab.select(lambda: "Knowledge", outputs=[active_tab], api_visibility="private")
-    admin_components['tab'].select(lambda: "Admin", outputs=[active_tab], api_visibility="private")
+    # === TAB TRACKING (with right sidebar visibility toggle) ===
+    _tab_outputs = [active_tab, right_chat_section, right_settings_section]
+    projects_tab.select(
+        lambda: ("Projects", gr.Column(visible=True), gr.Column(visible=False)),
+        outputs=_tab_outputs, api_visibility="private",
+    )
+    work_tab.select(
+        lambda: ("Work", gr.Column(visible=True), gr.Column(visible=False)),
+        outputs=_tab_outputs, api_visibility="private",
+    )
+    knowledge_tab.select(
+        lambda: ("Knowledge", gr.Column(visible=True), gr.Column(visible=False)),
+        outputs=_tab_outputs, api_visibility="private",
+    )
+    chat_tab.select(
+        lambda: ("Chat", gr.Column(visible=False), gr.Column(visible=True)),
+        outputs=_tab_outputs, api_visibility="private",
+    )
+    admin_components['tab'].select(
+        lambda: ("Admin", gr.Column(visible=True), gr.Column(visible=False)),
+        outputs=_tab_outputs, api_visibility="private",
+    )
+
+    # === RIGHT SIDEBAR SETTINGS WIRING ===
+    def _rs_sync_provider(provider):
+        preset = PROVIDER_PRESETS.get(provider, {})
+        models = preset.get("models", [])
+        default = preset.get("default_model", models[0] if models else "")
+        return gr.Dropdown(choices=models, value=default), provider, default
+
+    rs_provider.change(
+        _rs_sync_provider,
+        inputs=[rs_provider],
+        outputs=[rs_model, chat_tab_provider_state, chat_tab_model_state],
+        api_visibility="private",
+    )
+    rs_model.change(lambda m: m, inputs=[rs_model], outputs=[chat_tab_model_state], api_visibility="private")
+    rs_temperature.change(lambda v: v, inputs=[rs_temperature], outputs=[chat_tab_temperature], api_visibility="private")
+    rs_top_p.change(lambda v: v, inputs=[rs_top_p], outputs=[chat_tab_top_p], api_visibility="private")
+    rs_max_tokens.change(lambda v: int(v), inputs=[rs_max_tokens], outputs=[chat_tab_max_tokens], api_visibility="private")
+    rs_system_append.change(lambda v: v, inputs=[rs_system_append], outputs=[chat_tab_system_append], api_visibility="private")
 
     # === PROJECT EVENT WIRING ===
 
@@ -1174,4 +1310,89 @@ def build_page():
         api_visibility="private",
     )
 
+    # === CHAT TAB WIRING ===
+    # Provider/model/settings are in the right sidebar when on Chat tab.
+    # Sidebar components sync to chat_tab_*_state variables.
+    # Handler uses override params (no temp DB setting changes).
+
+    def _handle_chat_tab(message, history, conv_id, provider, model,
+                         temperature, top_p, max_tokens, system_append):
+        """Chat tab handler — persists conversations with triplet schema."""
+        if not message.strip():
+            return history, history, "", conv_id, gr.skip(), "*Ready*"
+
+        from services.chat import chat
+
+        # Auto-create conversation on first message
+        if not conv_id:
+            title = message.strip()[:50]
+            conv_id = create_conversation(
+                provider=provider, model=model,
+                system_prompt_append=system_append,
+                temperature=temperature, top_p=top_p,
+                max_tokens=int(max_tokens), title=title,
+            )
+
+        try:
+            updated = chat(
+                message, history,
+                provider_override=provider, model_override=model,
+                temperature=temperature, top_p=top_p,
+                max_tokens=int(max_tokens), system_prompt_append=system_append,
+            )
+
+            # Extract final model response (skip tool-use status messages)
+            raw_response = ""
+            for msg in reversed(updated):
+                if msg.get("role") == "assistant" and not msg.get("content", "").startswith("Using `"):
+                    raw_response = msg.get("content", "")
+                    break
+
+            reasoning, clean_response = parse_reasoning(raw_response)
+
+            # Collect tool names used in this turn
+            tools_used = []
+            for msg in updated[len(history):]:
+                content = msg.get("content", "")
+                if msg.get("role") == "assistant" and content.startswith("Using `") and "`" in content[6:]:
+                    tool_name = content.split("`")[1]
+                    if tool_name:
+                        tools_used.append(tool_name)
+
+            add_message(
+                conversation_id=conv_id,
+                user_prompt=message,
+                model_reasoning=reasoning,
+                model_response=clean_response or raw_response,
+                provider=provider, model=model,
+                tools_called=json.dumps(tools_used),
+            )
+
+            convs = list_conversations(limit=30)
+            status = f"*{provider} / {model}*"
+            return updated, updated, "", conv_id, convs, status
+        except Exception as e:
+            error_history = history + [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": f"Error: {str(e)}"},
+            ]
+            return error_history, error_history, "", conv_id, gr.skip(), f"*Error: {str(e)[:80]}*"
+
+    _chat_tab_inputs = [
+        chat_tab_input, chat_tab_history, active_conversation_id,
+        chat_tab_provider_state, chat_tab_model_state,
+        chat_tab_temperature, chat_tab_top_p, chat_tab_max_tokens,
+        chat_tab_system_append,
+    ]
+    _chat_tab_outputs = [
+        chat_tab_chatbot, chat_tab_history, chat_tab_input,
+        active_conversation_id, conversations_state, chat_tab_status,
+    ]
+
+    chat_tab_input.submit(
+        _handle_chat_tab,
+        inputs=_chat_tab_inputs,
+        outputs=_chat_tab_outputs,
+        api_visibility="private",
+    )
 

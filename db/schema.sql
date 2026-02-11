@@ -351,10 +351,10 @@ CREATE TABLE relationships (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     
     -- Source and target (generic references)
-    source_type TEXT NOT NULL CHECK (source_type IN ('item', 'task', 'document')),
+    source_type TEXT NOT NULL CHECK (source_type IN ('item', 'task', 'document', 'conversation', 'message')),
     source_id TEXT NOT NULL,
-    
-    target_type TEXT NOT NULL CHECK (target_type IN ('item', 'task', 'document')),
+
+    target_type TEXT NOT NULL CHECK (target_type IN ('item', 'task', 'document', 'conversation', 'message')),
     target_id TEXT NOT NULL,
     
     -- Relationship semantics
@@ -389,6 +389,87 @@ CREATE INDEX idx_relationships_target ON relationships(target_type, target_id);
 CREATE INDEX idx_relationships_type ON relationships(relationship_type);
 
 -- ============================================================================
+-- CONVERSATIONS: Chat sessions with context
+-- ============================================================================
+
+CREATE TABLE conversations (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    title TEXT NOT NULL DEFAULT 'New Chat',
+    source TEXT NOT NULL DEFAULT 'platform' CHECK (source IN (
+        'platform', 'claude_export', 'imported'
+    )),
+    provider TEXT NOT NULL DEFAULT 'ollama',
+    model TEXT NOT NULL DEFAULT 'nemotron-3-nano:latest',
+    system_prompt_append TEXT DEFAULT '',
+    temperature REAL DEFAULT 0.7,
+    top_p REAL DEFAULT 0.9,
+    max_tokens INTEGER DEFAULT 2048,
+    is_active INTEGER DEFAULT 1,
+    message_count INTEGER DEFAULT 0,
+    conversation_uri TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_conversations_active ON conversations(is_active, updated_at DESC);
+CREATE INDEX idx_conversations_source ON conversations(source, updated_at DESC);
+CREATE INDEX idx_conversations_provider ON conversations(provider);
+
+CREATE TRIGGER conversations_updated_at AFTER UPDATE ON conversations
+BEGIN
+    UPDATE conversations SET updated_at = datetime('now') WHERE id = NEW.id;
+END;
+
+-- ============================================================================
+-- MESSAGES: Triplet storage (prompt + reasoning + response)
+-- ============================================================================
+
+CREATE TABLE messages (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    user_prompt TEXT NOT NULL,
+    model_reasoning TEXT DEFAULT '',
+    model_response TEXT NOT NULL DEFAULT '',
+    provider TEXT,
+    model TEXT,
+    tokens_prompt INTEGER DEFAULT 0,
+    tokens_reasoning INTEGER DEFAULT 0,
+    tokens_response INTEGER DEFAULT 0,
+    tools_called JSON DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_messages_conversation ON messages(conversation_id, sequence);
+CREATE INDEX idx_messages_created ON messages(created_at DESC);
+
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+    id UNINDEXED,
+    conversation_id UNINDEXED,
+    user_prompt,
+    model_response,
+    tokenize = 'porter unicode61'
+);
+
+CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages
+BEGIN
+    INSERT INTO messages_fts(id, conversation_id, user_prompt, model_response)
+    VALUES (NEW.id, NEW.conversation_id, NEW.user_prompt, NEW.model_response);
+END;
+
+CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages
+BEGIN
+    DELETE FROM messages_fts WHERE id = OLD.id;
+END;
+
+CREATE TRIGGER messages_count_insert AFTER INSERT ON messages
+BEGIN
+    UPDATE conversations
+    SET message_count = message_count + 1, updated_at = datetime('now')
+    WHERE id = NEW.conversation_id;
+END;
+
+-- ============================================================================
 -- CDC OUTBOX: Change Data Capture for eventual consistency
 -- Enables sync to Qdrant (vector) and Neo4j (graph) when needed
 -- ============================================================================
@@ -398,7 +479,7 @@ CREATE TABLE cdc_outbox (
     
     -- What changed
     operation TEXT NOT NULL CHECK (operation IN ('INSERT', 'UPDATE', 'DELETE')),
-    entity_type TEXT NOT NULL CHECK (entity_type IN ('item', 'task', 'document', 'relationship')),
+    entity_type TEXT NOT NULL CHECK (entity_type IN ('item', 'task', 'document', 'relationship', 'conversation', 'message')),
     entity_id TEXT NOT NULL,
     
     -- Change payload (JSON snapshot of the entity)
@@ -543,6 +624,25 @@ CREATE TRIGGER cdc_relationships_delete AFTER DELETE ON relationships
 BEGIN
     INSERT INTO cdc_outbox (operation, entity_type, entity_id, payload)
     VALUES ('DELETE', 'relationship', OLD.id, json_object('id', OLD.id));
+END;
+
+-- Conversations CDC
+CREATE TRIGGER cdc_conversations_insert AFTER INSERT ON conversations
+BEGIN
+    INSERT INTO cdc_outbox (operation, entity_type, entity_id, payload)
+    VALUES ('INSERT', 'conversation', NEW.id, json_object(
+        'id', NEW.id, 'title', NEW.title, 'provider', NEW.provider, 'model', NEW.model
+    ));
+END;
+
+-- Messages CDC
+CREATE TRIGGER cdc_messages_insert AFTER INSERT ON messages
+BEGIN
+    INSERT INTO cdc_outbox (operation, entity_type, entity_id, payload)
+    VALUES ('INSERT', 'message', NEW.id, json_object(
+        'id', NEW.id, 'conversation_id', NEW.conversation_id,
+        'user_prompt', NEW.user_prompt, 'model_response', NEW.model_response
+    ));
 END;
 
 -- ============================================================================
