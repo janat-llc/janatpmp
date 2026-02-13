@@ -208,7 +208,7 @@ def build_page():
     chat_tab_model_state = gr.State(PROVIDER_PRESETS.get("ollama", {}).get("default_model", "nemotron-3-nano:latest"))
     chat_tab_temperature = gr.State(0.7)
     chat_tab_top_p = gr.State(0.9)
-    chat_tab_max_tokens = gr.State(2048)
+    chat_tab_max_tokens = gr.State(8192)
     chat_tab_system_append = gr.State("")
 
     # === RIGHT SIDEBAR (conditional — Janat chat or Chat Settings) ===
@@ -218,7 +218,7 @@ def build_page():
             gr.Markdown("### Janat")
             chatbot = gr.Chatbot(
                 value=list(_initial_chat_history), height=500,
-                show_label=False, show_share_button=False, show_copy_all_button=False,
+                show_label=False, buttons=[],
             )
             chat_input = gr.Textbox(
                 placeholder="What should We do?",
@@ -245,8 +245,8 @@ def build_page():
                 step=0.05, value=0.9, interactive=True,
             )
             rs_max_tokens = gr.Slider(
-                label="Max Tokens", minimum=256, maximum=8192,
-                step=256, value=2048, interactive=True,
+                label="Max Tokens", minimum=256, maximum=16384,
+                step=256, value=8192, interactive=True,
             )
             rs_system_append = gr.Textbox(
                 label="System Prompt (session)",

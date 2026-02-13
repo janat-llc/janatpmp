@@ -505,7 +505,7 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
 
 def chat(message: str, history: list[dict],
          provider_override: str = "", model_override: str = "",
-         temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 2048,
+         temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 8192,
          system_prompt_append: str = "") -> list[dict]:
     """Send a message using settings from the database (with optional overrides).
 
