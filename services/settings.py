@@ -11,6 +11,9 @@ DEFAULTS = {
     "chat_system_prompt": ("", False),  # Empty = use default from chat.py
     "claude_export_db_path": ("/data/claude_export/claude_export.db", False),
     "claude_export_json_dir": ("/data/claude_export", False),
+    "ingestion_google_ai_dir": ("", False),
+    "ingestion_markdown_dir": ("", False),
+    "ingestion_quest_dir": ("", False),
 }
 
 

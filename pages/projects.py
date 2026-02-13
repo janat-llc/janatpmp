@@ -163,6 +163,24 @@ def _all_docs_df() -> pd.DataFrame:
     } for d in docs])
 
 
+def _load_most_recent_chat() -> tuple[str, list[dict]]:
+    """Load most recent conversation for Chat tab initialization."""
+    convs = list_conversations(limit=1)
+    if not convs:
+        return "", list(INITIAL_CHAT)
+    conv_id = convs[0]["id"]
+    msgs = get_messages(conv_id)
+    if not msgs:
+        return conv_id, list(INITIAL_CHAT)
+    history = []
+    for m in msgs:
+        history.append({"role": "user", "content": m["user_prompt"]})
+        resp = m.get("model_response", "")
+        if resp:
+            history.append({"role": "assistant", "content": resp})
+    return conv_id, history if history else list(INITIAL_CHAT)
+
+
 # --- Page builder ---
 
 def build_page():
@@ -180,8 +198,9 @@ def build_page():
     selected_doc_id = gr.State("")
     docs_state = gr.State(_load_documents())
     chat_history = gr.State(list(INITIAL_CHAT))
-    chat_tab_history = gr.State(list(INITIAL_CHAT))
-    active_conversation_id = gr.State("")
+    _initial_conv_id, _initial_chat_history = _load_most_recent_chat()
+    chat_tab_history = gr.State(_initial_chat_history)
+    active_conversation_id = gr.State(_initial_conv_id)
     conversations_state = gr.State(list_conversations(limit=30))
     conv_search_query = gr.State("")
     selected_knowledge_conv_id = gr.State("")
@@ -582,7 +601,7 @@ def build_page():
         # --- Chat tab ---
         with gr.Tab("Chat", id="chat") as chat_tab:
             chat_tab_chatbot = gr.Chatbot(
-                value=list(INITIAL_CHAT),
+                value=_initial_chat_history,
                 height=600,
                 label="Chat",
             )

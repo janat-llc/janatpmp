@@ -18,3 +18,4 @@ from .google_ai_studio import parse_google_ai_studio_file, parse_google_ai_studi
 from .quest_parser import parse_quest_file, parse_quest_directory
 from .markdown_ingest import ingest_markdown, ingest_text, ingest_directory
 from .dedup import compute_content_hash, find_exact_duplicates
+from .orchestrator import ingest_google_ai_conversations, ingest_markdown_documents, ingest_quest_documents
