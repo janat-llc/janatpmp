@@ -8,6 +8,7 @@ from db.operations import (
     list_documents, get_document, create_document,
     search_items, search_documents,
     create_relationship, get_relationships,
+    get_stats,
 )
 from tabs.tab_database import build_database_tab
 from services.claude_export import (
@@ -21,9 +22,10 @@ from services.settings import get_setting, set_setting
 from services.chat import PROVIDER_PRESETS
 from db.chat_operations import (
     create_conversation, get_conversation, list_conversations,
-    update_conversation, add_message, get_messages,
+    update_conversation, delete_conversation, add_message, get_messages,
     parse_reasoning, search_conversations,
 )
+from services.claude_import import import_conversations_json
 
 
 # --- Constants ---
@@ -181,6 +183,8 @@ def build_page():
     chat_tab_history = gr.State(list(INITIAL_CHAT))
     active_conversation_id = gr.State("")
     conversations_state = gr.State(list_conversations(limit=30))
+    conv_search_query = gr.State("")
+    selected_knowledge_conv_id = gr.State("")
     chat_tab_provider_state = gr.State("ollama")
     chat_tab_model_state = gr.State(PROVIDER_PRESETS.get("ollama", {}).get("default_model", "nemotron-3-nano:latest"))
     chat_tab_temperature = gr.State(0.7)
@@ -229,7 +233,7 @@ def build_page():
             )
 
     # === CENTER TABS (defined before left sidebar so render can reference them) ===
-    with gr.Tabs():
+    with gr.Tabs() as main_tabs:
         # --- Projects tab ---
         with gr.Tab("Projects") as projects_tab:
             with gr.Tabs():
@@ -516,7 +520,7 @@ def build_page():
                             # Stats
                             conv_stats_md = gr.Markdown("*Loading stats...*")
 
-                            # Ingest controls
+                            # Ingest controls (legacy claude_export.db)
                             with gr.Accordion("Import / Refresh", open=False):
                                 gr.Markdown(
                                     "Import conversations from your Claude export JSON files. "
@@ -529,13 +533,44 @@ def build_page():
                                     show_label=False, interactive=False
                                 )
 
-                            # Conversation list
+                            # Import conversations.json into JANATPMP triplet schema
+                            with gr.Accordion("Import conversations.json", open=False):
+                                gr.Markdown(
+                                    "Upload a Claude export `conversations.json` to import "
+                                    "into JANATPMP's conversations + messages tables. "
+                                    "Existing conversations (by UUID) are skipped."
+                                )
+                                conv_json_upload = gr.File(
+                                    label="conversations.json",
+                                    file_types=[".json"],
+                                )
+                                conv_import_btn = gr.Button(
+                                    "Import to JANATPMP", variant="primary"
+                                )
+                                conv_import_status = gr.Textbox(
+                                    show_label=False, interactive=False
+                                )
+
+                            # Conversation list (JANATPMP data)
                             gr.Markdown("### Conversations")
                             conv_list = gr.DataFrame(
-                                headers=["Name", "Date", "UUID"],
-                                datatype=["str", "str", "str"],
+                                headers=["Title", "Source", "Msgs", "Updated", "ID"],
+                                datatype=["str", "str", "number", "str", "str"],
                                 interactive=False,
                                 wrap=True,
+                            )
+                            with gr.Row():
+                                conv_open_chat_btn = gr.Button(
+                                    "Open in Chat", variant="primary", size="sm"
+                                )
+                                conv_delete_btn = gr.Button(
+                                    "Delete Selected", variant="stop", size="sm"
+                                )
+                                conv_refresh_list_btn = gr.Button(
+                                    "Refresh", variant="secondary", size="sm"
+                                )
+                            conv_action_status = gr.Textbox(
+                                show_label=False, interactive=False
                             )
 
                         with gr.Column(scale=2):
@@ -545,7 +580,7 @@ def build_page():
                             )
 
         # --- Chat tab ---
-        with gr.Tab("Chat") as chat_tab:
+        with gr.Tab("Chat", id="chat") as chat_tab:
             chat_tab_chatbot = gr.Chatbot(
                 value=list(INITIAL_CHAT),
                 height=600,
@@ -564,11 +599,11 @@ def build_page():
 
     # === LEFT SIDEBAR (contextual — defined after center so it can reference components) ===
     with gr.Sidebar():
-        @gr.render(inputs=[active_tab, projects_state, tasks_state, docs_state, conversations_state, active_conversation_id])
-        def render_left(tab, projects, tasks, docs, conversations, active_conv_id):
+        @gr.render(inputs=[active_tab, projects_state, tasks_state, docs_state, conversations_state, active_conversation_id, conv_search_query])
+        def render_left(tab, projects, tasks, docs, conversations, active_conv_id, search_q):
             if tab == "Projects":
                 gr.Markdown("### Projects")
-                with gr.Row():
+                with gr.Row(key="proj-filter-row"):
                     domain_filter = gr.Dropdown(
                         label="Domain", choices=DOMAINS, value="",
                         key="domain-filter", scale=1, min_width=100,
@@ -590,26 +625,27 @@ def build_page():
                         )
                         def on_card_click(p_id=p["id"]):
                             return p_id
-                        btn.click(on_card_click, outputs=[selected_project_id], api_visibility="private")
+                        btn.click(on_card_click, outputs=[selected_project_id], api_visibility="private", key=f"proj-click-{p['id'][:8]}")
 
                 new_item_btn = gr.Button("+ New Item", variant="primary", key="new-item-btn")
 
                 # Wiring (inside render — components created here)
                 def _refresh_projects(domain, status):
                     return _load_projects(domain, status)
-                domain_filter.change(_refresh_projects, inputs=[domain_filter, status_filter], outputs=[projects_state], api_visibility="private")
-                status_filter.change(_refresh_projects, inputs=[domain_filter, status_filter], outputs=[projects_state], api_visibility="private")
-                refresh_btn.click(_refresh_projects, inputs=[domain_filter, status_filter], outputs=[projects_state], api_visibility="private")
+                domain_filter.change(_refresh_projects, inputs=[domain_filter, status_filter], outputs=[projects_state], api_visibility="private", key="domain-filter-change")
+                status_filter.change(_refresh_projects, inputs=[domain_filter, status_filter], outputs=[projects_state], api_visibility="private", key="status-filter-change")
+                refresh_btn.click(_refresh_projects, inputs=[domain_filter, status_filter], outputs=[projects_state], api_visibility="private", key="proj-refresh-click")
 
                 new_item_btn.click(
                     lambda: ("## New Item", gr.Column(visible=False), gr.Column(visible=True)),
                     outputs=[detail_header, detail_section, create_section],
                     api_visibility="private",
+                    key="new-item-click",
                 )
 
             elif tab == "Work":
                 gr.Markdown("### Work Queue")
-                with gr.Row():
+                with gr.Row(key="work-filter-row"):
                     work_status_filter = gr.Dropdown(
                         label="Status", choices=[""] + TASK_STATUSES, value="",
                         key="work-status-filter", scale=1, min_width=100,
@@ -631,26 +667,27 @@ def build_page():
                         )
                         def on_task_click(t_id=t["id"]):
                             return t_id
-                        btn.click(on_task_click, outputs=[selected_task_id], api_visibility="private")
+                        btn.click(on_task_click, outputs=[selected_task_id], api_visibility="private", key=f"task-click-{t['id'][:8]}")
 
                 new_task_btn = gr.Button("+ New Task", variant="primary", key="new-task-btn")
 
                 # Wiring
                 def _refresh_tasks(status, assigned):
                     return _load_tasks(status, assigned)
-                work_status_filter.change(_refresh_tasks, inputs=[work_status_filter, work_assignee_filter], outputs=[tasks_state], api_visibility="private")
-                work_assignee_filter.change(_refresh_tasks, inputs=[work_status_filter, work_assignee_filter], outputs=[tasks_state], api_visibility="private")
-                work_refresh_btn.click(_refresh_tasks, inputs=[work_status_filter, work_assignee_filter], outputs=[tasks_state], api_visibility="private")
+                work_status_filter.change(_refresh_tasks, inputs=[work_status_filter, work_assignee_filter], outputs=[tasks_state], api_visibility="private", key="work-status-change")
+                work_assignee_filter.change(_refresh_tasks, inputs=[work_status_filter, work_assignee_filter], outputs=[tasks_state], api_visibility="private", key="work-assignee-change")
+                work_refresh_btn.click(_refresh_tasks, inputs=[work_status_filter, work_assignee_filter], outputs=[tasks_state], api_visibility="private", key="work-refresh-click")
 
                 new_task_btn.click(
                     lambda: ("## New Task", gr.Column(visible=False), gr.Column(visible=True)),
                     outputs=[work_header, work_detail_section, work_create_section],
                     api_visibility="private",
+                    key="new-task-click",
                 )
 
             elif tab == "Knowledge":
                 gr.Markdown("### Documents")
-                with gr.Row():
+                with gr.Row(key="doc-filter-row"):
                     doc_type_filter = gr.Dropdown(
                         label="Type", choices=[""] + DOC_TYPES, value="",
                         key="doc-type-filter", scale=1, min_width=100,
@@ -676,7 +713,8 @@ def build_page():
                             return d_id
                         btn.click(
                             on_doc_click, outputs=[selected_doc_id],
-                            api_visibility="private"
+                            api_visibility="private",
+                            key=f"doc-click-{d['id'][:8]}",
                         )
 
                 new_doc_btn = gr.Button(
@@ -689,17 +727,20 @@ def build_page():
                 doc_type_filter.change(
                     _refresh_docs,
                     inputs=[doc_type_filter, doc_source_filter],
-                    outputs=[docs_state], api_visibility="private"
+                    outputs=[docs_state], api_visibility="private",
+                    key="doc-type-change",
                 )
                 doc_source_filter.change(
                     _refresh_docs,
                     inputs=[doc_type_filter, doc_source_filter],
-                    outputs=[docs_state], api_visibility="private"
+                    outputs=[docs_state], api_visibility="private",
+                    key="doc-source-change",
                 )
                 docs_sidebar_refresh.click(
                     _refresh_docs,
                     inputs=[doc_type_filter, doc_source_filter],
-                    outputs=[docs_state], api_visibility="private"
+                    outputs=[docs_state], api_visibility="private",
+                    key="docs-refresh-click",
                 )
 
                 new_doc_btn.click(
@@ -719,25 +760,39 @@ def build_page():
                         new_doc_type, new_doc_source,
                     ],
                     api_visibility="private",
+                    key="new-doc-click",
                 )
 
             elif tab == "Chat":
                 gr.Markdown("### Conversations")
+                conv_search_input = gr.Textbox(
+                    placeholder="Search by title... (Enter)",
+                    show_label=False, key="conv-search",
+                    value=search_q, max_lines=1,
+                )
                 new_chat_btn = gr.Button("+ New Chat", variant="primary", size="sm", key="new-chat-btn")
 
                 if not conversations:
-                    gr.Markdown("*No conversations yet. Send a message to start.*")
+                    gr.Markdown("*No conversations found.*")
                 else:
                     for conv in conversations:
                         title = (conv.get('title') or 'New Chat')[:40]
                         date = (conv.get('updated_at') or '')[:10]
                         is_active = conv['id'] == active_conv_id
-                        conv_btn = gr.Button(
-                            f"{title}\n{date}",
-                            key=f"conv-{conv['id'][:8]}",
-                            size="sm",
-                            variant="primary" if is_active else "secondary",
-                        )
+                        with gr.Row(key=f"convrow-{conv['id'][:8]}"):
+                            conv_btn = gr.Button(
+                                f"{title}\n{date}",
+                                key=f"conv-{conv['id'][:8]}",
+                                size="sm",
+                                variant="primary" if is_active else "secondary",
+                                scale=4,
+                            )
+                            del_btn = gr.Button(
+                                "X", key=f"del-{conv['id'][:8]}",
+                                size="sm", variant="stop", scale=0, min_width=32,
+                            )
+
+                        # Click to load conversation
                         def on_conv_click(c_id=conv["id"]):
                             msgs = get_messages(c_id)
                             history = []
@@ -751,14 +806,69 @@ def build_page():
                             on_conv_click,
                             outputs=[active_conversation_id, chat_tab_chatbot, chat_tab_history],
                             api_visibility="private",
+                            key=f"conv-click-{conv['id'][:8]}",
                         )
 
+                        # Delete handler
+                        def on_delete(c_id=conv["id"], was_active=(conv['id'] == active_conv_id)):
+                            delete_conversation(c_id)
+                            new_convs = list_conversations(limit=30)
+                            if was_active:
+                                return new_convs, "", list(INITIAL_CHAT), list(INITIAL_CHAT)
+                            return new_convs, gr.skip(), gr.skip(), gr.skip()
+                        del_btn.click(
+                            on_delete,
+                            outputs=[conversations_state, active_conversation_id, chat_tab_chatbot, chat_tab_history],
+                            api_visibility="private",
+                            key=f"del-click-{conv['id'][:8]}",
+                        )
+
+                        # Rename (only for active conversation)
+                        if is_active:
+                            with gr.Row(key=f"rename-{conv['id'][:8]}"):
+                                rename_input = gr.Textbox(
+                                    value=conv.get('title') or '',
+                                    show_label=False, key=f"ren-inp-{conv['id'][:8]}",
+                                    scale=3, max_lines=1,
+                                )
+                                rename_btn = gr.Button(
+                                    "Save", key=f"ren-btn-{conv['id'][:8]}",
+                                    size="sm", variant="secondary", scale=1,
+                                )
+
+                            def on_rename(new_title, c_id=conv["id"]):
+                                if new_title.strip():
+                                    update_conversation(c_id, title=new_title.strip())
+                                return list_conversations(limit=30)
+                            rename_btn.click(
+                                on_rename,
+                                inputs=[rename_input],
+                                outputs=[conversations_state],
+                                api_visibility="private",
+                                key=f"ren-click-{conv['id'][:8]}",
+                            )
+
+                # Search handler
+                def _search_convs(query):
+                    if query and query.strip():
+                        return list_conversations(limit=100, title_filter=query.strip()), query
+                    return list_conversations(limit=30), ""
+                conv_search_input.submit(
+                    _search_convs,
+                    inputs=[conv_search_input],
+                    outputs=[conversations_state, conv_search_query],
+                    api_visibility="private",
+                    key="conv-search-submit",
+                )
+
+                # New chat handler
                 def _new_chat():
                     return "", list(INITIAL_CHAT), list(INITIAL_CHAT), list_conversations(limit=30)
                 new_chat_btn.click(
                     _new_chat,
                     outputs=[active_conversation_id, chat_tab_chatbot, chat_tab_history, conversations_state],
                     api_visibility="private",
+                    key="new-chat-click",
                 )
 
             elif tab == "Admin":
@@ -828,10 +938,11 @@ def build_page():
                     inputs=[sidebar_provider],
                     outputs=[sidebar_model, sidebar_api_key, sidebar_base_url],
                     api_visibility="private",
+                    key="admin-provider-change",
                 )
-                sidebar_model.change(_save_model, inputs=[sidebar_model], api_visibility="private")
-                sidebar_api_key.change(_save_api_key, inputs=[sidebar_api_key], api_visibility="private")
-                sidebar_base_url.change(_save_base_url, inputs=[sidebar_base_url], api_visibility="private")
+                sidebar_model.change(_save_model, inputs=[sidebar_model], api_visibility="private", key="admin-model-change")
+                sidebar_api_key.change(_save_api_key, inputs=[sidebar_api_key], api_visibility="private", key="admin-apikey-change")
+                sidebar_base_url.change(_save_base_url, inputs=[sidebar_base_url], api_visibility="private", key="admin-baseurl-change")
 
     # === TAB TRACKING (with right sidebar visibility toggle) ===
     _tab_outputs = [active_tab, right_chat_section, right_settings_section]
@@ -1245,25 +1356,37 @@ def build_page():
     # --- Conversations sub-tab wiring ---
 
     def _load_conv_stats():
-        if not is_export_configured():
-            return "*Not configured*"
-        stats = get_export_stats()
+        stats = get_stats()
+        convs = stats.get("conversations", 0)
+        msgs = stats.get("messages", 0)
         return (
-            f"**{stats['conversations']:,}** conversations · "
-            f"**{stats['messages']:,}** messages · "
-            f"~**{stats['est_tokens']:,}** tokens"
+            f"**{convs:,}** conversations · "
+            f"**{msgs:,}** messages"
         )
 
     def _load_conv_list():
-        convs = get_export_conversations()
-        return [[c.get("name", ""), c.get("created_at", "")[:16], c.get("uuid", "")] for c in convs]
+        convs = list_conversations(limit=500, active_only=False)
+        return [[
+            c.get("title", ""),
+            _fmt(c.get("source", "")),
+            c.get("message_count", 0),
+            (c.get("updated_at") or "")[:16],
+            c["id"],
+        ] for c in convs]
 
     def _load_selected_conversation(evt: gr.SelectData, df):
         if evt.index:
             row = evt.index[0]
-            uuid = df.iloc[row, 2]  # 3rd column is UUID
-            return get_conversation_messages(uuid)
-        return []
+            conv_id = df.iloc[row, 4]  # ID column
+            msgs = get_messages(conv_id)
+            history = []
+            for m in msgs:
+                history.append({"role": "user", "content": m["user_prompt"]})
+                resp = m.get("model_response", "")
+                if resp:
+                    history.append({"role": "assistant", "content": resp})
+            return history, conv_id
+        return [], ""
 
     def _run_ingest():
         json_dir = get_setting("claude_export_json_dir")
@@ -1279,19 +1402,105 @@ def build_page():
         _load_conv_list, outputs=[conv_list], api_visibility="private"
     )
 
-    # Conversation selection -> load into chatbot viewer
+    # Conversation selection -> preview in viewer + store ID
     conv_list.select(
         _load_selected_conversation, inputs=[conv_list],
-        outputs=[conv_viewer], api_visibility="private"
+        outputs=[conv_viewer, selected_knowledge_conv_id], api_visibility="private"
+    )
+
+    # Open in Chat button
+    def _open_in_chat(conv_id):
+        if not conv_id:
+            return gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), "No conversation selected."
+        msgs = get_messages(conv_id)
+        history = []
+        for m in msgs:
+            history.append({"role": "user", "content": m["user_prompt"]})
+            resp = m.get("model_response", "")
+            if resp:
+                history.append({"role": "assistant", "content": resp})
+        history = history or list(INITIAL_CHAT)
+        convs = list_conversations(limit=30)
+        return (
+            conv_id,                       # active_conversation_id
+            history,                       # chat_tab_chatbot
+            history,                       # chat_tab_history
+            convs,                         # conversations_state
+            "Chat",                        # active_tab
+            gr.Tabs(selected="chat"),      # main_tabs
+            "",                            # conv_action_status
+        )
+
+    conv_open_chat_btn.click(
+        _open_in_chat,
+        inputs=[selected_knowledge_conv_id],
+        outputs=[
+            active_conversation_id, chat_tab_chatbot, chat_tab_history,
+            conversations_state, active_tab, main_tabs, conv_action_status,
+        ],
+        api_visibility="private",
+    )
+
+    # Delete selected conversation from Knowledge tab
+    def _delete_knowledge_conv(conv_id):
+        if not conv_id:
+            return "No conversation selected.", gr.skip()
+        delete_conversation(conv_id)
+        convs = list_conversations(limit=30)
+        return f"Deleted conversation.", convs
+
+    conv_delete_btn.click(
+        _delete_knowledge_conv,
+        inputs=[selected_knowledge_conv_id],
+        outputs=[conv_action_status, conversations_state],
+        api_visibility="private",
+    ).then(
+        _load_conv_list, outputs=[conv_list], api_visibility="private"
+    ).then(
+        _load_conv_stats, outputs=[conv_stats_md], api_visibility="private"
+    )
+
+    # Refresh list button
+    conv_refresh_list_btn.click(
+        _load_conv_list, outputs=[conv_list], api_visibility="private"
+    ).then(
+        _load_conv_stats, outputs=[conv_stats_md], api_visibility="private"
     )
 
     # Ingest button
     conv_ingest_btn.click(
         _run_ingest, outputs=[conv_ingest_status], api_visibility="private"
     ).then(
-        _load_conv_stats, outputs=[conv_stats_md]
+        _load_conv_stats, outputs=[conv_stats_md], api_visibility="private"
     ).then(
-        _load_conv_list, outputs=[conv_list]
+        _load_conv_list, outputs=[conv_list], api_visibility="private"
+    )
+
+    # Import conversations.json button
+    def _run_import(file):
+        if file is None:
+            return "No file selected.", gr.skip()
+        result = import_conversations_json(file.name)
+        errors = result["errors"]
+        msg = (
+            f"{result['imported']} conversations imported, "
+            f"{result['skipped']} skipped, "
+            f"{result['total_messages']} messages"
+        )
+        if errors:
+            msg += f"\n{len(errors)} errors: {errors[0]}"
+        convs = list_conversations(limit=30)
+        return msg, convs
+
+    conv_import_btn.click(
+        _run_import,
+        inputs=[conv_json_upload],
+        outputs=[conv_import_status, conversations_state],
+        api_visibility="private",
+    ).then(
+        _load_conv_stats, outputs=[conv_stats_md], api_visibility="private"
+    ).then(
+        _load_conv_list, outputs=[conv_list], api_visibility="private"
     )
 
     # === CHAT WIRING ===

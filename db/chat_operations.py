@@ -105,12 +105,29 @@ def get_conversation(conversation_id: str) -> dict:
         return dict(row) if row else {}
 
 
-def list_conversations(limit: int = 50, active_only: bool = True) -> list:
+def get_conversation_by_uri(conversation_uri: str) -> dict:
+    """Get a conversation by its external URI (e.g. Claude Export UUID).
+
+    Args:
+        conversation_uri: The external conversation URI to look up
+
+    Returns:
+        Dict with conversation data or empty dict if not found
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM conversations WHERE conversation_uri = ?", (conversation_uri,))
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+
+
+def list_conversations(limit: int = 50, active_only: bool = True, title_filter: str = "") -> list:
     """List conversations ordered by most recent activity.
 
     Args:
         limit: Maximum number of conversations to return
         active_only: If true, only return active (non-archived) conversations
+        title_filter: Filter by title substring (case-insensitive). Empty = no filter.
 
     Returns:
         List of conversation dicts
@@ -118,9 +135,15 @@ def list_conversations(limit: int = 50, active_only: bool = True) -> list:
     with get_connection() as conn:
         cursor = conn.cursor()
         query = "SELECT * FROM conversations"
+        conditions = []
         params = []
         if active_only:
-            query += " WHERE is_active = 1"
+            conditions.append("is_active = 1")
+        if title_filter:
+            conditions.append("title LIKE ?")
+            params.append(f"%{title_filter}%")
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY updated_at DESC LIMIT ?"
         params.append(limit)
         cursor.execute(query, params)

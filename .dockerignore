@@ -36,5 +36,8 @@ Thumbs.db
 # Logs
 *.log
 
+# Import data (large JSON files)
+imports/
+
 # Claude
 .claude/

@@ -3,3 +3,5 @@ pandas
 anthropic
 google-genai
 openai
+sentence-transformers==5.2.2
+qdrant-client==1.16.2

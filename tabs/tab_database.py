@@ -170,6 +170,31 @@ def build_database_tab():
                     reset_btn = gr.Button("Reset Database", variant="stop")
                     reset_status_msg = gr.Textbox(label="Reset Status", interactive=False)
 
+        # Vector Store (Qdrant)
+        with gr.Accordion("Vector Store (Qdrant)", open=False):
+            gr.Markdown("Embed documents and messages into Qdrant for semantic search and RAG.")
+            with gr.Row():
+                embed_docs_btn = gr.Button("Embed All Documents", variant="primary")
+                embed_msgs_btn = gr.Button("Embed All Messages", variant="primary")
+            embed_status = gr.JSON(label="Embedding Status", value={})
+
+            def _embed_docs():
+                try:
+                    from services.bulk_embed import embed_all_documents
+                    return embed_all_documents()
+                except Exception as e:
+                    return {"error": str(e)}
+
+            def _embed_msgs():
+                try:
+                    from services.bulk_embed import embed_all_messages
+                    return embed_all_messages()
+                except Exception as e:
+                    return {"error": str(e)}
+
+            embed_docs_btn.click(_embed_docs, outputs=[embed_status], api_visibility="private")
+            embed_msgs_btn.click(_embed_msgs, outputs=[embed_status], api_visibility="private")
+
         # Wiring -- outputs stay within this tab
         def _handle_refresh():
             return _load_stats(), _load_schema()

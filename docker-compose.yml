@@ -7,11 +7,13 @@ services:
     volumes:
       - .:/app
       - C:\Janat\Claude\Claude_Export:/data/claude_export:ro
+      - huggingface_cache:/root/.cache/huggingface
     environment:
       - GRADIO_SERVER_NAME=0.0.0.0
       - GRADIO_MCP_SERVER=True
     depends_on:
       - ollama
+      - janatpmp-qdrant
     restart: unless-stopped
     networks:
       - janatpmp_network
@@ -36,9 +38,25 @@ services:
     networks:
       - janatpmp_network
 
+  janatpmp-qdrant:
+    image: qdrant/qdrant:latest
+    container_name: janatpmp-qdrant
+    ports:
+      - "6343:6333"
+      - "6344:6334"
+    volumes:
+      - janatpmp_qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      - janatpmp_network
+
 volumes:
   ollama_data:
     external: true
+  huggingface_cache:
+    external: true
+  janatpmp_qdrant_data:
+    driver: local
 
 networks:
   janatpmp_network:

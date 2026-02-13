@@ -177,6 +177,39 @@ def _build_system_prompt() -> str:
     return base
 
 
+def _build_rag_context(user_message: str, max_chunks: int = 3) -> str:
+    """Search Qdrant for relevant context and format for injection.
+
+    Args:
+        user_message: The user's current message.
+        max_chunks: Maximum number of context chunks to include.
+
+    Returns:
+        Formatted context string, or empty string if no results or Qdrant unavailable.
+    """
+    try:
+        from services.vector_store import search_all
+        results = search_all(user_message, limit=max_chunks)
+        if not results:
+            return ""
+
+        context_parts = []
+        for r in results:
+            source = r.get("source_collection", "unknown")
+            title = r.get("title", r.get("conv_title", ""))
+            text = r.get("text", "")[:500]
+            score = r.get("score", 0)
+            if score > 0.3:
+                context_parts.append(f"[{source}] {title}: {text}")
+
+        if not context_parts:
+            return ""
+
+        return "\n\n---\nRelevant context from knowledge base:\n" + "\n\n".join(context_parts) + "\n---\n"
+    except Exception:
+        return ""  # Graceful degradation if Qdrant is down
+
+
 # --- Provider Presets ---
 
 # Provider: (display_name, default_models_list)
@@ -498,6 +531,11 @@ def chat(message: str, history: list[dict],
     system_prompt = _build_system_prompt()
     if system_prompt_append and system_prompt_append.strip():
         system_prompt += f"\n\n{system_prompt_append.strip()}"
+
+    # RAG context injection (gracefully degrades if Qdrant unavailable)
+    rag_context = _build_rag_context(message)
+    if rag_context:
+        system_prompt += rag_context
 
     # Validate API key for providers that need it
     preset = PROVIDER_PRESETS.get(provider, {})

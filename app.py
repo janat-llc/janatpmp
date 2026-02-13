@@ -20,16 +20,26 @@ from db.operations import (
     backup_database, reset_database, restore_database, list_backups,
 )
 from db.chat_operations import (
-    create_conversation, get_conversation, list_conversations,
-    update_conversation, delete_conversation, search_conversations,
-    add_message, get_messages,
+    create_conversation, get_conversation, get_conversation_by_uri,
+    list_conversations, update_conversation, delete_conversation,
+    search_conversations, add_message, get_messages,
 )
+from services.claude_import import import_conversations_json
+from services.vector_store import search as vector_search, search_all as vector_search_all
+from services.bulk_embed import embed_all_documents, embed_all_messages
 from pages.projects import build_page
 
 # Initialize database and settings BEFORE building UI
 init_database()
 from services.settings import init_settings
 init_settings()
+
+# Initialize vector store collections (safe if Qdrant not running)
+try:
+    from services.vector_store import ensure_collections
+    ensure_collections()
+except Exception:
+    print("Qdrant not available -- vector search disabled")
 
 # Build single-page application
 with gr.Blocks(title="JANATPMP") as demo:
@@ -68,6 +78,16 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.api(search_conversations)
     gr.api(add_message)
     gr.api(get_messages)
+    gr.api(get_conversation_by_uri)
+
+    # Import pipeline (Phase 5)
+    gr.api(import_conversations_json)
+
+    # RAG pipeline (Phase 5 Layer 2)
+    gr.api(vector_search)
+    gr.api(vector_search_all)
+    gr.api(embed_all_documents)
+    gr.api(embed_all_messages)
 
 if __name__ == "__main__":
     demo.launch(
