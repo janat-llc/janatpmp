@@ -14,6 +14,26 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Map parser doc_type values → valid schema doc_type values
+# Schema allows: conversation, file, artifact, research, agent_output, session_notes, code
+_DOC_TYPE_MAP = {
+    "chapter": "file",
+    "essay": "research",
+    "journal": "session_notes",
+    "creative": "artifact",
+    "project_doc": "file",
+    "documentation": "file",
+    "conversation": "conversation",
+    "research": "research",
+}
+
+# Map parser source values → valid schema source values
+# Schema allows: claude_exporter, upload, agent, generated, manual
+_SOURCE_MAP = {
+    "markdown": "upload",
+    "text": "upload",
+}
+
 
 def ingest_google_ai_conversations(directory: str) -> dict:
     """Parse Google AI Studio JSON exports and insert as conversations.
@@ -30,10 +50,10 @@ def ingest_google_ai_conversations(directory: str) -> dict:
     parsed = parse_google_ai_studio_directory(directory)
     total_files = len(list(Path(directory).glob("*.json")))
 
-    # Build dedup set: existing conversation titles with source='google_ai'
+    # Build dedup set: existing conversation titles with source='imported'
     existing = list_conversations(limit=9999, active_only=False)
     existing_titles = {
-        c["title"] for c in existing if c.get("source") == "google_ai"
+        c["title"] for c in existing if c.get("source") == "imported"
     }
 
     imported = 0
@@ -53,7 +73,7 @@ def ingest_google_ai_conversations(directory: str) -> dict:
                 model=conv.get("model") or "unknown",
                 system_prompt_append=conv.get("system_instruction") or "",
                 title=title,
-                source="google_ai",
+                source="imported",
             )
 
             for turn in conv["turns"]:
@@ -102,10 +122,9 @@ def ingest_markdown_documents(directory: str) -> dict:
     parsed = ingest_directory(directory)
     total_files = len(parsed)
 
-    # Build dedup set: existing document titles with source='markdown' or 'text'
-    existing_md = list_documents(source="markdown", limit=9999)
-    existing_txt = list_documents(source="text", limit=9999)
-    existing_titles = {d["title"] for d in existing_md} | {d["title"] for d in existing_txt}
+    # Build dedup set: existing document titles with source='upload'
+    existing = list_documents(source="upload", limit=9999)
+    existing_titles = {d["title"] for d in existing}
 
     imported = 0
     skipped = 0
@@ -118,9 +137,11 @@ def ingest_markdown_documents(directory: str) -> dict:
             continue
 
         try:
+            doc_type = _DOC_TYPE_MAP.get(doc["doc_type"], "file")
+            source = _SOURCE_MAP.get(doc["source"], "upload")
             create_document(
-                doc_type=doc["doc_type"],
-                source=doc["source"],
+                doc_type=doc_type,
+                source=source,
                 title=title,
                 content=doc["content"],
             )
@@ -160,8 +181,8 @@ def ingest_quest_documents(directory: str) -> dict:
     parsed = parse_quest_directory(directory)
     total_files = len(parsed)
 
-    # Build dedup set: existing document titles with source='quest'
-    existing = list_documents(source="quest", limit=9999)
+    # Build dedup set: existing document titles with source='upload' and doc_type='research'
+    existing = list_documents(source="upload", limit=9999)
     existing_titles = {d["title"] for d in existing}
 
     imported = 0
@@ -186,7 +207,7 @@ def ingest_quest_documents(directory: str) -> dict:
             )
             create_document(
                 doc_type="research",
-                source="quest",
+                source="upload",
                 title=title,
                 content=content,
             )
