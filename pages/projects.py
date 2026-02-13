@@ -211,15 +211,18 @@ def build_page():
     chat_tab_max_tokens = gr.State(2048)
     chat_tab_system_append = gr.State("")
 
-    # === RIGHT SIDEBAR (conditional — Claude chat or Chat Settings) ===
+    # === RIGHT SIDEBAR (conditional — Janat chat or Chat Settings) ===
     with gr.Sidebar(position="right"):
-        # Section A: Claude quick-chat (visible on all tabs except Chat)
+        # Section A: Janat quick-chat (visible on all tabs except Chat)
         with gr.Column() as right_chat_section:
-            gr.Markdown("### Claude")
-            chatbot = gr.Chatbot(value=list(_initial_chat_history), height=500, label="Chat")
+            gr.Markdown("### Janat")
+            chatbot = gr.Chatbot(
+                value=list(_initial_chat_history), height=500,
+                show_label=False, show_share_button=False, show_copy_all_button=False,
+            )
             chat_input = gr.Textbox(
-                placeholder="Ask Claude anything...",
-                show_label=False, interactive=True, max_lines=3,
+                placeholder="What should We do?",
+                show_label=False, interactive=True, max_lines=5, lines=5,
             )
         # Section B: Chat Settings (visible only on Chat tab)
         with gr.Column(visible=False) as right_settings_section:

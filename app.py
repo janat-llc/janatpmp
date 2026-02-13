@@ -95,7 +95,11 @@ if __name__ == "__main__":
         server_name="0.0.0.0",
         theme=gr.themes.Soft(),
         css="""
-            .sidebar.right .sidebar-content { padding: 8px 12px !important; }
+            .sidebar.right .sidebar-content { padding: 4px 6px !important; }
             .sidebar.right .message-row { max-width: 100% !important; }
+            .sidebar.right .chatbot { padding: 0 !important; }
+            .sidebar.right .message { padding: 6px 8px !important; max-width: 100% !important; }
+            .sidebar.right .bubble-wrap { padding: 0 !important; }
+            .sidebar.right .wrapper { padding: 0 !important; }
         """,
     )
