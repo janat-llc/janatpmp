@@ -43,9 +43,22 @@ JANATPMP/
 │   ├── __init__.py
 │   ├── chat.py               # Multi-provider chat with tool use (Anthropic/Gemini/Ollama)
 │   ├── claude_export.py      # Claude Export service: ingest/query external conversation DB
-│   └── settings.py           # Settings service: get/set with base64 for secrets
+│   ├── claude_import.py      # Claude conversations.json import → triplet messages (Phase 5)
+│   ├── embedding.py          # Llama-Nemotron-Embed-1B-v2 text embedding (Phase 5)
+│   ├── vector_store.py       # Qdrant vector DB operations (Phase 5)
+│   ├── bulk_embed.py         # Batch embed documents & messages into Qdrant (Phase 5)
+│   ├── settings.py           # Settings service: get/set with base64 for secrets
+│   └── ingestion/            # Content ingestion parsers (Phase 6A)
+│       ├── __init__.py
+│       ├── google_ai_studio.py  # Google AI Studio chunkedPrompt parser
+│       ├── quest_parser.py      # Troubadourian quest graph topology parser
+│       ├── markdown_ingest.py   # Markdown & text file ingester
+│       ├── dedup.py             # SHA-256 content-hash deduplication
+│       └── README.md            # Format documentation & test results
 ├── docs/
-│   └── janatpmp-mockup.png   # Visual reference for Projects page layout
+│   ├── janatpmp-mockup.png   # Visual reference for Projects page layout
+│   ├── INVENTORY_OLD_PARSERS.md    # Old pipeline code inventory (Phase 6A)
+│   └── INVENTORY_CONTENT_CORPUS.md # Content corpus catalog (Phase 6A)
 ├── completed/                # Archived TODO files
 ├── screenshots/              # UI screenshots for reference
 ├── requirements.txt          # Python dependencies (pinned)
@@ -304,8 +317,13 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
 - **Volume:** `.:/app` for live code changes without rebuild
 - **MCP:** Enabled via `GRADIO_MCP_SERVER=True` environment variable
 - **CMD:** `gradio app.py` (uses Gradio's built-in server)
-- **Container names:** `janatpmp-core` (app), `janatpmp-ollama` (LLM)
+- **Container names:** `janatpmp-core` (app), `janatpmp-ollama` (LLM), `janatpmp-qdrant` (vector DB)
   - Docker service `core` (was `janatpmp` before Phase 4 rename)
+- **Qdrant:** `janatpmp-qdrant` container on ports 6343:6333/6344:6334
+  - Internal URL: `http://janatpmp-qdrant:6333` (Docker DNS)
+  - External URL: `http://localhost:6343` (host access, dashboard at `/dashboard`)
+  - Volume: `janatpmp_qdrant_data` (external)
+  - Collections: `janatpmp_documents` (2048-dim), `janatpmp_messages` (2048-dim)
 - **Ollama:** `janatpmp-ollama` container on port 11435, shares `ollama_data` external volume
   - Internal URL: `http://ollama:11434/v1` (Docker DNS)
   - External URL: `http://localhost:11435` (host access for testing)
@@ -419,8 +437,8 @@ demo.launch(mcp_server=True)
 ```
 
 All 22 functions in `db/operations.py` plus 8 chat operations from `db/chat_operations.py`
-are exposed via `gr.api()` (32 total MCP tools). They MUST have Google-style docstrings
-with Args/Returns for MCP tool generation.
+plus 4 vector operations from `services/` are exposed via `gr.api()` (36 total MCP tools).
+They MUST have Google-style docstrings with Args/Returns for MCP tool generation.
 
 ### Common Mistakes to Avoid
 
@@ -504,9 +522,62 @@ Tool toggles in right sidebar control availability per-session. Full routing is 
 - Import scoping: NEVER local imports inside render_left for names already imported at
   module level (causes UnboundLocalError due to Python scoping).
 
+## Phase 5: RAG Pipeline (Complete)
+
+### Vector Search Architecture
+
+- **Qdrant** vector database with two collections: `janatpmp_documents` and `janatpmp_messages`
+- **NVIDIA Llama-Nemotron-Embed-1B-v2** embedding model (2048-dim, asymmetric encoding)
+  - Document encoding: `prompt_name="document"`
+  - Query encoding: `prompt_name="query"`
+- **HuggingFace cache** shared via external Docker volume (`huggingface_cache`)
+
+### RAG Context Injection
+
+- `services/chat.py:_build_rag_context()` searches Qdrant on each user message
+- Results with score > 0.3 are injected into the system prompt as context
+- Graceful degradation: if Qdrant is down, chat works without RAG (try/except)
+- Cross-collection search via `vector_store.search_all()` searches both documents and messages
+
+### Claude Import (`services/claude_import.py`)
+
+- Imports Claude `conversations.json` into triplet message schema
+- Each conversation becomes a `conversations` record with `source='imported'`
+- Each message pair becomes a `messages` record with user_prompt + model_response
+- Deduplicates by `conversation_uri` (Claude UUID)
+
+### Bulk Embedding (`services/bulk_embed.py`)
+
+- `embed_all_documents()` — queries DB directly for documents with content, embeds into Qdrant
+- `embed_all_messages()` — embeds all messages with user_prompt + model_response concatenated
+
+## Phase 6A: Content Ingestion Pipeline (Complete)
+
+### Content Ingestion Module (`services/ingestion/`)
+
+Parsers for importing conversations and documents from multiple external sources.
+
+| Parser | Format | Status |
+| ------ | ------ | ------ |
+| `google_ai_studio.py` | Google AI Studio `chunkedPrompt` JSON | Tested: 99/104 files, 1,304 turns |
+| `quest_parser.py` | Troubadourian quest graph topology JSON | Tested against synthetic data |
+| `markdown_ingest.py` | Markdown (.md) and plain text (.txt) files | Tested: title extraction + doc_type classification |
+| `dedup.py` | SHA-256 content-hash deduplication | Tested: exact-match detection working |
+
+### Content Corpus (`imports/raw_data/`)
+
+- `google_ai/` + `other/`: 300 Google AI Studio conversations (100.8 MB)
+- `claude/`: 1 Claude export (8.3 MB) — handled by `services/claude_import.py`
+- `chatgpt/`: 1 ChatGPT export (2.5 MB) — future parser needed (tree structure)
+- `markdown/`: 15 markdown files (0.3 MB)
+- `text/`: 18 text files (2.5 MB)
+
+See `docs/INVENTORY_CONTENT_CORPUS.md` for full catalog and schema samples.
+See `docs/INVENTORY_OLD_PARSERS.md` for old pipeline code analysis.
+
 ## Future Architecture (not in scope, for context only)
 
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
-architecture. Future integrations include Qdrant (vector search) and Neo4j (graph database)
-forming a "Triad of Memory" (SQL + Vector + Graph). The CDC outbox table in the schema
-provides forward-compatibility for this evolution.
+architecture. Future integrations include Neo4j (graph database) joining Qdrant (vector search,
+now implemented) and SQLite forming a "Triad of Memory" (SQL + Vector + Graph). The CDC outbox
+table in the schema provides forward-compatibility for this evolution.
