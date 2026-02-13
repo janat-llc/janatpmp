@@ -197,8 +197,8 @@ def build_page():
     tasks_state = gr.State(_load_tasks())
     selected_doc_id = gr.State("")
     docs_state = gr.State(_load_documents())
-    chat_history = gr.State(list(INITIAL_CHAT))
     _initial_conv_id, _initial_chat_history = _load_most_recent_chat()
+    chat_history = gr.State(list(_initial_chat_history))
     chat_tab_history = gr.State(_initial_chat_history)
     active_conversation_id = gr.State(_initial_conv_id)
     conversations_state = gr.State(list_conversations(limit=30))
@@ -216,7 +216,7 @@ def build_page():
         # Section A: Claude quick-chat (visible on all tabs except Chat)
         with gr.Column() as right_chat_section:
             gr.Markdown("### Claude")
-            chatbot = gr.Chatbot(value=list(INITIAL_CHAT), height=500, label="Chat")
+            chatbot = gr.Chatbot(value=list(_initial_chat_history), height=500, label="Chat")
             chat_input = gr.Textbox(
                 placeholder="Ask Claude anything...",
                 show_label=False, interactive=True, max_lines=3,
