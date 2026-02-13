@@ -177,19 +177,19 @@ def build_database_tab():
             ingestion_google_dir = gr.Textbox(
                 label="Google AI Studio Directory",
                 value=_get_ingestion("ingestion_google_ai_dir"),
-                placeholder="/data/imports/google_ai",
+                placeholder="/app/imports/raw_data/google_ai",
                 interactive=True,
             )
             ingestion_markdown_dir = gr.Textbox(
                 label="Markdown / Text Directory",
                 value=_get_ingestion("ingestion_markdown_dir"),
-                placeholder="/data/imports/markdown",
+                placeholder="/app/imports/raw_data/markdown",
                 interactive=True,
             )
             ingestion_quest_dir = gr.Textbox(
                 label="Quest Files Directory",
                 value=_get_ingestion("ingestion_quest_dir"),
-                placeholder="/data/imports/quests",
+                placeholder="/app/imports/raw_data/quests",
                 interactive=True,
             )
             with gr.Row():
