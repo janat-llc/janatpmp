@@ -105,8 +105,9 @@ def build_database_tab():
 
         # Settings section
         with gr.Accordion("Settings", open=False):
-            gr.Markdown("Configure paths for Claude Export integration.")
             from services.settings import get_setting as _get_setting
+
+            gr.Markdown("#### Claude Export")
             setting_export_db = gr.Textbox(
                 label="Claude Export DB Path",
                 value=_get_setting("claude_export_db_path"),
@@ -119,19 +120,39 @@ def build_database_tab():
                 placeholder="/data/claude_export",
                 interactive=True,
             )
+
+            gr.Markdown("---")
+            gr.Markdown("#### Ollama")
+            gr.Markdown("Context window and model persistence settings for local inference.")
+            with gr.Row():
+                setting_num_ctx = gr.Number(
+                    label="Context Window (num_ctx)",
+                    value=int(_get_setting("ollama_num_ctx") or 65536),
+                    precision=0,
+                    interactive=True,
+                )
+                setting_keep_alive = gr.Textbox(
+                    label="Keep Alive",
+                    value=_get_setting("ollama_keep_alive") or "5m",
+                    placeholder="5m",
+                    interactive=True,
+                )
+
             with gr.Row():
                 save_settings_btn = gr.Button("Save Settings", variant="primary")
                 settings_status = gr.Textbox(show_label=False, interactive=False, scale=2)
 
-            def _save_export_settings(db_path, json_dir):
+            def _save_all_settings(db_path, json_dir, num_ctx, keep_alive):
                 from services.settings import set_setting
                 set_setting("claude_export_db_path", db_path.strip())
                 set_setting("claude_export_json_dir", json_dir.strip())
+                set_setting("ollama_num_ctx", str(int(num_ctx)))
+                set_setting("ollama_keep_alive", keep_alive.strip())
                 return "Settings saved."
 
             save_settings_btn.click(
-                _save_export_settings,
-                inputs=[setting_export_db, setting_export_dir],
+                _save_all_settings,
+                inputs=[setting_export_db, setting_export_dir, setting_num_ctx, setting_keep_alive],
                 outputs=[settings_status],
                 api_visibility="private",
             )

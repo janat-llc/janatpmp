@@ -14,6 +14,8 @@ DEFAULTS = {
     "ingestion_google_ai_dir": ("/app/imports/raw_data/google_ai", False),
     "ingestion_markdown_dir": ("/app/imports/raw_data/markdown", False),
     "ingestion_quest_dir": ("", False),
+    "ollama_num_ctx": ("65536", False),
+    "ollama_keep_alive": ("5m", False),
 }
 
 

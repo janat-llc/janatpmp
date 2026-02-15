@@ -203,8 +203,9 @@ Both sidebars collapse independently on mobile, leaving center content full-widt
 
 | View | Screenshot |
 |------|-----------|
-| Projects tab | ![Projects](screenshots/Screenshot%202026-02-08%20104332.png) |
-| Chat tab | ![Chat](screenshots/Screenshot%202026-02-08%20121132.png) |
+| Projects tab | ![Projects](screenshots/projects.png) |
+| Chat tab | ![Chat](screenshots/chat.png) |
+| Admin tab | ![Admin](screenshots/admin.png) |
 
 ---
 
