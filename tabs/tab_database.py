@@ -105,8 +105,9 @@ def build_database_tab():
 
         # Settings section
         with gr.Accordion("Settings", open=False):
-            gr.Markdown("Configure paths for Claude Export integration.")
             from services.settings import get_setting as _get_setting
+
+            gr.Markdown("#### Claude Export")
             setting_export_db = gr.Textbox(
                 label="Claude Export DB Path",
                 value=_get_setting("claude_export_db_path"),
@@ -119,19 +120,39 @@ def build_database_tab():
                 placeholder="/data/claude_export",
                 interactive=True,
             )
+
+            gr.Markdown("---")
+            gr.Markdown("#### Ollama")
+            gr.Markdown("Context window and model persistence settings for local inference.")
+            with gr.Row():
+                setting_num_ctx = gr.Number(
+                    label="Context Window (num_ctx)",
+                    value=int(_get_setting("ollama_num_ctx") or 65536),
+                    precision=0,
+                    interactive=True,
+                )
+                setting_keep_alive = gr.Textbox(
+                    label="Keep Alive",
+                    value=_get_setting("ollama_keep_alive") or "5m",
+                    placeholder="5m",
+                    interactive=True,
+                )
+
             with gr.Row():
                 save_settings_btn = gr.Button("Save Settings", variant="primary")
                 settings_status = gr.Textbox(show_label=False, interactive=False, scale=2)
 
-            def _save_export_settings(db_path, json_dir):
+            def _save_all_settings(db_path, json_dir, num_ctx, keep_alive):
                 from services.settings import set_setting
                 set_setting("claude_export_db_path", db_path.strip())
                 set_setting("claude_export_json_dir", json_dir.strip())
+                set_setting("ollama_num_ctx", str(int(num_ctx)))
+                set_setting("ollama_keep_alive", keep_alive.strip())
                 return "Settings saved."
 
             save_settings_btn.click(
-                _save_export_settings,
-                inputs=[setting_export_db, setting_export_dir],
+                _save_all_settings,
+                inputs=[setting_export_db, setting_export_dir, setting_num_ctx, setting_keep_alive],
                 outputs=[settings_status],
                 api_visibility="private",
             )
@@ -169,6 +190,94 @@ def build_database_tab():
                     gr.Markdown("Deletes all data and recreates schema. A backup is created automatically.")
                     reset_btn = gr.Button("Reset Database", variant="stop")
                     reset_status_msg = gr.Textbox(label="Reset Status", interactive=False)
+
+        # Content Ingestion
+        with gr.Accordion("Content Ingestion", open=False):
+            gr.Markdown("Import conversations and documents from external sources.")
+            from services.settings import get_setting as _get_ingestion
+            ingestion_google_dir = gr.Textbox(
+                label="Google AI Studio Directory",
+                value=_get_ingestion("ingestion_google_ai_dir"),
+                placeholder="/app/imports/raw_data/google_ai",
+                interactive=True,
+            )
+            ingestion_markdown_dir = gr.Textbox(
+                label="Markdown / Text Directory",
+                value=_get_ingestion("ingestion_markdown_dir"),
+                placeholder="/app/imports/raw_data/markdown",
+                interactive=True,
+            )
+            ingestion_quest_dir = gr.Textbox(
+                label="Quest Files Directory",
+                value=_get_ingestion("ingestion_quest_dir"),
+                placeholder="/app/imports/raw_data/quests",
+                interactive=True,
+            )
+            with gr.Row():
+                save_ingestion_btn = gr.Button("Save Paths", variant="primary")
+                ingestion_save_status = gr.Textbox(show_label=False, interactive=False, scale=2)
+
+            def _save_ingestion_paths(google_dir, md_dir, quest_dir):
+                from services.settings import set_setting
+                set_setting("ingestion_google_ai_dir", google_dir.strip())
+                set_setting("ingestion_markdown_dir", md_dir.strip())
+                set_setting("ingestion_quest_dir", quest_dir.strip())
+                return "Ingestion paths saved."
+
+            save_ingestion_btn.click(
+                _save_ingestion_paths,
+                inputs=[ingestion_google_dir, ingestion_markdown_dir, ingestion_quest_dir],
+                outputs=[ingestion_save_status],
+                api_visibility="private",
+            )
+
+            gr.Markdown("---")
+            gr.Markdown("### Run Ingestion")
+            with gr.Row():
+                ingest_google_btn = gr.Button("Ingest Google AI", variant="primary")
+                ingest_markdown_btn = gr.Button("Ingest Markdown/Text", variant="primary")
+                ingest_quest_btn = gr.Button("Ingest Quests", variant="primary")
+            ingestion_result = gr.JSON(label="Ingestion Results", value={})
+
+            def _ingest_google(directory):
+                if not directory.strip():
+                    return {"error": "Google AI Studio directory path is empty. Set it above and save."}
+                try:
+                    from services.ingestion.orchestrator import ingest_google_ai_conversations
+                    return ingest_google_ai_conversations(directory.strip())
+                except Exception as e:
+                    return {"error": str(e)}
+
+            def _ingest_markdown(directory):
+                if not directory.strip():
+                    return {"error": "Markdown directory path is empty. Set it above and save."}
+                try:
+                    from services.ingestion.orchestrator import ingest_markdown_documents
+                    return ingest_markdown_documents(directory.strip())
+                except Exception as e:
+                    return {"error": str(e)}
+
+            def _ingest_quest(directory):
+                if not directory.strip():
+                    return {"error": "Quest directory path is empty. Set it above and save."}
+                try:
+                    from services.ingestion.orchestrator import ingest_quest_documents
+                    return ingest_quest_documents(directory.strip())
+                except Exception as e:
+                    return {"error": str(e)}
+
+            ingest_google_btn.click(
+                _ingest_google, inputs=[ingestion_google_dir],
+                outputs=[ingestion_result], api_visibility="private",
+            )
+            ingest_markdown_btn.click(
+                _ingest_markdown, inputs=[ingestion_markdown_dir],
+                outputs=[ingestion_result], api_visibility="private",
+            )
+            ingest_quest_btn.click(
+                _ingest_quest, inputs=[ingestion_quest_dir],
+                outputs=[ingestion_result], api_visibility="private",
+            )
 
         # Vector Store (Qdrant)
         with gr.Accordion("Vector Store (Qdrant)", open=False):

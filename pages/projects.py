@@ -163,6 +163,24 @@ def _all_docs_df() -> pd.DataFrame:
     } for d in docs])
 
 
+def _load_most_recent_chat() -> tuple[str, list[dict]]:
+    """Load most recent conversation for Chat tab initialization."""
+    convs = list_conversations(limit=1)
+    if not convs:
+        return "", list(INITIAL_CHAT)
+    conv_id = convs[0]["id"]
+    msgs = get_messages(conv_id)
+    if not msgs:
+        return conv_id, list(INITIAL_CHAT)
+    history = []
+    for m in msgs:
+        history.append({"role": "user", "content": m["user_prompt"]})
+        resp = m.get("model_response", "")
+        if resp:
+            history.append({"role": "assistant", "content": resp})
+    return conv_id, history if history else list(INITIAL_CHAT)
+
+
 # --- Page builder ---
 
 def build_page():
@@ -179,9 +197,10 @@ def build_page():
     tasks_state = gr.State(_load_tasks())
     selected_doc_id = gr.State("")
     docs_state = gr.State(_load_documents())
-    chat_history = gr.State(list(INITIAL_CHAT))
-    chat_tab_history = gr.State(list(INITIAL_CHAT))
-    active_conversation_id = gr.State("")
+    _initial_conv_id, _initial_chat_history = _load_most_recent_chat()
+    chat_history = gr.State(list(_initial_chat_history))
+    chat_tab_history = gr.State(_initial_chat_history)
+    active_conversation_id = gr.State(_initial_conv_id)
     conversations_state = gr.State(list_conversations(limit=30))
     conv_search_query = gr.State("")
     selected_knowledge_conv_id = gr.State("")
@@ -189,18 +208,21 @@ def build_page():
     chat_tab_model_state = gr.State(PROVIDER_PRESETS.get("ollama", {}).get("default_model", "nemotron-3-nano:latest"))
     chat_tab_temperature = gr.State(0.7)
     chat_tab_top_p = gr.State(0.9)
-    chat_tab_max_tokens = gr.State(2048)
+    chat_tab_max_tokens = gr.State(8192)
     chat_tab_system_append = gr.State("")
 
-    # === RIGHT SIDEBAR (conditional — Claude chat or Chat Settings) ===
+    # === RIGHT SIDEBAR (conditional — Janat chat or Chat Settings) ===
     with gr.Sidebar(position="right"):
-        # Section A: Claude quick-chat (visible on all tabs except Chat)
+        # Section A: Janat quick-chat (visible on all tabs except Chat)
         with gr.Column() as right_chat_section:
-            gr.Markdown("### Claude")
-            chatbot = gr.Chatbot(value=list(INITIAL_CHAT), height=500, label="Chat")
+            gr.Markdown("### Janat")
+            chatbot = gr.Chatbot(
+                value=list(_initial_chat_history), height=500,
+                show_label=False, buttons=[],
+            )
             chat_input = gr.Textbox(
-                placeholder="Ask Claude anything...",
-                show_label=False, interactive=True, max_lines=3,
+                placeholder="What should We do?",
+                show_label=False, interactive=True, max_lines=5, lines=5,
             )
         # Section B: Chat Settings (visible only on Chat tab)
         with gr.Column(visible=False) as right_settings_section:
@@ -223,8 +245,8 @@ def build_page():
                 step=0.05, value=0.9, interactive=True,
             )
             rs_max_tokens = gr.Slider(
-                label="Max Tokens", minimum=256, maximum=8192,
-                step=256, value=2048, interactive=True,
+                label="Max Tokens", minimum=256, maximum=16384,
+                step=256, value=8192, interactive=True,
             )
             rs_system_append = gr.Textbox(
                 label="System Prompt (session)",
@@ -582,7 +604,7 @@ def build_page():
         # --- Chat tab ---
         with gr.Tab("Chat", id="chat") as chat_tab:
             chat_tab_chatbot = gr.Chatbot(
-                value=list(INITIAL_CHAT),
+                value=_initial_chat_history,
                 height=600,
                 label="Chat",
             )

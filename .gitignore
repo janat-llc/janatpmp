@@ -57,10 +57,10 @@ app_stdout.txt
 app_stderr.txt
 app_output.txt
 nul
-screenshots/
 
 # Import data (large JSON files)
 imports/
 
 # Drive sync artifacts
 .tmp.driveupload/
+.tmp.drivedownload/
