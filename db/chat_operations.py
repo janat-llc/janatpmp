@@ -16,8 +16,11 @@ from db.operations import get_connection
 def parse_reasoning(raw_response: str) -> tuple[str, str]:
     """Extract reasoning from model response.
 
-    Handles <think>...</think> and <reasoning>...</reasoning> blocks
-    (e.g. deepseek-r1, nemotron reasoning models).
+    Handles multiple formats:
+    - <think>...</think> blocks (deepseek-r1)
+    - Content before a lone </think> tag (Nemotron — Ollama template injects
+      the opening <think>, so model output starts with thinking and only has </think>)
+    - <reasoning>...</reasoning> blocks
 
     Args:
         raw_response: The raw model response text
@@ -31,11 +34,19 @@ def parse_reasoning(raw_response: str) -> tuple[str, str]:
 
     reasoning_parts = []
 
-    # Extract <think>...</think> blocks
+    # Extract <think>...</think> blocks (paired tags)
     think_pattern = re.compile(r"<think>(.*?)</think>", re.DOTALL)
     for match in think_pattern.finditer(raw_response):
         reasoning_parts.append(match.group(1).strip())
     clean = think_pattern.sub("", raw_response)
+
+    # Handle missing opening <think>: content before a lone </think> is reasoning
+    # (Nemotron via Ollama — template injects <think>, model only outputs </think>)
+    if "</think>" in clean and "<think>" not in clean:
+        parts = clean.split("</think>", 1)
+        if parts[0].strip():
+            reasoning_parts.append(parts[0].strip())
+        clean = parts[1] if len(parts) > 1 else ""
 
     # Extract <reasoning>...</reasoning> blocks
     reasoning_pattern = re.compile(r"<reasoning>(.*?)</reasoning>", re.DOTALL)

@@ -1531,18 +1531,24 @@ def build_page():
         from services.chat import chat
         updated = chat(message, history)
 
-        # Strip thinking tags from displayed response
+        # Split display vs API history (keep <details> out of API history
+        # so model doesn't mimic HTML formatting on subsequent turns)
+        display = [dict(m) for m in updated]
+        api = [dict(m) for m in updated]
         if updated and updated[-1].get("role") == "assistant":
             raw = updated[-1].get("content", "")
             reasoning, clean = parse_reasoning(raw)
+            api[-1] = {"role": "assistant", "content": clean or raw}
             if reasoning and clean:
                 formatted = (
                     f"<details><summary>Thinking</summary>\n\n"
                     f"{reasoning}\n\n</details>\n\n{clean}"
                 )
-                updated[-1] = {"role": "assistant", "content": formatted}
+                display[-1] = {"role": "assistant", "content": formatted}
+            else:
+                display[-1] = {"role": "assistant", "content": clean or raw}
 
-        return updated, updated, ""
+        return display, api, ""
 
     chat_input.submit(
         _handle_chat,
@@ -1591,17 +1597,26 @@ def build_page():
 
             reasoning, clean_response = parse_reasoning(raw_response)
 
-            # Replace raw response in display history with formatted version
-            if reasoning and clean_response:
-                formatted = (
-                    f"<details><summary>Thinking</summary>\n\n"
-                    f"{reasoning}\n\n</details>\n\n{clean_response}"
-                )
-                # Replace the last assistant message that had raw_response
-                for i in range(len(updated) - 1, -1, -1):
-                    if updated[i].get("role") == "assistant" and updated[i].get("content") == raw_response:
-                        updated[i] = {"role": "assistant", "content": formatted}
-                        break
+            # Build separate display and API histories:
+            # - display_history: reasoning in collapsible accordion + clean response
+            # - api_history: clean response only (no tags, no <details> — prevents
+            #   the model from mimicking HTML formatting on subsequent turns)
+            display_history = [dict(m) for m in updated]
+            api_history = [dict(m) for m in updated]
+            for i in range(len(updated) - 1, -1, -1):
+                if updated[i].get("role") == "assistant" and updated[i].get("content") == raw_response:
+                    # API history: clean response only
+                    api_history[i] = {"role": "assistant", "content": clean_response or raw_response}
+                    # Display history: reasoning accordion + clean response
+                    if reasoning and clean_response:
+                        formatted = (
+                            f"<details><summary>Thinking</summary>\n\n"
+                            f"{reasoning}\n\n</details>\n\n{clean_response}"
+                        )
+                        display_history[i] = {"role": "assistant", "content": formatted}
+                    else:
+                        display_history[i] = {"role": "assistant", "content": clean_response or raw_response}
+                    break
 
             # Collect tool names used in this turn
             tools_used = []
@@ -1623,7 +1638,7 @@ def build_page():
 
             convs = list_conversations(limit=30)
             status = f"*{provider} / {model}*"
-            return updated, updated, "", conv_id, convs, status
+            return display_history, api_history, "", conv_id, convs, status
         except Exception as e:
             error_history = history + [
                 {"role": "user", "content": message},
