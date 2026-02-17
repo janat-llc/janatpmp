@@ -240,13 +240,14 @@ PROVIDER_PRESETS = {
     "ollama": {
         "name": "Ollama (Local)",
         "models": [
+            "hf.co/unsloth/Nemotron-3-Nano-30B-A3B-GGUF:IQ4_XS",
             "nemotron-3-nano:latest",
             "deepseek-r1:7b-qwen-distill-q4_K_M",
             "deepseek-r1:latest",
             "qwen3:4b-instruct-2507-q4_K_M",
             "phi4-mini-reasoning:latest",
         ],
-        "default_model": "nemotron-3-nano:latest",
+        "default_model": "hf.co/unsloth/Nemotron-3-Nano-30B-A3B-GGUF:IQ4_XS",
         "needs_api_key": False,
         "base_url": "http://ollama:11434/v1",
     },

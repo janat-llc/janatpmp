@@ -328,7 +328,8 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
   - Internal URL: `http://ollama:11434/v1` (Docker DNS)
   - External URL: `http://localhost:11435` (host access for testing)
   - GPU passthrough via NVIDIA Container Toolkit
-  - Available models: nemotron-3-nano (default), deepseek-r1:7b-qwen-distill-q4_K_M,
+  - Available models: Nemotron-3-Nano-30B-A3B IQ4_XS (default, 18 GB, 53/53 layers on GPU),
+    nemotron-3-nano (BF16, 24 GB — too large for single GPU), deepseek-r1:7b-qwen-distill-q4_K_M,
     deepseek-r1:latest, qwen3:4b-instruct-2507-q4_K_M, phi4-mini-reasoning:latest
 
 ## Gradio Development Patterns (CRITICAL — READ BEFORE WRITING UI CODE)
