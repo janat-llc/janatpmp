@@ -163,6 +163,25 @@ def _all_docs_df() -> pd.DataFrame:
     } for d in docs])
 
 
+def _msgs_to_history(msgs: list[dict]) -> list[dict]:
+    """Convert DB message rows to chat display history with reasoning."""
+    history = []
+    for m in msgs:
+        history.append({"role": "user", "content": m["user_prompt"]})
+        resp = m.get("model_response", "")
+        reasoning = m.get("model_reasoning", "")
+        if resp:
+            if reasoning:
+                formatted = (
+                    f"<details><summary>Thinking</summary>\n\n"
+                    f"{reasoning}\n\n</details>\n\n{resp}"
+                )
+                history.append({"role": "assistant", "content": formatted})
+            else:
+                history.append({"role": "assistant", "content": resp})
+    return history
+
+
 def _load_most_recent_chat() -> tuple[str, list[dict]]:
     """Load most recent conversation for Chat tab initialization."""
     convs = list_conversations(limit=1)
@@ -172,12 +191,7 @@ def _load_most_recent_chat() -> tuple[str, list[dict]]:
     msgs = get_messages(conv_id)
     if not msgs:
         return conv_id, list(INITIAL_CHAT)
-    history = []
-    for m in msgs:
-        history.append({"role": "user", "content": m["user_prompt"]})
-        resp = m.get("model_response", "")
-        if resp:
-            history.append({"role": "assistant", "content": resp})
+    history = _msgs_to_history(msgs)
     return conv_id, history if history else list(INITIAL_CHAT)
 
 
@@ -817,13 +831,8 @@ def build_page():
                         # Click to load conversation
                         def on_conv_click(c_id=conv["id"]):
                             msgs = get_messages(c_id)
-                            history = []
-                            for m in msgs:
-                                history.append({"role": "user", "content": m["user_prompt"]})
-                                resp = m.get("model_response", "")
-                                if resp:
-                                    history.append({"role": "assistant", "content": resp})
-                            return c_id, history or list(INITIAL_CHAT), history or list(INITIAL_CHAT)
+                            history = _msgs_to_history(msgs) or list(INITIAL_CHAT)
+                            return c_id, history, history
                         conv_btn.click(
                             on_conv_click,
                             outputs=[active_conversation_id, chat_tab_chatbot, chat_tab_history],
@@ -1401,12 +1410,7 @@ def build_page():
             row = evt.index[0]
             conv_id = df.iloc[row, 4]  # ID column
             msgs = get_messages(conv_id)
-            history = []
-            for m in msgs:
-                history.append({"role": "user", "content": m["user_prompt"]})
-                resp = m.get("model_response", "")
-                if resp:
-                    history.append({"role": "assistant", "content": resp})
+            history = _msgs_to_history(msgs)
             return history, conv_id
         return [], ""
 
@@ -1435,13 +1439,7 @@ def build_page():
         if not conv_id:
             return gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), "No conversation selected."
         msgs = get_messages(conv_id)
-        history = []
-        for m in msgs:
-            history.append({"role": "user", "content": m["user_prompt"]})
-            resp = m.get("model_response", "")
-            if resp:
-                history.append({"role": "assistant", "content": resp})
-        history = history or list(INITIAL_CHAT)
+        history = _msgs_to_history(msgs) or list(INITIAL_CHAT)
         convs = list_conversations(limit=30)
         return (
             conv_id,                       # active_conversation_id
@@ -1532,6 +1530,18 @@ def build_page():
             return history, history, ""
         from services.chat import chat
         updated = chat(message, history)
+
+        # Strip thinking tags from displayed response
+        if updated and updated[-1].get("role") == "assistant":
+            raw = updated[-1].get("content", "")
+            reasoning, clean = parse_reasoning(raw)
+            if reasoning and clean:
+                formatted = (
+                    f"<details><summary>Thinking</summary>\n\n"
+                    f"{reasoning}\n\n</details>\n\n{clean}"
+                )
+                updated[-1] = {"role": "assistant", "content": formatted}
+
         return updated, updated, ""
 
     chat_input.submit(
@@ -1580,6 +1590,18 @@ def build_page():
                     break
 
             reasoning, clean_response = parse_reasoning(raw_response)
+
+            # Replace raw response in display history with formatted version
+            if reasoning and clean_response:
+                formatted = (
+                    f"<details><summary>Thinking</summary>\n\n"
+                    f"{reasoning}\n\n</details>\n\n{clean_response}"
+                )
+                # Replace the last assistant message that had raw_response
+                for i in range(len(updated) - 1, -1, -1):
+                    if updated[i].get("role") == "assistant" and updated[i].get("content") == raw_response:
+                        updated[i] = {"role": "assistant", "content": formatted}
+                        break
 
             # Collect tool names used in this turn
             tools_used = []
