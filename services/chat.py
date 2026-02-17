@@ -440,7 +440,7 @@ def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: s
 
 def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: str,
                  temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 8192,
-                 num_ctx: int = 65536, keep_alive: str = "5m") -> list[dict]:
+                 num_ctx: int = 32768, keep_alive: str = "5m") -> list[dict]:
     """Run chat loop using Ollama via OpenAI-compatible API.
     Tool use depends on model capability — gracefully falls back to no tools."""
     from openai import OpenAI
@@ -561,7 +561,7 @@ def chat(message: str, history: list[dict],
             return _chat_gemini(api_key, model, history, system_prompt, temperature, top_p, max_tokens)
         elif provider == "ollama":
             url = base_url or preset.get("base_url", "http://ollama:11434/v1")
-            num_ctx = int(get_setting("ollama_num_ctx") or 65536)
+            num_ctx = int(get_setting("ollama_num_ctx") or 32768)
             keep_alive = get_setting("ollama_keep_alive") or "5m"
             return _chat_ollama(url, model, history, system_prompt, temperature, top_p, max_tokens,
                                 num_ctx=num_ctx, keep_alive=keep_alive)
