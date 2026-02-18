@@ -304,7 +304,31 @@ def _tools_gemini() -> list:
     return [types.Tool(function_declarations=declarations)]
 
 
-# --- Tool Execution (shared across all providers) ---
+# --- Shared Helpers ---
+
+def _build_api_messages(history: list[dict], include_system: str = "") -> list[dict]:
+    """Convert chat history to API message format (Anthropic/Ollama dict format).
+
+    Filters to user/assistant roles with non-empty content.
+    Optionally prepends a system message (used by Ollama).
+
+    Args:
+        history: Chat history in gr.Chatbot format.
+        include_system: If non-empty, prepend as a system message.
+
+    Returns:
+        List of {"role": str, "content": str} dicts.
+    """
+    messages = []
+    if include_system:
+        messages.append({"role": "system", "content": include_system})
+    for msg in history:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+    return messages
+
 
 def _execute_tool(tool_name: str, tool_input: dict) -> tuple[str, bool]:
     """Execute a tool call and return (result_string, is_error)."""
@@ -325,6 +349,41 @@ def _execute_tool(tool_name: str, tool_input: dict) -> tuple[str, bool]:
         return f"Error executing {tool_name}: {str(e)}", True
 
 
+def _run_tool_loop(
+    api_call_fn: callable,
+    parse_response_fn: callable,
+    handle_tool_calls_fn: callable,
+    history: list[dict],
+) -> list[dict]:
+    """Run the tool-use iteration loop shared across all providers.
+
+    Args:
+        api_call_fn: () -> response. Makes the provider-specific API call.
+        parse_response_fn: (response) -> (text_parts: list[str], tool_calls: list).
+            Extracts text and tool call objects from the provider response.
+        handle_tool_calls_fn: (response, tool_calls, history) -> None.
+            Executes tools, updates API message state, appends status to history.
+        history: Chat history list to append assistant messages to.
+
+    Returns:
+        Updated history.
+    """
+    for iteration in range(MAX_TOOL_ITERATIONS):
+        response = api_call_fn()
+        text_parts, tool_calls = parse_response_fn(response)
+
+        if text_parts:
+            history.append({"role": "assistant", "content": "\n".join(text_parts)})
+
+        if not tool_calls:
+            break
+
+        logger.info("Tool loop iteration %d: %d tool call(s)", iteration + 1, len(tool_calls))
+        handle_tool_calls_fn(response, tool_calls, history)
+
+    return history
+
+
 # --- Provider-Specific Chat Implementations ---
 
 def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt: str,
@@ -332,55 +391,37 @@ def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt
     """Run chat loop using Anthropic API with native tool use."""
     from anthropic import Anthropic
     client = Anthropic(api_key=api_key.strip())
+    api_messages = _build_api_messages(history)
 
-    # Build API messages from chat history (filter to user/assistant only)
-    api_messages = []
-    for msg in history:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        if role in ("user", "assistant") and content:
-            api_messages.append({"role": role, "content": content})
-
-    for _ in range(MAX_TOOL_ITERATIONS):
-        response = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            tools=_tools_anthropic(),
-            messages=api_messages,
-            temperature=temperature,
-            top_p=top_p,
+    def make_call():
+        return client.messages.create(
+            model=model, max_tokens=max_tokens, system=system_prompt,
+            tools=_tools_anthropic(), messages=api_messages,
+            temperature=temperature, top_p=top_p,
         )
 
-        text_parts = []
-        tool_blocks = []
+    def parse(response):
+        text_parts, tool_blocks = [], []
         for block in response.content:
             if block.type == "text":
                 text_parts.append(block.text)
             elif block.type == "tool_use":
                 tool_blocks.append(block)
+        return text_parts, tool_blocks
 
-        if text_parts:
-            history.append({"role": "assistant", "content": "\n".join(text_parts)})
-
-        if not tool_blocks:
-            break
-
+    def handle_tools(response, tool_blocks, history):
         api_messages.append({"role": "assistant", "content": response.content})
-
         tool_results = []
         for tb in tool_blocks:
             history.append({"role": "assistant", "content": f"Using `{tb.name}`..."})
             result, is_error = _execute_tool(tb.name, tb.input)
             tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tb.id,
-                "content": result,
-                "is_error": is_error,
+                "type": "tool_result", "tool_use_id": tb.id,
+                "content": result, "is_error": is_error,
             })
         api_messages.append({"role": "user", "content": tool_results})
 
-    return history
+    return _run_tool_loop(make_call, parse, handle_tools, history)
 
 
 def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: str,
@@ -391,63 +432,45 @@ def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: s
 
     client = genai.Client(api_key=api_key.strip())
 
-    # Build Gemini content from history
+    # Build Gemini content from history (uses types.Content, not plain dicts)
     contents = []
-    for msg in history:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        if role == "user" and content:
-            contents.append(types.Content(role="user", parts=[types.Part.from_text(content)]))
-        elif role == "assistant" and content:
-            contents.append(types.Content(role="model", parts=[types.Part.from_text(content)]))
+    for msg in _build_api_messages(history):
+        role = "model" if msg["role"] == "assistant" else msg["role"]
+        contents.append(types.Content(role=role, parts=[types.Part.from_text(msg["content"])]))
 
-    tools = _tools_gemini()
     config = types.GenerateContentConfig(
-        system_instruction=system_prompt,
-        tools=tools,
+        system_instruction=system_prompt, tools=_tools_gemini(),
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-        temperature=temperature,
-        top_p=top_p,
-        max_output_tokens=max_tokens,
+        temperature=temperature, top_p=top_p, max_output_tokens=max_tokens,
     )
 
-    for _ in range(MAX_TOOL_ITERATIONS):
-        response = client.models.generate_content(
-            model=model,
-            contents=contents,
-            config=config,
+    def make_call():
+        return client.models.generate_content(
+            model=model, contents=contents, config=config,
         )
 
-        text_parts = []
-        fn_calls = []
+    def parse(response):
+        text_parts, fn_calls = [], []
         for part in response.candidates[0].content.parts:
             if part.text:
                 text_parts.append(part.text)
             elif part.function_call:
                 fn_calls.append(part)
+        return text_parts, fn_calls
 
-        if text_parts:
-            history.append({"role": "assistant", "content": "\n".join(text_parts)})
-
-        if not fn_calls:
-            break
-
-        # Add model response to contents
+    def handle_tools(response, fn_calls, history):
         contents.append(response.candidates[0].content)
-
-        # Execute function calls and build response parts
         fn_response_parts = []
         for fc_part in fn_calls:
             fc = fc_part.function_call
             history.append({"role": "assistant", "content": f"Using `{fc.name}`..."})
             result, is_error = _execute_tool(fc.name, dict(fc.args))
             fn_response_parts.append(types.Part.from_function_response(
-                name=fc.name,
-                response={"result": result, "is_error": is_error},
+                name=fc.name, response={"result": result, "is_error": is_error},
             ))
         contents.append(types.Content(role="user", parts=fn_response_parts))
 
-    return history
+    return _run_tool_loop(make_call, parse, handle_tools, history)
 
 
 def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: str,
@@ -457,66 +480,43 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
     Tool use depends on model capability — gracefully falls back to no tools."""
     from openai import OpenAI
     client = OpenAI(api_key="ollama", base_url=base_url)
-
-    messages = [{"role": "system", "content": system_prompt}]
-    for msg in history:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        if role in ("user", "assistant") and content:
-            messages.append({"role": role, "content": content})
-
+    messages = _build_api_messages(history, include_system=system_prompt)
     tools = _tools_openai()
-
-    # Ollama-specific options passed via extra_body
     ollama_opts = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
 
-    for _ in range(MAX_TOOL_ITERATIONS):
+    def make_call():
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
+            return client.chat.completions.create(
+                model=model, messages=messages,
                 tools=tools if tools else None,
-                temperature=temperature,
-                top_p=top_p,
-                max_tokens=max_tokens,
+                temperature=temperature, top_p=top_p, max_tokens=max_tokens,
                 extra_body=ollama_opts,
             )
         except Exception as e:
-            # If tool use fails (model doesn't support it), retry without tools
             logger.info("Ollama tool use failed, retrying without tools: %s", e)
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                top_p=top_p,
-                max_tokens=max_tokens,
+            return client.chat.completions.create(
+                model=model, messages=messages,
+                temperature=temperature, top_p=top_p, max_tokens=max_tokens,
                 extra_body=ollama_opts,
             )
 
-        choice = response.choices[0]
-        msg = choice.message
+    def parse(response):
+        msg = response.choices[0].message
+        text_parts = [msg.content] if msg.content else []
+        return text_parts, msg.tool_calls or []
 
-        if msg.content:
-            history.append({"role": "assistant", "content": msg.content})
-
-        if not msg.tool_calls:
-            break
-
-        # Add assistant message with tool calls
-        messages.append(msg.model_dump())
-
-        for tc in msg.tool_calls:
+    def handle_tools(response, tool_calls, history):
+        messages.append(response.choices[0].message.model_dump())
+        for tc in tool_calls:
             fn_name = tc.function.name
             fn_args = json.loads(tc.function.arguments)
             history.append({"role": "assistant", "content": f"Using `{fn_name}`..."})
             result, is_error = _execute_tool(fn_name, fn_args)
             messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": result,
+                "role": "tool", "tool_call_id": tc.id, "content": result,
             })
 
-    return history
+    return _run_tool_loop(make_call, parse, handle_tools, history)
 
 
 # --- Main Chat Entry Point ---
