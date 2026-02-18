@@ -127,13 +127,13 @@ def build_database_tab():
             with gr.Row():
                 setting_num_ctx = gr.Number(
                     label="Context Window (num_ctx)",
-                    value=int(_get_setting("ollama_num_ctx") or 65536),
+                    value=int(_get_setting("ollama_num_ctx")),
                     precision=0,
                     interactive=True,
                 )
                 setting_keep_alive = gr.Textbox(
                     label="Keep Alive",
-                    value=_get_setting("ollama_keep_alive") or "5m",
+                    value=_get_setting("ollama_keep_alive"),
                     placeholder="5m",
                     interactive=True,
                 )
