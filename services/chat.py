@@ -14,6 +14,7 @@ import logging
 from typing import Any
 from db import operations as db_ops
 from shared.constants import MAX_TOOL_ITERATIONS, RAG_SCORE_THRESHOLD
+from services.settings import get_setting
 
 logger = logging.getLogger(__name__)
 
@@ -181,18 +182,22 @@ def _build_system_prompt() -> str:
     return base
 
 
-def _build_rag_context(user_message: str, max_chunks: int = 3) -> str:
+def _build_rag_context(user_message: str) -> str:
     """Search Qdrant for relevant context and format for injection.
+
+    Reads rag_score_threshold and rag_max_chunks from settings DB so they
+    can be tuned at runtime via the Admin panel.
 
     Args:
         user_message: The user's current message.
-        max_chunks: Maximum number of context chunks to include.
 
     Returns:
         Formatted context string, or empty string if no results or Qdrant unavailable.
     """
     try:
         from services.vector_store import search_all
+        threshold = float(get_setting("rag_score_threshold") or RAG_SCORE_THRESHOLD)
+        max_chunks = int(get_setting("rag_max_chunks") or 3)
         results = search_all(user_message, limit=max_chunks)
         if not results:
             return ""
@@ -203,7 +208,7 @@ def _build_rag_context(user_message: str, max_chunks: int = 3) -> str:
             title = r.get("title", r.get("conv_title", ""))
             text = r.get("text", "")[:500]
             score = r.get("score", 0)
-            if score > RAG_SCORE_THRESHOLD:
+            if score > threshold:
                 context_parts.append(f"[{source}] {title}: {text}")
 
         if not context_parts:
