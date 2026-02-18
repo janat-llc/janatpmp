@@ -13,6 +13,7 @@ import json
 import logging
 from typing import Any
 from db import operations as db_ops
+from shared.constants import MAX_TOOL_ITERATIONS, RAG_SCORE_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +203,7 @@ def _build_rag_context(user_message: str, max_chunks: int = 3) -> str:
             title = r.get("title", r.get("conv_title", ""))
             text = r.get("text", "")[:500]
             score = r.get("score", 0)
-            if score > 0.3:
+            if score > RAG_SCORE_THRESHOLD:
                 context_parts.append(f"[{source}] {title}: {text}")
 
         if not context_parts:
@@ -335,8 +336,7 @@ def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt
         if role in ("user", "assistant") and content:
             api_messages.append({"role": role, "content": content})
 
-    max_iterations = 10
-    for _ in range(max_iterations):
+    for _ in range(MAX_TOOL_ITERATIONS):
         response = client.messages.create(
             model=model,
             max_tokens=max_tokens,
@@ -406,8 +406,7 @@ def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: s
         max_output_tokens=max_tokens,
     )
 
-    max_iterations = 10
-    for _ in range(max_iterations):
+    for _ in range(MAX_TOOL_ITERATIONS):
         response = client.models.generate_content(
             model=model,
             contents=contents,
@@ -466,8 +465,7 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
     # Ollama-specific options passed via extra_body
     ollama_opts = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
 
-    max_iterations = 10
-    for _ in range(max_iterations):
+    for _ in range(MAX_TOOL_ITERATIONS):
         try:
             response = client.chat.completions.create(
                 model=model,

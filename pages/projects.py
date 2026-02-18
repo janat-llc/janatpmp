@@ -26,67 +26,15 @@ from db.chat_operations import (
     parse_reasoning, search_conversations,
 )
 from services.claude_import import import_conversations_json
-
-
-# --- Constants ---
-
-PROJECT_TYPES = ["project", "epic", "book", "website", "milestone"]
-
-DOMAINS = [
-    "", "literature", "janatpmp", "janat", "atlas", "meax",
-    "janatavern", "amphitheatre", "nexusweaver", "websites",
-    "social", "speaking", "life"
-]
-
-ALL_TYPES = [
-    "project", "epic", "feature", "component", "milestone",
-    "book", "chapter", "section",
-    "website", "page", "deployment",
-    "social_campaign", "speaking_event", "life_area"
-]
-
-STATUSES = [
-    "not_started", "planning", "in_progress", "blocked",
-    "review", "completed", "shipped", "archived"
-]
-
-TASK_STATUSES = [
-    "pending", "processing", "blocked", "review",
-    "completed", "failed", "retry", "dlq"
-]
-
-TASK_TYPES = [
-    "agent_story", "user_story", "subtask",
-    "research", "review", "documentation"
-]
-
-ASSIGNEES = ["unassigned", "agent", "claude", "mat", "janus"]
-
-PRIORITIES = ["urgent", "normal", "background"]
-
-DOC_TYPES = [
-    "conversation", "file", "artifact", "research",
-    "agent_output", "session_notes", "code"
-]
-
-DOC_SOURCES = [
-    "claude_exporter", "upload", "agent", "generated", "manual"
-]
-
-INITIAL_CHAT = [{
-    "role": "assistant",
-    "content": (
-        "I'm connected with 22 database tools. "
-        "Ask me to create items, update tasks, or check project status."
-    ),
-}]
+from shared.constants import (
+    PROJECT_TYPES, DOMAINS, ALL_TYPES, STATUSES,
+    TASK_STATUSES, TASK_TYPES, ASSIGNEES, PRIORITIES,
+    DOC_TYPES, DOC_SOURCES, DEFAULT_CHAT_HISTORY,
+)
+from shared.formatting import fmt_enum, entity_list_to_df
 
 
 # --- Data helpers ---
-
-def _fmt(value: str) -> str:
-    """Convert 'not_started' to 'Not Started'."""
-    return value.replace("_", " ").title() if value else ""
 
 
 def _load_projects(domain: str = "", status: str = "") -> list:
@@ -98,30 +46,19 @@ def _load_projects(domain: str = "", status: str = "") -> list:
 def _children_df(parent_id: str) -> pd.DataFrame:
     """Fetch child items for a given parent."""
     children = list_items(parent_id=parent_id, limit=100)
-    if not children:
-        return pd.DataFrame(columns=["ID", "Title", "Type", "Status", "Priority"])
-    return pd.DataFrame([{
-        "ID": c["id"][:8],
-        "Title": c["title"],
-        "Type": _fmt(c["entity_type"]),
-        "Status": _fmt(c["status"]),
-        "Priority": c["priority"],
-    } for c in children])
+    return entity_list_to_df(children, [
+        ("ID", "id:id"), ("Title", "title"), ("Type", "fmt:entity_type"),
+        ("Status", "fmt:status"), ("Priority", "priority"),
+    ])
 
 
 def _all_items_df() -> pd.DataFrame:
     """Fetch all items for the List View tab."""
     items = list_items(limit=200)
-    if not items:
-        return pd.DataFrame(columns=["ID", "Title", "Domain", "Type", "Status", "Priority"])
-    return pd.DataFrame([{
-        "ID": item["id"][:8],
-        "Title": item["title"],
-        "Domain": _fmt(item.get("domain", "")),
-        "Type": _fmt(item.get("entity_type", "")),
-        "Status": _fmt(item.get("status", "")),
-        "Priority": item.get("priority", 3),
-    } for item in items])
+    return entity_list_to_df(items, [
+        ("ID", "id:id"), ("Title", "title"), ("Domain", "fmt:domain"),
+        ("Type", "fmt:entity_type"), ("Status", "fmt:status"), ("Priority", "priority"),
+    ])
 
 
 def _load_tasks(status: str = "", assigned_to: str = "") -> list:
@@ -132,16 +69,10 @@ def _load_tasks(status: str = "", assigned_to: str = "") -> list:
 def _all_tasks_df() -> pd.DataFrame:
     """Fetch all tasks for the List View."""
     tasks = list_tasks(limit=200)
-    if not tasks:
-        return pd.DataFrame(columns=["ID", "Title", "Type", "Assigned", "Status", "Priority"])
-    return pd.DataFrame([{
-        "ID": t["id"][:8],
-        "Title": t["title"],
-        "Type": _fmt(t.get("task_type", "")),
-        "Assigned": _fmt(t.get("assigned_to", "")),
-        "Status": _fmt(t.get("status", "")),
-        "Priority": _fmt(t.get("priority", "")),
-    } for t in tasks])
+    return entity_list_to_df(tasks, [
+        ("ID", "id:id"), ("Title", "title"), ("Type", "fmt:task_type"),
+        ("Assigned", "fmt:assigned_to"), ("Status", "fmt:status"), ("Priority", "fmt:priority"),
+    ])
 
 
 def _load_documents(doc_type: str = "", source: str = "") -> list:
@@ -152,15 +83,10 @@ def _load_documents(doc_type: str = "", source: str = "") -> list:
 def _all_docs_df() -> pd.DataFrame:
     """Fetch all documents for the List View."""
     docs = list_documents(limit=200)
-    if not docs:
-        return pd.DataFrame(columns=["ID", "Title", "Type", "Source", "Created"])
-    return pd.DataFrame([{
-        "ID": d["id"][:8],
-        "Title": d["title"],
-        "Type": _fmt(d.get("doc_type", "")),
-        "Source": _fmt(d.get("source", "")),
-        "Created": d.get("created_at", "")[:16] if d.get("created_at") else "",
-    } for d in docs])
+    return entity_list_to_df(docs, [
+        ("ID", "id:id"), ("Title", "title"), ("Type", "fmt:doc_type"),
+        ("Source", "fmt:source"), ("Created", "date:created_at"),
+    ])
 
 
 def _msgs_to_history(msgs: list[dict]) -> list[dict]:
@@ -186,13 +112,13 @@ def _load_most_recent_chat() -> tuple[str, list[dict]]:
     """Load most recent conversation for Chat tab initialization."""
     convs = list_conversations(limit=1)
     if not convs:
-        return "", list(INITIAL_CHAT)
+        return "", list(DEFAULT_CHAT_HISTORY)
     conv_id = convs[0]["id"]
     msgs = get_messages(conv_id)
     if not msgs:
-        return conv_id, list(INITIAL_CHAT)
+        return conv_id, list(DEFAULT_CHAT_HISTORY)
     history = _msgs_to_history(msgs)
-    return conv_id, history if history else list(INITIAL_CHAT)
+    return conv_id, history if history else list(DEFAULT_CHAT_HISTORY)
 
 
 # --- Page builder ---
@@ -655,7 +581,7 @@ def build_page():
                 else:
                     for p in projects:
                         btn = gr.Button(
-                            f"{p['title']}\n{_fmt(p.get('status', ''))}  ·  {_fmt(p.get('entity_type', '')).upper()}",
+                            f"{p['title']}\n{fmt_enum(p.get('status', ''))}  ·  {fmt_enum(p.get('entity_type', '')).upper()}",
                             key=f"proj-{p['id'][:8]}",
                             size="sm",
                         )
@@ -697,7 +623,7 @@ def build_page():
                 else:
                     for t in tasks:
                         btn = gr.Button(
-                            f"{t['title']}\n{_fmt(t.get('status', ''))}  ·  {_fmt(t.get('assigned_to', '')).upper()}",
+                            f"{t['title']}\n{fmt_enum(t.get('status', ''))}  ·  {fmt_enum(t.get('assigned_to', '')).upper()}",
                             key=f"task-{t['id'][:8]}",
                             size="sm",
                         )
@@ -741,7 +667,7 @@ def build_page():
                 else:
                     for d in docs:
                         btn = gr.Button(
-                            f"{d['title']}\n{_fmt(d.get('doc_type', ''))}  ·  {_fmt(d.get('source', '')).upper()}",
+                            f"{d['title']}\n{fmt_enum(d.get('doc_type', ''))}  ·  {fmt_enum(d.get('source', '')).upper()}",
                             key=f"doc-{d['id'][:8]}",
                             size="sm",
                         )
@@ -831,7 +757,7 @@ def build_page():
                         # Click to load conversation
                         def on_conv_click(c_id=conv["id"]):
                             msgs = get_messages(c_id)
-                            history = _msgs_to_history(msgs) or list(INITIAL_CHAT)
+                            history = _msgs_to_history(msgs) or list(DEFAULT_CHAT_HISTORY)
                             return c_id, history, history
                         conv_btn.click(
                             on_conv_click,
@@ -845,7 +771,7 @@ def build_page():
                             delete_conversation(c_id)
                             new_convs = list_conversations(limit=30)
                             if was_active:
-                                return new_convs, "", list(INITIAL_CHAT), list(INITIAL_CHAT)
+                                return new_convs, "", list(DEFAULT_CHAT_HISTORY), list(DEFAULT_CHAT_HISTORY)
                             return new_convs, gr.skip(), gr.skip(), gr.skip()
                         del_btn.click(
                             on_delete,
@@ -894,7 +820,7 @@ def build_page():
 
                 # New chat handler
                 def _new_chat():
-                    return "", list(INITIAL_CHAT), list(INITIAL_CHAT), list_conversations(limit=30)
+                    return "", list(DEFAULT_CHAT_HISTORY), list(DEFAULT_CHAT_HISTORY), list_conversations(limit=30)
                 new_chat_btn.click(
                     _new_chat,
                     outputs=[active_conversation_id, chat_tab_chatbot, chat_tab_history, conversations_state],
@@ -1033,8 +959,8 @@ def build_page():
             item_id,
             item.get("title", ""),
             item.get("status", ""),
-            _fmt(item.get("entity_type", "")),
-            _fmt(item.get("domain", "")),
+            fmt_enum(item.get("entity_type", "")),
+            fmt_enum(item.get("domain", "")),
             item.get("priority", 3),
             item.get("created_at", "")[:16] if item.get("created_at") else "",
             item.get("description", "") or "",
@@ -1114,8 +1040,8 @@ def build_page():
             task.get("title", ""),
             task.get("status", ""),
             task.get("assigned_to", ""),
-            _fmt(task.get("task_type", "")),
-            _fmt(task.get("priority", "")),
+            fmt_enum(task.get("task_type", "")),
+            fmt_enum(task.get("priority", "")),
             task.get("target_item_id", "")[:8] if task.get("target_item_id") else "",
             task.get("description", "") or "",
             task.get("agent_instructions", "") or "",
@@ -1192,8 +1118,8 @@ def build_page():
             gr.Column(visible=False),
             doc_id,
             doc.get("title", ""),
-            _fmt(doc.get("doc_type", "")),
-            _fmt(doc.get("source", "")),
+            fmt_enum(doc.get("doc_type", "")),
+            fmt_enum(doc.get("source", "")),
             doc.get("content", "") or "",
             doc.get("file_path", "") or "",
             doc.get("created_at", "")[:16] if doc.get("created_at") else "",
@@ -1257,9 +1183,9 @@ def build_page():
             items_df = pd.DataFrame([{
                 "ID": i["id"][:8],
                 "Title": i["title"],
-                "Domain": _fmt(i.get("domain", "")),
-                "Type": _fmt(i.get("entity_type", "")),
-                "Status": _fmt(i.get("status", "")),
+                "Domain": fmt_enum(i.get("domain", "")),
+                "Type": fmt_enum(i.get("entity_type", "")),
+                "Status": fmt_enum(i.get("status", "")),
             } for i in items])
         else:
             items_df = pd.DataFrame(
@@ -1275,8 +1201,8 @@ def build_page():
             docs_df = pd.DataFrame([{
                 "ID": d["id"][:8],
                 "Title": d["title"],
-                "Type": _fmt(d.get("doc_type", "")),
-                "Source": _fmt(d.get("source", "")),
+                "Type": fmt_enum(d.get("doc_type", "")),
+                "Source": fmt_enum(d.get("source", "")),
                 "Created": d.get("created_at", "")[:16] if d.get("created_at") else "",
             } for d in found_docs])
         else:
@@ -1318,7 +1244,7 @@ def build_page():
         for r in rels:
             if r["source_id"] == eid:
                 rows.append({
-                    "Relationship": _fmt(r["relationship_type"]),
+                    "Relationship": fmt_enum(r["relationship_type"]),
                     "Direction": "-> outgoing",
                     "Connected Type": r["target_type"],
                     "Connected ID": r["target_id"][:8],
@@ -1326,7 +1252,7 @@ def build_page():
                 })
             else:
                 rows.append({
-                    "Relationship": _fmt(r["relationship_type"]),
+                    "Relationship": fmt_enum(r["relationship_type"]),
                     "Direction": "<- incoming",
                     "Connected Type": r["source_type"],
                     "Connected ID": r["source_id"][:8],
@@ -1399,7 +1325,7 @@ def build_page():
         convs = list_conversations(limit=500, active_only=False)
         return [[
             c.get("title", ""),
-            _fmt(c.get("source", "")),
+            fmt_enum(c.get("source", "")),
             c.get("message_count", 0),
             (c.get("updated_at") or "")[:16],
             c["id"],
@@ -1439,7 +1365,7 @@ def build_page():
         if not conv_id:
             return gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), "No conversation selected."
         msgs = get_messages(conv_id)
-        history = _msgs_to_history(msgs) or list(INITIAL_CHAT)
+        history = _msgs_to_history(msgs) or list(DEFAULT_CHAT_HISTORY)
         convs = list_conversations(limit=30)
         return (
             conv_id,                       # active_conversation_id
