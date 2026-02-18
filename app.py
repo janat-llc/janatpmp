@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 import gradio as gr
 from db.operations import (
-    init_database,
+    init_database, cleanup_cdc_outbox,
     # MCP-exposed operations
     create_item, get_item, list_items, update_item, delete_item,
     create_task, get_task, list_tasks, update_task,
@@ -39,6 +39,7 @@ init_database()
 from services.settings import init_settings
 init_settings()
 cleanup_old_logs()
+cleanup_cdc_outbox()
 logger.info("Database and settings initialized")
 
 # Initialize vector store collections (safe if Qdrant not running)

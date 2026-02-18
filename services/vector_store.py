@@ -5,6 +5,7 @@ Collections:
 - janatpmp_messages: Embedded conversation messages
 """
 
+import os
 import logging
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -14,7 +15,6 @@ from services.embedding import embed_passages, embed_query
 
 logger = logging.getLogger(__name__)
 
-QDRANT_URL = "http://janatpmp-qdrant:6333"  # Docker DNS (service name in docker-compose)
 VECTOR_DIM = 2048
 COLLECTION_DOCUMENTS = "janatpmp_documents"
 COLLECTION_MESSAGES = "janatpmp_messages"
@@ -22,11 +22,25 @@ COLLECTION_MESSAGES = "janatpmp_messages"
 _client = None
 
 
+def _get_qdrant_url() -> str:
+    """Resolve Qdrant URL: env var > settings > default."""
+    env_url = os.environ.get("QDRANT_URL")
+    if env_url:
+        return env_url
+    try:
+        from services.settings import get_setting
+        return get_setting("qdrant_url") or "http://janatpmp-qdrant:6333"
+    except Exception:
+        return "http://janatpmp-qdrant:6333"
+
+
 def _get_client() -> QdrantClient:
     """Lazy-load Qdrant client."""
     global _client
     if _client is None:
-        _client = QdrantClient(url=QDRANT_URL, timeout=30)
+        url = _get_qdrant_url()
+        logger.info("Connecting to Qdrant at %s", url)
+        _client = QdrantClient(url=url, timeout=30)
     return _client
 
 

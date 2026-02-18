@@ -71,6 +71,7 @@ SETTINGS_REGISTRY = {
     "ingestion_quest_dir":     ("", False, "ingestion", None),
 
     # RAG
+    "qdrant_url":           ("http://janatpmp-qdrant:6333", False, "rag", None),
     "rag_score_threshold":  ("0.3", False, "rag", _validate_positive_float),
     "rag_max_chunks":       ("3", False, "rag", _validate_positive_int),
 

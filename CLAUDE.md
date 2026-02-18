@@ -24,10 +24,17 @@ JANATPMP/
 ├── app.py                    # Thin orchestrator: init_database(), build_page(), gr.api(), launch
 ├── pages/
 │   ├── __init__.py
-│   └── projects.py           # ALL UI lives here: build_page() function
+│   └── projects.py           # UI layout + event wiring (~1220 lines)
 ├── tabs/
 │   ├── __init__.py
-│   └── tab_database.py       # Database/Admin tab builder (imported by projects.py)
+│   ├── tab_database.py       # Database/Admin tab builder (imported by projects.py)
+│   ├── tab_chat.py           # Chat handler functions (sidebar + Chat tab)
+│   └── tab_knowledge.py      # Knowledge tab handlers (conversations, search, connections)
+├── shared/
+│   ├── __init__.py
+│   ├── constants.py           # All enum lists, magic numbers, default values
+│   ├── formatting.py          # fmt_enum(), entity_list_to_df() display helpers
+│   └── data_helpers.py        # Data-loading helpers (_load_projects, _all_items_df, etc.)
 ├── db/
 │   ├── schema.sql            # Database schema DDL (NO seed data)
 │   ├── seed_data.sql         # Optional seed data (separate from schema)
@@ -35,19 +42,22 @@ JANATPMP/
 │   ├── chat_operations.py    # Conversation + message CRUD (Phase 4B)
 │   ├── test_operations.py    # Tests
 │   ├── migrations/           # Versioned schema migrations
-│   │   └── 0.3.0_conversations.sql
+│   │   ├── 0.3.0_conversations.sql
+│   │   ├── 0.4.0_app_logs.sql
+│   │   └── 0.4.1_messages_fts_update.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups
 │   └── __init__.py
 ├── services/
 │   ├── __init__.py
+│   ├── log_config.py         # SQLiteLogHandler + setup_logging() + get_logs()
 │   ├── chat.py               # Multi-provider chat with tool use (Anthropic/Gemini/Ollama)
 │   ├── claude_export.py      # Claude Export service: ingest/query external conversation DB
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (Phase 5)
 │   ├── embedding.py          # Llama-Nemotron-Embed-1B-v2 text embedding (Phase 5)
-│   ├── vector_store.py       # Qdrant vector DB operations (Phase 5)
+│   ├── vector_store.py       # Qdrant vector DB operations (configurable URL, Phase 5)
 │   ├── bulk_embed.py         # Batch embed documents & messages into Qdrant (Phase 5)
-│   ├── settings.py           # Settings service: get/set with base64 for secrets
+│   ├── settings.py           # Settings registry with validation and categories
 │   └── ingestion/            # Content ingestion parsers (Phase 6A)
 │       ├── __init__.py
 │       ├── google_ai_studio.py  # Google AI Studio chunkedPrompt parser
@@ -59,7 +69,7 @@ JANATPMP/
 │   ├── janatpmp-mockup.png   # Visual reference for Projects page layout
 │   ├── INVENTORY_OLD_PARSERS.md    # Old pipeline code inventory (Phase 6A)
 │   └── INVENTORY_CONTENT_CORPUS.md # Content corpus catalog (Phase 6A)
-├── completed/                # Archived TODO files
+├── completed/                # Archived TODO files and dead prototype tabs
 ├── screenshots/              # UI screenshots for reference
 ├── requirements.txt          # Python dependencies (pinned)
 ├── pyproject.toml            # Project metadata
@@ -108,6 +118,8 @@ demo.launch(mcp_server=True, server_name="0.0.0.0")
 
 ```python
 # pages/projects.py — build_page() function
+# Handler functions are extracted to tabs/ and shared/ modules.
+# projects.py retains layout construction + event wiring (~1220 lines).
 def build_page():
     with gr.Sidebar(position="left"):
         # Project list, filters, create form
@@ -209,6 +221,49 @@ db/operations.py → 22 functions → three surfaces:
 - `gr.api()` exposes db functions as MCP tools without UI components
 - `build_page()` is the single entry point for all UI construction
 
+### Shared Module (`shared/`)
+
+Centralized constants, formatting, and data-loading helpers used across UI and services.
+
+- **`shared/constants.py`** — All enum lists (DOMAINS, STATUSES, TASK_TYPES, etc.), magic numbers
+  (`MAX_TOOL_ITERATIONS=10`, `RAG_SCORE_THRESHOLD`), and `DEFAULT_CHAT_HISTORY`.
+- **`shared/formatting.py`** — `fmt_enum()` (converts `not_started` → `Not Started`),
+  `entity_list_to_df()` (generic DataFrame builder from entity dicts).
+- **`shared/data_helpers.py`** — Data-loading functions extracted from projects.py:
+  `_load_projects()`, `_children_df()`, `_all_items_df()`, `_load_tasks()`, `_all_tasks_df()`,
+  `_load_documents()`, `_all_docs_df()`, `_msgs_to_history()`, `_load_most_recent_chat()`.
+
+### Logging Architecture (`services/log_config.py`)
+
+Centralized logging with SQLite persistence:
+
+- **`SQLiteLogHandler`** — Custom `logging.Handler` that writes to `app_logs` table.
+  Batches writes (flushes on WARNING+ or every 10 records) to minimize DB overhead.
+- **`setup_logging(level)`** — Configures root logger with console + SQLite handlers.
+  Called at app startup in `app.py` before any other imports.
+- **`get_logs(level, module, limit, since)`** — Query function used by Admin UI log viewer.
+- **`cleanup_old_logs(days=30)`** — Retention policy, called on startup.
+
+All services use `logger = logging.getLogger(__name__)` and log at appropriate levels:
+INFO for operations, WARNING for fallbacks, ERROR for failures.
+
+### Settings Registry (`services/settings.py`)
+
+Settings use a `SETTINGS_REGISTRY` dict where each key maps to
+`(default, is_secret, category, validator_fn)`:
+
+- **Categories:** `chat`, `ollama`, `export`, `ingestion`, `rag`, `system`
+- **Validation:** `set_setting()` validates before storing, returns error string on failure
+- **Secrets:** Base64-encoded (obfuscation, not encryption). Auto-encoded/decoded by
+  `get_setting()` / `set_setting()`.
+- `get_settings_by_category(category)` returns all settings for a given category.
+
+### CDC Outbox Retention
+
+The `cdc_outbox` table captures all database mutations for future sync to Qdrant/Neo4j.
+`cleanup_cdc_outbox(days=90)` in `db/operations.py` deletes processed entries older than
+90 days. Called on startup after `init_database()`.
+
 ## Database Schema (db/schema.sql)
 
 **Core Tables:**
@@ -227,9 +282,17 @@ db/operations.py → 22 functions → three surfaces:
   user_prompt, model_reasoning (chain-of-thought/think blocks), model_response (visible reply).
   Per-turn provider/model snapshot, token counts (prompt/reasoning/response), tools_called JSON.
   Ordered by (conversation_id, sequence). FTS5 on user_prompt + model_response.
+- `app_logs` — Application log records (level, module, function, message, metadata JSON).
+  Written by `SQLiteLogHandler`, queryable via Admin UI.
 - `settings` — Key-value application configuration. Base64 for secrets. Auto-updated timestamps.
-- `cdc_outbox` — Change Data Capture for future Qdrant/Neo4j sync.
+- `cdc_outbox` — Change Data Capture for future Qdrant/Neo4j sync. Auto-cleaned on startup (90 days).
 - `schema_version` — Migration tracking.
+
+**Migrations** (in `db/migrations/`):
+
+- `0.3.0_conversations.sql` — Conversations + messages tables, FTS, CDC triggers
+- `0.4.0_app_logs.sql` — Application logs table with indexes
+- `0.4.1_messages_fts_update.sql` — Missing FTS UPDATE trigger on messages
 
 **Domain enum values:** literature, janatpmp, janat, atlas, meax, janatavern,
 amphitheatre, nexusweaver, websites, social, speaking, life

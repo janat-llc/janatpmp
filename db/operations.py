@@ -94,6 +94,39 @@ def init_database():
                     migration_sql = migration_path.read_text(encoding="utf-8")
                     conn.executescript(migration_sql)
 
+            # Migration 0.4.1: messages FTS UPDATE trigger
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name='messages_fts_update'"
+            )
+            if cursor.fetchone() is None:
+                migration_path = Path(__file__).parent / "migrations" / "0.4.1_messages_fts_update.sql"
+                if migration_path.exists():
+                    migration_sql = migration_path.read_text(encoding="utf-8")
+                    conn.executescript(migration_sql)
+
+
+def cleanup_cdc_outbox(days: int = 90) -> int:
+    """Delete processed CDC outbox entries older than the given number of days.
+
+    Args:
+        days: Delete entries older than this many days. Defaults to 90.
+
+    Returns:
+        Number of rows deleted.
+    """
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """DELETE FROM cdc_outbox
+               WHERE processed_qdrant = 1 AND processed_neo4j = 1
+                 AND created_at < datetime('now', ? || ' days')""",
+            (f"-{days}",)
+        )
+        conn.commit()
+        deleted = cursor.rowcount
+    if deleted:
+        logger.info("CDC outbox cleanup: deleted %d entries older than %d days", deleted, days)
+    return deleted
+
 
 # Initialize on import
 init_database()
