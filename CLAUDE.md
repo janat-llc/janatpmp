@@ -6,8 +6,7 @@
 platform designed for solo architects and engineers working with AI partners. It provides
 persistent project state that AI assistants can read and write via MCP (Model Context Protocol).
 
-**Status:** v1.0 (Hackathon Sprint — Feb 10-16, 2026)
-**Origin:** Anthropic "Built with Opus 4.6" Claude Code competition (Feb 2026)
+**Status:** Active development
 **Goal:** Strategic command center for consciousness architecture work across multiple domains.
 
 ## Tech Stack
@@ -22,6 +21,7 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 ```
 JANATPMP/
 ├── app.py                    # Thin orchestrator: init_database(), build_page(), gr.api(), launch
+├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── pages/
 │   ├── __init__.py
 │   └── projects.py           # UI layout + event wiring (~1220 lines)
@@ -65,6 +65,8 @@ JANATPMP/
 │       ├── markdown_ingest.py   # Markdown & text file ingester
 │       ├── dedup.py             # SHA-256 content-hash deduplication
 │       └── README.md            # Format documentation & test results
+├── assets/
+│   └── janat_logo_bold_transparent.png  # Janat Mandala logo (brand header)
 ├── docs/
 │   ├── janatpmp-mockup.png   # Visual reference for Projects page layout
 │   ├── INVENTORY_OLD_PARSERS.md    # Old pipeline code inventory (Phase 6A)
@@ -93,15 +95,17 @@ This approach was chosen over multi-page routing (`demo.route()`) because:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  [Projects] [Work] [Knowledge] [Chat] [Admin]  ← gr.Tabs()    │
+│  JANATPMP                                    Powered by [Janat]     │
+├──────────────────────────────────────────────────────────────────────┤
+│  [Projects] [Work] [Knowledge] [Chat] [Admin]  ← gr.Tabs()         │
 ├──────────┬───────────────────────────────────┬───────────────────────┤
 │  LEFT    │     CENTER CONTENT              │  RIGHT                │
-│  SIDEBAR │                                 │  SIDEBAR              │
-│          │  Content changes per tab        │                       │
-│  Context │  selected. Each top-level       │  Claude Chat (default) │
-│  cards   │  tab can have sub-tabs          │  OR Chat Settings      │
-│  Filters │  (Detail/List View, etc.)       │  (when Chat tab active)│
-│  +New    │                                 │                       │
+│  SIDEBAR │     (40px padding each side)    │  SIDEBAR              │
+│          │                                 │                       │
+│  Context │  Content changes per tab        │  Janat Chat (default)  │
+│  cards   │  selected. Each top-level       │  OR Chat Settings      │
+│  Filters │  tab can have sub-tabs          │  (when Chat tab active)│
+│  +New    │  (Detail/List View, etc.)       │                       │
 └──────────┴───────────────────────────────────┴───────────────────────┘
 ```
 
@@ -156,10 +160,13 @@ The center content is just the main Blocks body (no Row/Column wrapper needed).
 
 The left sidebar uses `@gr.render(inputs=[active_tab, projects_state, tasks_state])`
 to dynamically switch content based on the active tab. The right sidebar is also
-contextual: it shows Claude quick-chat on all tabs EXCEPT Chat, where it transforms
+contextual: it shows Janat chat on all tabs EXCEPT Chat, where it transforms
 into a Chat Settings panel (provider, model, temperature, top_p, system prompt append,
-tool toggles). Both sidebars use state bridge patterns — render-created components
-sync to gr.State via .change listeners for cross-component data flow.
+tool toggles). The sidebar chat is a continuous conversation window — it loads the
+most recent conversation on startup and carries context forward. No clear button;
+the conversation is persistent by design. Both sidebars use state bridge patterns —
+render-created components sync to gr.State via .change listeners for cross-component
+data flow.
 
 ### Settings & Chat Architecture
 

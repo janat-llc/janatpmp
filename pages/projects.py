@@ -64,22 +64,47 @@ def build_page():
     chat_tab_max_tokens = gr.State(8192)
     chat_tab_system_append = gr.State("")
 
+    # === BRANDED HEADER ===
+    gr.HTML("""
+    <div style="display:flex; align-items:center; justify-content:space-between;
+                padding:12px 20px 12px 20px; border-bottom:1px solid #1a1a1a;
+">
+        <div style="display:flex; align-items:center;">
+            <span style="font-family:'Orbitron',sans-serif; font-size:1.4rem;
+                         font-weight:700; color:#00FFFF; letter-spacing:0.15em;">
+                JANATPMP
+            </span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-family:'Rajdhani',sans-serif; font-size:0.75rem;
+                         color:#808080; letter-spacing:0.05em;">
+                Powered by
+            </span>
+            <img src="/gradio_api/file=assets/janat_logo_bold_transparent.png"
+                 alt="Janat" style="height:28px; width:auto; opacity:0.85;" />
+        </div>
+    </div>
+    """, elem_id="janat-header")
+
     # === RIGHT SIDEBAR (conditional — Janat chat or Chat Settings) ===
     with gr.Sidebar(position="right"):
         # Section A: Janat quick-chat (visible on all tabs except Chat)
-        with gr.Column() as right_chat_section:
-            gr.Markdown("### Janat")
+        with gr.Column(scale=1) as right_chat_section:
+            gr.Markdown("### Janat", elem_classes=["right-panel-header"])
             chatbot = gr.Chatbot(
-                value=list(_initial_chat_history), height=500,
-                show_label=False, buttons=[],
+                value=list(_initial_chat_history),
+                show_label=False,
+                buttons=["copy", "copy_all"],
+                scale=1, min_height=300,
+                elem_classes=["sidebar-chatbot"],
             )
             chat_input = gr.Textbox(
                 placeholder="What should We do?",
-                show_label=False, interactive=True, max_lines=5, lines=5,
+                show_label=False, interactive=True, max_lines=5, lines=3,
             )
         # Section B: Chat Settings (visible only on Chat tab)
         with gr.Column(visible=False) as right_settings_section:
-            gr.Markdown("### Chat Settings")
+            gr.Markdown("### Chat Settings", elem_classes=["right-panel-header"])
             rs_provider = gr.Dropdown(
                 choices=["anthropic", "gemini", "ollama"],
                 value="ollama", label="Provider", interactive=True,
@@ -1198,7 +1223,6 @@ def build_page():
         outputs=[chatbot, chat_history, chat_input],
         api_visibility="private",
     )
-
     # === CHAT TAB WIRING ===
     _chat_tab_inputs = [
         chat_tab_input, chat_tab_history, active_conversation_id,

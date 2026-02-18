@@ -33,6 +33,7 @@ from services.claude_import import import_conversations_json
 from services.vector_store import search as vector_search, search_all as vector_search_all
 from services.bulk_embed import embed_all_documents, embed_all_messages
 from pages.projects import build_page
+from janat_theme import JanatTheme, JANAT_CSS
 
 # Initialize database and settings BEFORE building UI
 init_database()
@@ -101,13 +102,7 @@ if __name__ == "__main__":
     demo.launch(
         mcp_server=True,
         server_name="0.0.0.0",
-        theme=gr.themes.Soft(),
-        css="""
-            .sidebar.right .sidebar-content { padding: 4px 6px !important; }
-            .sidebar.right .message-row { max-width: 100% !important; }
-            .sidebar.right .chatbot { padding: 0 !important; }
-            .sidebar.right .message { padding: 6px 8px !important; max-width: 100% !important; }
-            .sidebar.right .bubble-wrap { padding: 0 !important; }
-            .sidebar.right .wrapper { padding: 0 !important; }
-        """,
+        theme=JanatTheme(),
+        css=JANAT_CSS,
+        allowed_paths=["assets"],
     )
