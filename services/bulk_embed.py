@@ -3,8 +3,11 @@
 Run once to backfill, then incremental embedding happens via CDC or on-create.
 """
 
+import logging
 from db.operations import get_connection
 from services.vector_store import ensure_collections, upsert_document, upsert_message
+
+logger = logging.getLogger(__name__)
 
 
 def embed_all_documents() -> dict:
@@ -26,6 +29,7 @@ def embed_all_documents() -> dict:
         """)
         rows = cursor.fetchall()
 
+    logger.info("Bulk embed documents: %d candidates", len(rows))
     for row in rows:
         try:
             upsert_document(
@@ -42,6 +46,7 @@ def embed_all_documents() -> dict:
         except Exception as e:
             errors.append(f"{row['id']}: {str(e)[:80]}")
 
+    logger.info("Bulk embed documents: %d embedded, %d errors", embedded, len(errors))
     return {"embedded": embedded, "skipped": skipped, "errors": errors}
 
 
@@ -67,6 +72,7 @@ def embed_all_messages() -> dict:
         """)
         rows = cursor.fetchall()
 
+    logger.info("Bulk embed messages: %d candidates", len(rows))
     for row in rows:
         try:
             text = f"Q: {row['user_prompt']}\nA: {row['model_response']}"
@@ -87,4 +93,6 @@ def embed_all_messages() -> dict:
         except Exception as e:
             errors.append(f"{row['id']}: {str(e)[:80]}")
 
+    logger.info("Bulk embed messages: %d embedded, %d skipped, %d errors",
+                embedded, skipped, len(errors))
     return {"embedded": embedded, "skipped": skipped, "errors": errors}

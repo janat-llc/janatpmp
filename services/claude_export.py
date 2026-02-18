@@ -2,9 +2,12 @@
 
 import sqlite3
 import json
+import logging
 import os
 from pathlib import Path
 from services.settings import get_setting
+
+logger = logging.getLogger(__name__)
 
 
 def _get_export_db_path() -> str:
@@ -16,6 +19,7 @@ def _get_connection(db_path: str = None):
     """Get connection to claude_export.db."""
     path = db_path or _get_export_db_path()
     if not path or not os.path.exists(path):
+        logger.warning("Claude export DB not found: %s", path)
         return None
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -140,7 +144,9 @@ def ingest_from_directory(export_dir: str, db_path: str = None) -> str:
 
     conn.commit()
     conn.close()
-    return f"Ingested: {', '.join(results)}" if results else "No JSON files found in directory."
+    summary = f"Ingested: {', '.join(results)}" if results else "No JSON files found in directory."
+    logger.info("Claude export ingest: %s", summary)
+    return summary
 
 
 def get_conversations() -> list[dict]:

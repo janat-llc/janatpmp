@@ -1,6 +1,9 @@
 """Settings service — persistent key-value configuration with secret obfuscation."""
 import base64
+import logging
 from db.operations import get_connection
+
+logger = logging.getLogger(__name__)
 
 # Default settings applied on first run
 DEFAULTS = {
@@ -33,6 +36,7 @@ def _decode(value: str) -> str:
     try:
         return base64.b64decode(value.encode("utf-8")).decode("utf-8")
     except Exception:
+        logger.warning("Failed to base64-decode setting value, returning as-is")
         return value  # Return as-is if not valid base64
 
 

@@ -4,7 +4,10 @@ Provides document embedding and query embedding with asymmetric encoding.
 Model is loaded lazily on first use and cached for the process lifetime.
 """
 
+import logging
 from sentence_transformers import SentenceTransformer
+
+logger = logging.getLogger(__name__)
 
 _model = None
 
@@ -13,10 +16,12 @@ def _get_model() -> SentenceTransformer:
     """Lazy-load the embedding model (first call downloads ~2GB)."""
     global _model
     if _model is None:
+        logger.info("Loading embedding model: nvidia/llama-nemotron-embed-1b-v2")
         _model = SentenceTransformer(
             "nvidia/llama-nemotron-embed-1b-v2",
             trust_remote_code=True,
         )
+        logger.info("Embedding model loaded")
     return _model
 
 

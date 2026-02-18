@@ -304,6 +304,53 @@ def build_database_tab():
             embed_docs_btn.click(_embed_docs, outputs=[embed_status], api_visibility="private")
             embed_msgs_btn.click(_embed_msgs, outputs=[embed_status], api_visibility="private")
 
+        # Application Logs
+        with gr.Accordion("Application Logs", open=False):
+            gr.Markdown("View application log entries stored in the database.")
+            with gr.Row():
+                log_level_filter = gr.Dropdown(
+                    label="Level",
+                    choices=["", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                    value="",
+                    interactive=True,
+                    scale=1,
+                )
+                log_module_filter = gr.Textbox(
+                    label="Module Filter",
+                    placeholder="e.g. chat, settings",
+                    value="",
+                    interactive=True,
+                    scale=2,
+                )
+                log_refresh_btn = gr.Button("Refresh", variant="primary", scale=0)
+
+            log_table = gr.DataFrame(
+                value=pd.DataFrame(columns=["timestamp", "level", "module", "function", "message"]),
+                interactive=False,
+                label="Recent Logs",
+                wrap=True,
+            )
+
+            def _refresh_logs(level, module):
+                from services.log_config import get_logs
+                rows = get_logs(level=level, module=module, limit=200)
+                if not rows:
+                    return pd.DataFrame(columns=["timestamp", "level", "module", "function", "message"])
+                return pd.DataFrame([{
+                    "timestamp": r.get("timestamp", ""),
+                    "level": r.get("level", ""),
+                    "module": r.get("module", ""),
+                    "function": r.get("function", ""),
+                    "message": r.get("message", "")[:200],
+                } for r in rows])
+
+            log_refresh_btn.click(
+                _refresh_logs,
+                inputs=[log_level_filter, log_module_filter],
+                outputs=[log_table],
+                api_visibility="private",
+            )
+
         # Wiring -- outputs stay within this tab
         def _handle_refresh():
             return _load_stats(), _load_schema()

@@ -10,8 +10,11 @@ chat() call — no restart needed when settings change.
 """
 import inspect
 import json
+import logging
 from typing import Any
 from db import operations as db_ops
+
+logger = logging.getLogger(__name__)
 
 
 # --- Tool Definition Generation ---
@@ -206,7 +209,8 @@ def _build_rag_context(user_message: str, max_chunks: int = 3) -> str:
             return ""
 
         return "\n\n---\nRelevant context from knowledge base:\n" + "\n\n".join(context_parts) + "\n---\n"
-    except Exception:
+    except Exception as e:
+        logger.debug("RAG context unavailable: %s", e)
         return ""  # Graceful degradation if Qdrant is down
 
 
@@ -300,6 +304,7 @@ def _execute_tool(tool_name: str, tool_input: dict) -> tuple[str, bool]:
     """Execute a tool call and return (result_string, is_error)."""
     fn = TOOL_REGISTRY.get(tool_name)
     if fn is None:
+        logger.error("Unknown tool requested: %s", tool_name)
         return f"Error: Unknown tool '{tool_name}'", True
     try:
         result = fn(**tool_input)
@@ -307,8 +312,10 @@ def _execute_tool(tool_name: str, tool_input: dict) -> tuple[str, bool]:
             result = json.dumps(result, indent=2, default=str)
         else:
             result = str(result)
+        logger.info("Tool executed: %s", tool_name)
         return result, False
     except Exception as e:
+        logger.error("Tool execution failed: %s — %s", tool_name, e)
         return f"Error executing {tool_name}: {str(e)}", True
 
 
@@ -471,8 +478,9 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
                 max_tokens=max_tokens,
                 extra_body=ollama_opts,
             )
-        except Exception:
+        except Exception as e:
             # If tool use fails (model doesn't support it), retry without tools
+            logger.info("Ollama tool use failed, retrying without tools: %s", e)
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -534,6 +542,7 @@ def chat(message: str, history: list[dict],
     provider = provider_override or get_setting("chat_provider")
     api_key = get_setting("chat_api_key")
     model = model_override or get_setting("chat_model")
+    logger.info("Chat: provider=%s, model=%s", provider, model)
     base_url = get_setting("chat_base_url")
     system_prompt = _build_system_prompt()
     if system_prompt_append and system_prompt_append.strip():
@@ -570,5 +579,6 @@ def chat(message: str, history: list[dict],
             history.append({"role": "assistant", "content": f"Unknown provider: {provider}"})
             return history
     except Exception as e:
+        logger.error("Chat failed: provider=%s, model=%s — %s", provider, model, e)
         history.append({"role": "assistant", "content": f"Error: {str(e)}"})
         return history

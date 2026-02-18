@@ -6,11 +6,14 @@ Each function has proper docstrings and type hints for MCP tool generation.
 
 import sqlite3
 import json
+import logging
 import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
 
 # Database path
 DB_PATH = Path(__file__).parent / "janatpmp.db"
@@ -77,6 +80,16 @@ def init_database():
             )
             if cursor.fetchone() is None:
                 migration_path = Path(__file__).parent / "migrations" / "0.3.0_conversations.sql"
+                if migration_path.exists():
+                    migration_sql = migration_path.read_text(encoding="utf-8")
+                    conn.executescript(migration_sql)
+
+            # Migration 0.4.0: app_logs table
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='app_logs'"
+            )
+            if cursor.fetchone() is None:
+                migration_path = Path(__file__).parent / "migrations" / "0.4.0_app_logs.sql"
                 if migration_path.exists():
                     migration_sql = migration_path.read_text(encoding="utf-8")
                     conn.executescript(migration_sql)
@@ -757,6 +770,7 @@ def backup_database() -> str:
         shutil.copy2(str(DB_PATH), str(backup_path))
         return backup_name
     except Exception as e:
+        logger.warning("Backup failed: %s", e)
         return f"Backup failed: {e}"
 
 
@@ -827,6 +841,7 @@ def restore_database(backup_name: str = "") -> str:
         shutil.copy2(str(backup_path), str(DB_PATH))
         return f"Restored from {backup_name}"
     except Exception as e:
+        logger.warning("Restore failed: %s", e)
         return f"Restore failed: {e}"
 
 

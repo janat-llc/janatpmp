@@ -1,11 +1,16 @@
 """JANATPMP — Single-page Gradio application with MCP server."""
 
 import sys
+import logging
 
 # Fix Windows cp1252 console crash on Gradio's emoji output
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+from services.log_config import setup_logging, cleanup_old_logs
+setup_logging()
+logger = logging.getLogger(__name__)
 
 import gradio as gr
 from db.operations import (
@@ -33,13 +38,15 @@ from pages.projects import build_page
 init_database()
 from services.settings import init_settings
 init_settings()
+cleanup_old_logs()
+logger.info("Database and settings initialized")
 
 # Initialize vector store collections (safe if Qdrant not running)
 try:
     from services.vector_store import ensure_collections
     ensure_collections()
 except Exception:
-    print("Qdrant not available -- vector search disabled")
+    logger.warning("Qdrant not available -- vector search disabled")
 
 # Build single-page application
 with gr.Blocks(title="JANATPMP") as demo:

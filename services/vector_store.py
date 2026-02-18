@@ -5,11 +5,14 @@ Collections:
 - janatpmp_messages: Embedded conversation messages
 """
 
+import logging
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
 )
 from services.embedding import embed_passages, embed_query
+
+logger = logging.getLogger(__name__)
 
 QDRANT_URL = "http://janatpmp-qdrant:6333"  # Docker DNS (service name in docker-compose)
 VECTOR_DIM = 2048
@@ -34,6 +37,7 @@ def ensure_collections():
 
     for name in [COLLECTION_DOCUMENTS, COLLECTION_MESSAGES]:
         if name not in existing:
+            logger.info("Creating Qdrant collection: %s", name)
             client.create_collection(
                 collection_name=name,
                 vectors_config=VectorParams(

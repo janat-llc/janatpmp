@@ -6,9 +6,12 @@ data extraction.
 """
 
 import json
+import logging
 from pathlib import Path
 from db.operations import get_connection
 from db.chat_operations import get_conversation_by_uri
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -238,6 +241,8 @@ def import_conversations_json(file_path: str, skip_existing: bool = True) -> dic
             name = conv.get("name", conv.get("uuid", "unknown"))
             errors.append(f"{name[:40]}: {str(e)[:80]}")
 
+    logger.info("Claude import: %d imported, %d skipped, %d errors, %d messages",
+                imported, skipped, len(errors), total_messages)
     return {
         "imported": imported,
         "skipped": skipped,
