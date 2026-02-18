@@ -11,10 +11,13 @@ logger = logging.getLogger(__name__)
 
 
 def embed_all_documents() -> dict:
-    """Embed all documents from the documents table.
+    """Embed all documents with content into the Qdrant documents collection.
+
+    Queries all documents with non-trivial content (>10 chars), embeds each,
+    and upserts into janatpmp_documents. Logs progress and errors.
 
     Returns:
-        Dict with keys: embedded, skipped, errors.
+        Dict with keys: embedded (int), skipped (int), errors (list[str]).
     """
     ensure_collections()
     embedded = 0
@@ -44,17 +47,21 @@ def embed_all_documents() -> dict:
             )
             embedded += 1
         except Exception as e:
-            errors.append(f"{row['id']}: {str(e)[:80]}")
+            logger.error("Embed failed for %s: %s", row['id'], e)
+            errors.append(f"{row['id']}: {str(e)}")
 
     logger.info("Bulk embed documents: %d embedded, %d errors", embedded, len(errors))
     return {"embedded": embedded, "skipped": skipped, "errors": errors}
 
 
 def embed_all_messages() -> dict:
-    """Embed all conversation messages.
+    """Embed all conversation messages into the Qdrant messages collection.
+
+    Combines user_prompt + model_response as 'Q: ... A: ...' text,
+    skips messages with less than 20 chars of content.
 
     Returns:
-        Dict with keys: embedded, skipped, errors.
+        Dict with keys: embedded (int), skipped (int), errors (list[str]).
     """
     ensure_collections()
     embedded = 0
@@ -91,7 +98,8 @@ def embed_all_messages() -> dict:
             )
             embedded += 1
         except Exception as e:
-            errors.append(f"{row['id']}: {str(e)[:80]}")
+            logger.error("Embed failed for %s: %s", row['id'], e)
+            errors.append(f"{row['id']}: {str(e)}")
 
     logger.info("Bulk embed messages: %d embedded, %d skipped, %d errors",
                 embedded, skipped, len(errors))

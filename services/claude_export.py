@@ -11,12 +11,23 @@ logger = logging.getLogger(__name__)
 
 
 def _get_export_db_path() -> str:
-    """Get configured path to claude_export.db."""
+    """Get configured path to claude_export.db from settings.
+
+    Returns:
+        Path string, or empty string if not configured.
+    """
     return get_setting("claude_export_db_path") or ""
 
 
 def _get_connection(db_path: str = None):
-    """Get connection to claude_export.db."""
+    """Get SQLite connection to claude_export.db.
+
+    Args:
+        db_path: Override path. Uses settings if None.
+
+    Returns:
+        sqlite3.Connection with Row factory, or None if DB not found.
+    """
     path = db_path or _get_export_db_path()
     if not path or not os.path.exists(path):
         logger.warning("Claude export DB not found: %s", path)
@@ -27,7 +38,14 @@ def _get_connection(db_path: str = None):
 
 
 def init_export_db(db_path: str):
-    """Initialize claude_export.db schema at the given path. Creates file if needed."""
+    """Initialize claude_export.db schema at the given path.
+
+    Creates the database file and all tables (users, projects, conversations,
+    messages, content_blocks) if they don't exist. Safe to call multiple times.
+
+    Args:
+        db_path: Absolute path to the database file.
+    """
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
@@ -74,7 +92,15 @@ def init_export_db(db_path: str):
 def ingest_from_directory(export_dir: str, db_path: str = None) -> str:
     """Ingest users.json, projects.json, conversations.json from export_dir.
 
-    Returns status message with counts.
+    Reads JSON files from the export directory and upserts into claude_export.db.
+    Conversations include nested messages and content blocks.
+
+    Args:
+        export_dir: Path to directory containing Claude export JSON files.
+        db_path: Override DB path. Uses settings if None.
+
+    Returns:
+        Status message string with ingested counts.
     """
     path = db_path or _get_export_db_path()
     if not path:
@@ -150,7 +176,12 @@ def ingest_from_directory(export_dir: str, db_path: str = None) -> str:
 
 
 def get_conversations() -> list[dict]:
-    """List all conversations ordered by date descending."""
+    """List all conversations from claude_export.db ordered by date descending.
+
+    Returns:
+        List of dicts with keys: uuid, name, created_at, summary.
+        Empty list if DB not configured or unavailable.
+    """
     conn = _get_connection()
     if not conn:
         return []
@@ -162,7 +193,14 @@ def get_conversations() -> list[dict]:
 
 
 def get_conversation_messages(conv_uuid: str) -> list[dict]:
-    """Get all messages for a conversation, with content blocks merged."""
+    """Get all messages for a conversation, with content blocks merged.
+
+    Args:
+        conv_uuid: UUID of the conversation in claude_export.db.
+
+    Returns:
+        List of {"role": "user"|"assistant", "content": str} dicts for Chatbot display.
+    """
     conn = _get_connection()
     if not conn:
         return []
@@ -187,7 +225,12 @@ def get_conversation_messages(conv_uuid: str) -> list[dict]:
 
 
 def get_export_stats() -> dict:
-    """Get counts from claude_export.db."""
+    """Get summary counts from claude_export.db.
+
+    Returns:
+        Dict with keys: conversations, messages, human, ai, est_tokens.
+        All zeros if DB not available.
+    """
     conn = _get_connection()
     if not conn:
         return {"conversations": 0, "messages": 0, "human": 0, "ai": 0, "est_tokens": 0}
@@ -207,6 +250,10 @@ def get_export_stats() -> dict:
 
 
 def is_configured() -> bool:
-    """Check if claude_export_db_path is configured and file exists."""
+    """Check if claude_export_db_path is configured and file exists.
+
+    Returns:
+        True if path is set in settings and the file exists on disk.
+    """
     path = _get_export_db_path()
     return bool(path) and os.path.exists(path)

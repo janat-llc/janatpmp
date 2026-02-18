@@ -14,7 +14,14 @@ logger = logging.getLogger(__name__)
 # --- Validators ---
 
 def _validate_provider(value: str) -> str | None:
-    """Returns error string if invalid, None if ok."""
+    """Validate chat provider value.
+
+    Args:
+        value: Provider string to validate.
+
+    Returns:
+        Error message string if invalid, None if valid.
+    """
     valid = ("anthropic", "gemini", "ollama")
     if value and value not in valid:
         return f"Invalid provider '{value}'. Must be one of: {', '.join(valid)}"
@@ -22,12 +29,28 @@ def _validate_provider(value: str) -> str | None:
 
 
 def _validate_positive_int(value: str) -> str | None:
+    """Validate that value is a positive integer string.
+
+    Args:
+        value: String to validate.
+
+    Returns:
+        Error message string if invalid, None if valid.
+    """
     if value and not value.strip().isdigit():
         return f"Must be a positive integer, got '{value}'"
     return None
 
 
 def _validate_positive_float(value: str) -> str | None:
+    """Validate that value is a non-negative float string.
+
+    Args:
+        value: String to validate.
+
+    Returns:
+        Error message string if invalid, None if valid.
+    """
     if not value:
         return None
     try:
@@ -40,6 +63,14 @@ def _validate_positive_float(value: str) -> str | None:
 
 
 def _validate_log_level(value: str) -> str | None:
+    """Validate Python logging level name.
+
+    Args:
+        value: Log level string to validate.
+
+    Returns:
+        Error message string if invalid, None if valid.
+    """
     valid = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
     if value and value.upper() not in valid:
         return f"Invalid log level '{value}'. Must be one of: {', '.join(valid)}"

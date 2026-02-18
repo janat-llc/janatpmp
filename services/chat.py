@@ -165,7 +165,14 @@ Be direct and helpful. You are a collaborator, not just an assistant."""
 
 
 def _build_system_prompt() -> str:
-    """Compose the full system prompt from default + custom + auto-context."""
+    """Compose the full system prompt from default + custom + auto-context.
+
+    Layers: DEFAULT_SYSTEM_PROMPT + user custom prompt (from settings) +
+    live project context snapshot (active items, pending tasks).
+
+    Returns:
+        Complete system prompt string for injection into API call.
+    """
     from services.settings import get_setting
     from db.operations import get_context_snapshot
 
@@ -331,7 +338,15 @@ def _build_api_messages(history: list[dict], include_system: str = "") -> list[d
 
 
 def _execute_tool(tool_name: str, tool_input: dict) -> tuple[str, bool]:
-    """Execute a tool call and return (result_string, is_error)."""
+    """Execute a registered tool call by name.
+
+    Args:
+        tool_name: Name of the tool (must be in TOOL_REGISTRY).
+        tool_input: Dict of keyword arguments to pass to the tool function.
+
+    Returns:
+        Tuple of (result_string, is_error). Result is JSON for dicts/lists.
+    """
     fn = TOOL_REGISTRY.get(tool_name)
     if fn is None:
         logger.error("Unknown tool requested: %s", tool_name)
@@ -388,7 +403,20 @@ def _run_tool_loop(
 
 def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt: str,
                     temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 2048) -> list[dict]:
-    """Run chat loop using Anthropic API with native tool use."""
+    """Run chat loop using Anthropic API with native tool use.
+
+    Args:
+        api_key: Anthropic API key.
+        model: Model identifier (e.g. 'claude-sonnet-4-20250514').
+        history: Chat history in gr.Chatbot message format.
+        system_prompt: Full system prompt string.
+        temperature: Sampling temperature (0.0-1.0).
+        top_p: Nucleus sampling threshold.
+        max_tokens: Maximum response tokens.
+
+    Returns:
+        Updated history with assistant responses and tool-use status messages.
+    """
     from anthropic import Anthropic
     client = Anthropic(api_key=api_key.strip())
     api_messages = _build_api_messages(history)
@@ -426,7 +454,20 @@ def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt
 
 def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: str,
                  temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 2048) -> list[dict]:
-    """Run chat loop using Google Gemini API with function calling."""
+    """Run chat loop using Google Gemini API with function calling.
+
+    Args:
+        api_key: Google AI API key.
+        model: Model identifier (e.g. 'gemini-2.0-flash').
+        history: Chat history in gr.Chatbot message format.
+        system_prompt: Full system prompt string.
+        temperature: Sampling temperature (0.0-1.0).
+        top_p: Nucleus sampling threshold.
+        max_tokens: Maximum response tokens.
+
+    Returns:
+        Updated history with assistant responses and tool-use status messages.
+    """
     from google import genai
     from google.genai import types
 
@@ -477,7 +518,24 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
                  temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 8192,
                  num_ctx: int = 0, keep_alive: str = "") -> list[dict]:
     """Run chat loop using Ollama via OpenAI-compatible API.
-    Tool use depends on model capability — gracefully falls back to no tools."""
+
+    Tool use depends on model capability — gracefully falls back to no tools
+    if the model doesn't support function calling.
+
+    Args:
+        base_url: Ollama OpenAI-compatible endpoint URL.
+        model: Model identifier (e.g. 'nemotron-3-nano:latest').
+        history: Chat history in gr.Chatbot message format.
+        system_prompt: Full system prompt string.
+        temperature: Sampling temperature (0.0-1.0).
+        top_p: Nucleus sampling threshold.
+        max_tokens: Maximum response tokens.
+        num_ctx: Context window size (0 = model default).
+        keep_alive: Model keep-alive duration string (e.g. '5m').
+
+    Returns:
+        Updated history with assistant responses and tool-use status messages.
+    """
     from openai import OpenAI
     client = OpenAI(api_key="ollama", base_url=base_url)
     messages = _build_api_messages(history, include_system=system_prompt)

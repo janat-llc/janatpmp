@@ -239,7 +239,8 @@ def import_conversations_json(file_path: str, skip_existing: bool = True) -> dic
                 skipped += 1
         except Exception as e:
             name = conv.get("name", conv.get("uuid", "unknown"))
-            errors.append(f"{name[:40]}: {str(e)[:80]}")
+            logger.error("Import failed for '%s': %s", name[:40], e)
+            errors.append(f"{name[:40]}: {str(e)}")
 
     logger.info("Claude import: %d imported, %d skipped, %d errors, %d messages",
                 imported, skipped, len(errors), total_messages)

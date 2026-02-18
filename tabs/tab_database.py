@@ -1,5 +1,6 @@
 """Admin tab -- System prompt editor, stats, schema, backup, restore, reset."""
 import json
+import logging
 import gradio as gr
 import pandas as pd
 from db.operations import (
@@ -7,28 +8,47 @@ from db.operations import (
     backup_database, restore_database, reset_database, list_backups
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _load_stats() -> dict:
-    """Get database stats dict for gr.JSON display."""
+    """Get database stats dict for gr.JSON display.
+
+    Returns:
+        Dict of table names to row counts.
+    """
     return get_stats()
 
 
 def _load_schema() -> str:
-    """Get schema info as formatted JSON string."""
+    """Get schema info as formatted JSON string.
+
+    Returns:
+        Pretty-printed JSON string of schema info, or '{}' on error.
+    """
     try:
         return json.dumps(get_schema_info(), indent=2)
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to load schema info: %s", e)
         return "{}"
 
 
 def _load_system_prompt() -> str:
-    """Load custom system prompt from settings DB."""
+    """Load custom system prompt from settings DB.
+
+    Returns:
+        System prompt string, or empty string if not set.
+    """
     from services.settings import get_setting
     return get_setting("chat_system_prompt")
 
 
 def _backups_to_df() -> pd.DataFrame:
-    """Get backups as display DataFrame."""
+    """Get backups as display DataFrame.
+
+    Returns:
+        DataFrame with columns: Name, Size (KB), Created.
+    """
     backups = list_backups()
     if not backups:
         return pd.DataFrame(columns=["Name", "Size (KB)", "Created"])
@@ -40,12 +60,20 @@ def _backups_to_df() -> pd.DataFrame:
 
 
 def _backup_names() -> list:
-    """Get list of backup filenames for dropdown."""
+    """Get list of backup filenames for dropdown.
+
+    Returns:
+        List of backup filename strings.
+    """
     return [b['name'] for b in list_backups()]
 
 
 def _handle_backup():
-    """Create backup, return status + refreshed backup list."""
+    """Create a database backup.
+
+    Returns:
+        Tuple of (status_message, backups_df, dropdown_update).
+    """
     result = backup_database()
     return (
         f"Backup created: {result}",
@@ -55,7 +83,14 @@ def _handle_backup():
 
 
 def _handle_restore(backup_name):
-    """Restore from backup, return status + refreshed displays."""
+    """Restore database from a named backup file.
+
+    Args:
+        backup_name: Filename of the backup to restore.
+
+    Returns:
+        Tuple of (status_message, stats_dict, schema_json, backups_df).
+    """
     if not backup_name:
         return "Select a backup to restore", _load_stats(), _load_schema(), _backups_to_df()
     result = restore_database(backup_name)
@@ -63,7 +98,11 @@ def _handle_restore(backup_name):
 
 
 def _handle_reset():
-    """Reset database, return status + refreshed displays."""
+    """Reset database to empty state (auto-creates backup first).
+
+    Returns:
+        Tuple of (status_message, stats_dict, schema_json, backups_df, dropdown_update).
+    """
     result = reset_database()
     return (
         result,
@@ -75,7 +114,11 @@ def _handle_reset():
 
 
 def build_database_tab():
-    """Build the Admin tab. Returns dict of components."""
+    """Build the Admin tab with system prompt, settings, DB lifecycle, logs.
+
+    Returns:
+        Dict of key components for external reference (tab, stats, schema, etc.).
+    """
     with gr.Tab("Admin") as admin_tab:
         # System Prompt Editor
         with gr.Accordion("System Prompt", open=False):

@@ -1,10 +1,13 @@
 """Knowledge tab handlers — conversations, search, connections."""
+import logging
 import gradio as gr
 import pandas as pd
 from db.operations import (
     get_stats, search_items, search_documents,
     get_relationships, create_relationship,
 )
+
+logger = logging.getLogger(__name__)
 from db.chat_operations import (
     get_messages, list_conversations, delete_conversation,
 )
@@ -122,7 +125,8 @@ def _run_search(query):
     # Search items via FTS5
     try:
         items = search_items(q, limit=50)
-    except Exception:
+    except Exception as e:
+        logger.warning("Item search failed for '%s': %s", q, e)
         items = []
     if items:
         items_df = pd.DataFrame([{
@@ -140,7 +144,8 @@ def _run_search(query):
     # Search documents via FTS5
     try:
         found_docs = search_documents(q, limit=50)
-    except Exception:
+    except Exception as e:
+        logger.warning("Document search failed for '%s': %s", q, e)
         found_docs = []
     if found_docs:
         docs_df = pd.DataFrame([{
