@@ -103,25 +103,11 @@ class JanatTheme(Base):
 
 # Custom CSS — co-located with theme for single-source brand styling
 JANAT_CSS = """
-    /* === Center content padding — 40px each side for sidebar clearance === */
-    .main.svelte-1kyws56, .main {
-        padding-left: 40px !important;
-        padding-right: 40px !important;
-    }
-
-    /* === Right sidebar chat density === */
-    .sidebar.right .sidebar-content { padding: 4px 6px !important; }
-    .sidebar.right .message-row { max-width: 100% !important; }
-    .sidebar.right .chatbot { padding: 0 !important; }
-    .sidebar.right .message { padding: 6px 8px !important; max-width: 100% !important; }
-    .sidebar.right .bubble-wrap { padding: 0 !important; }
-    .sidebar.right .wrapper { padding: 0 !important; }
-
-    /* === Brand overrides === */
+    /* === Brand colors === */
     .gradio-container { background: #000000 !important; }
     .dark .gradio-container { background: #000000 !important; }
 
-    /* Tab styling — Rajdhani with cyan active indicator */
+    /* Tab styling */
     .tab-nav button {
         font-family: 'Rajdhani', sans-serif !important;
         letter-spacing: 0.05em !important;
@@ -135,30 +121,35 @@ JANAT_CSS = """
     /* Sidebar backgrounds */
     .sidebar { background: #0a0a0a !important; border-color: #1a1a1a !important; }
 
-    /* Right sidebar — 20px wider than default, fill vertical space */
-    .sidebar.right { width: calc(var(--sidebar-width, 320px) + 20px) !important; }
-    .sidebar.right .sidebar-content { height: 100% !important; display: flex !important;
-                                      flex-direction: column !important; }
-    .sidebar.right .sidebar-content > .column { flex: 1 !important; display: flex !important;
-                                                 flex-direction: column !important;
-                                                 min-height: 0 !important; }
-    .sidebar.right .chatbot { flex: 1 1 0 !important; min-height: 0 !important;
-                              overflow-y: auto !important; }
-
-    /* Chatbot toolbar — position below chat area, not overlapping scrollbar */
-    .sidebar.right .sidebar-chatbot .icon-buttons {
-        position: static !important;
-        justify-content: flex-end !important;
-        padding: 4px 0 !important;
-        gap: 4px !important;
-    }
-
     /* Right panel header — right-justified to avoid toggle overlap */
     .right-panel-header { text-align: right !important; }
 
-    /* Header container — strip Gradio wrapper padding */
+    /* Header — strip Gradio wrapper chrome */
     #janat-header { background: transparent !important; border: none !important;
                     padding: 0 !important; }
+
+    /* === Right sidebar — chatbot fills available height === */
+    .sidebar.right .sidebar-content {
+        height: 100% !important;
+        display: flex !important;
+        flex-direction: column !important;
+    }
+    .sidebar.right .sidebar-content > .column {
+        flex: 1 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        min-height: 0 !important;
+    }
+    .sidebar.right .chatbot {
+        flex: 1 1 0 !important;
+        min-height: 0 !important;
+        overflow-y: auto !important;
+    }
+
+    /* Right sidebar chat density */
+    .sidebar.right .message-row { max-width: 100% !important; }
+    .sidebar.right .message { padding: 6px 8px !important; max-width: 100% !important; }
+    .sidebar.right .bubble-wrap { padding: 0 !important; }
 
     /* Hide Gradio footer */
     footer { display: none !important; }

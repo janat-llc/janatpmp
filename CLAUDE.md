@@ -100,7 +100,7 @@ This approach was chosen over multi-page routing (`demo.route()`) because:
 │  [Projects] [Work] [Knowledge] [Chat] [Admin]  ← gr.Tabs()         │
 ├──────────┬───────────────────────────────────┬───────────────────────┤
 │  LEFT    │     CENTER CONTENT              │  RIGHT                │
-│  SIDEBAR │     (40px padding each side)    │  SIDEBAR              │
+│  SIDEBAR │                                 │  SIDEBAR              │
 │          │                                 │                       │
 │  Context │  Content changes per tab        │  Janat Chat (default)  │
 │  cards   │  selected. Each top-level       │  OR Chat Settings      │

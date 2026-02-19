@@ -191,7 +191,7 @@ All tools are auto-generated from Python docstrings — no separate API definiti
 │  [Projects]  [Work]  [Knowledge]  [Chat]  [Admin]    ← Top-level tabs  │
 ├───────────┬──────────────────────────────────┬────────────────────────────┤
 │  LEFT     │     CENTER CONTENT               │  RIGHT                    │
-│  SIDEBAR  │     (40px padding each side)     │  SIDEBAR                  │
+│  SIDEBAR  │                                  │  SIDEBAR                  │
 │           │                                  │                           │
 │  Context  │  Content changes per tab.        │  Janat Chat (continuous)  │
 │  cards    │  Each tab can have sub-tabs      │  OR Chat Settings         │

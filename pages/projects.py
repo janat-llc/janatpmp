@@ -94,9 +94,9 @@ def build_page():
             chatbot = gr.Chatbot(
                 value=list(_initial_chat_history),
                 show_label=False,
-                buttons=["copy", "copy_all"],
+                buttons=["copy"],
                 scale=1, min_height=300,
-                elem_classes=["sidebar-chatbot"],
+                elem_id="sidebar-chatbot",
             )
             chat_input = gr.Textbox(
                 placeholder="What should We do?",
@@ -133,7 +133,7 @@ def build_page():
             )
 
     # === CENTER TABS (defined before left sidebar so render can reference them) ===
-    with gr.Tabs() as main_tabs:
+    with gr.Tabs(elem_id="main-tabs") as main_tabs:
         # --- Projects tab ---
         with gr.Tab("Projects") as projects_tab:
             with gr.Tabs():
