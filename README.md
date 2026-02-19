@@ -3,7 +3,7 @@
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
 ![Gradio 6.5.1](https://img.shields.io/badge/Gradio-6.5.1-orange?logo=gradio&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-36%20Tools-blueviolet)
+![MCP](https://img.shields.io/badge/MCP-45%20Tools-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 
 A **strategic command center** for solo architects and engineers working with AI partners. JANATPMP gives your AI assistants persistent memory — project state, task queues, documents, conversation history, and semantic search — all readable and writable via [MCP (Model Context Protocol)](https://modelcontextprotocol.io/). Conversations become durable, searchable knowledge. Context survives session boundaries.
@@ -37,7 +37,7 @@ graph TB
 
 ```mermaid
 graph TB
-    MCP[MCP Tools<br/>36 operations] --> DB[db/operations.py]
+    MCP[MCP Tools<br/>45 operations] --> DB[db/operations.py]
     UI[Gradio UI] --> DB
     API[REST API] --> DB
     DB --> SQLite[(SQLite)]
@@ -50,10 +50,11 @@ One set of functions in `db/operations.py` serves all three surfaces — UI even
 
 ## Features
 
-- **36 MCP tools** for AI assistant integration (items, tasks, documents, conversations, relationships, vectors, settings, backups)
+- **45 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, settings, backups)
 - **Multi-provider chat** with triplet message persistence (Anthropic, Gemini, Ollama/local models)
 - **RAG pipeline** — Qdrant vector search with NVIDIA Llama-Nemotron-Embed-1B-v2 embeddings (2048-dim)
 - **Content ingestion** — parsers for Google AI Studio, quest files, markdown, and text with SHA-256 deduplication
+- **Dynamic domain management** — domains are first-class database entities, creatable via MCP without code changes
 - **Project / Task / Document management** with typed relationships and hierarchy
 - **Claude conversation import** — ingest Claude export JSON into a searchable triplet schema
 - **Full-text search** via SQLite FTS5 across items, documents, and conversation messages
@@ -133,7 +134,7 @@ JANATPMP/
 │   └── exceptions.py          # Custom exception hierarchy
 ├── db/
 │   ├── schema.sql             # Database DDL
-│   ├── operations.py          # 22 CRUD + lifecycle functions
+│   ├── operations.py          # 26 CRUD + lifecycle functions
 │   ├── chat_operations.py     # Conversation + message CRUD
 │   ├── migrations/            # Versioned schema migrations
 │   └── backups/               # Timestamped database backups
@@ -157,7 +158,7 @@ JANATPMP/
 
 ## MCP Integration
 
-JANATPMP exposes **36 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
+JANATPMP exposes **45 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
 
 ```
 http://localhost:7860/gradio_api/mcp/sse
@@ -172,9 +173,10 @@ Full API documentation is available at `/gradio_api/docs` while the server is ru
 | Items | `create_item`, `get_item`, `list_items`, `update_item`, `delete_item`, `search_items` | Projects, features, books — any hierarchical entity |
 | Tasks | `create_task`, `get_task`, `list_tasks`, `update_task` | Work queue with assignment, priority, status |
 | Documents | `create_document`, `get_document`, `list_documents`, `search_documents` | Session notes, research, artifacts, code |
+| Domains | `get_domains`, `get_domain`, `create_domain`, `update_domain` | Organizational categories — database-managed, no code deploys needed |
 | Relationships | `create_relationship`, `get_relationships` | Typed connections (blocks, enables, informs, etc.) |
 | Conversations | `create_conversation`, `list_conversations`, `search_conversations`, `add_message`, `get_messages`, ... | Chat history with triplet schema |
-| Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages` | Qdrant semantic search and bulk embedding |
+| Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains` | Qdrant semantic search and bulk embedding |
 | System | `get_stats`, `get_schema_info`, `backup_database`, `restore_database`, `list_backups`, `reset_database` | Database administration |
 | Import | `import_conversations_json` | Claude conversation JSON import |
 
@@ -216,9 +218,10 @@ Both sidebars collapse independently on mobile, leaving center content full-widt
 
 ## Database Schema
 
-Eight core tables with FTS5 full-text search and a CDC outbox for future sync:
+Nine core tables with FTS5 full-text search and a CDC outbox for future sync:
 
-- **items** — Projects, features, books, chapters. Hierarchical via `parent_id`. 12 domain categories.
+- **domains** — First-class organizational entity. 13 seeded domains (5 active, 8 inactive). Managed via MCP — no code deploys needed to add new domains.
+- **items** — Projects, features, books, chapters. Hierarchical via `parent_id`. Domain validated against `domains` table.
 - **tasks** — Work queue with agent/human assignment, retry logic, cost tracking, acceptance criteria.
 - **documents** — Session notes, research, artifacts, conversation imports. FTS5 enabled.
 - **relationships** — Universal typed connector between any two entities (items, tasks, documents, conversations).

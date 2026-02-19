@@ -84,7 +84,17 @@
       "Bash(docker stop:*)",
       "Bash(docker rm:*)",
       "Bash(docker restart:*)",
-      "Bash(git stash pop:*)"
+      "Bash(git stash pop:*)",
+      "Bash(python -X utf8 -c:*)",
+      "Bash(dir:*)",
+      "Bash(docker compose down:*)",
+      "Bash(docker compose:*)",
+      "Bash(echo:*)",
+      "Bash(pip show:*)",
+      "Bash(cd:*)",
+      "Bash(Start-Sleep -Seconds 8)",
+      "mcp__claude_ai_Hugging_Face__hf_doc_fetch",
+      "WebFetch(domain:github.com)"
     ],
     "deny": [],
     "ask": []

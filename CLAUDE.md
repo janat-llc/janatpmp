@@ -38,13 +38,14 @@ JANATPMP/
 ├── db/
 │   ├── schema.sql            # Database schema DDL (NO seed data)
 │   ├── seed_data.sql         # Optional seed data (separate from schema)
-│   ├── operations.py         # All CRUD + lifecycle functions (22 operations)
+│   ├── operations.py         # All CRUD + lifecycle functions (26 operations)
 │   ├── chat_operations.py    # Conversation + message CRUD (Phase 4B)
 │   ├── test_operations.py    # Tests
 │   ├── migrations/           # Versioned schema migrations
 │   │   ├── 0.3.0_conversations.sql
 │   │   ├── 0.4.0_app_logs.sql
-│   │   └── 0.4.1_messages_fts_update.sql
+│   │   ├── 0.4.1_messages_fts_update.sql
+│   │   └── 0.4.2_domains_table.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups
 │   └── __init__.py
@@ -56,7 +57,7 @@ JANATPMP/
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (Phase 5)
 │   ├── embedding.py          # Llama-Nemotron-Embed-1B-v2 text embedding (Phase 5)
 │   ├── vector_store.py       # Qdrant vector DB operations (configurable URL, Phase 5)
-│   ├── bulk_embed.py         # Batch embed documents & messages into Qdrant (Phase 5)
+│   ├── bulk_embed.py         # Batch embed documents, messages & domains into Qdrant (Phase 5)
 │   ├── settings.py           # Settings registry with validation and categories
 │   └── ingestion/            # Content ingestion parsers (Phase 6A)
 │       ├── __init__.py
@@ -215,7 +216,7 @@ and exposed via MCP — Phase 3 only adds the UI layer.
 ### Data Flow
 
 ```
-db/operations.py → 22 functions → three surfaces:
+db/operations.py → 26 functions → three surfaces:
     1. UI: imported by pages/projects.py, called in event listeners
     2. API: exposed via gr.api() in app.py
     3. MCP: auto-generated from gr.api() + docstrings
@@ -232,7 +233,7 @@ db/operations.py → 22 functions → three surfaces:
 
 Centralized constants, formatting, and data-loading helpers used across UI and services.
 
-- **`shared/constants.py`** — All enum lists (DOMAINS, STATUSES, TASK_TYPES, etc.), magic numbers
+- **`shared/constants.py`** — Enum lists (STATUSES, TASK_TYPES, etc.), magic numbers, defaults. Domains are NOT here — they live in the `domains` database table.
   (`MAX_TOOL_ITERATIONS=10`, `RAG_SCORE_THRESHOLD`), and `DEFAULT_CHAT_HISTORY`.
 - **`shared/formatting.py`** — `fmt_enum()` (converts `not_started` → `Not Started`),
   `entity_list_to_df()` (generic DataFrame builder from entity dicts).
@@ -274,8 +275,13 @@ The `cdc_outbox` table captures all database mutations for future sync to Qdrant
 ## Database Schema (db/schema.sql)
 
 **Core Tables:**
+- `domains` — First-class organizational entity. Each domain has name, display_name,
+  description, color, is_active. Replaces the old hardcoded DOMAINS list. UI dropdowns
+  show only active domains; `create_item()` validates against all domains (active + inactive).
+  CDC triggers for Qdrant/Neo4j sync.
 - `items` — Projects, features, books, etc. across domains. Supports hierarchy via parent_id.
   Has JSON attributes for domain-specific data. FTS5 full-text search enabled.
+  Domain validation is app-level via `get_domain()` (no CHECK constraint in schema).
 - `tasks` — Work queue with agent/human assignment. Supports retry logic, dependencies,
   acceptance criteria, cost tracking.
 - `documents` — Conversations, files, artifacts, research. FTS5 enabled.
@@ -300,9 +306,12 @@ The `cdc_outbox` table captures all database mutations for future sync to Qdrant
 - `0.3.0_conversations.sql` — Conversations + messages tables, FTS, CDC triggers
 - `0.4.0_app_logs.sql` — Application logs table with indexes
 - `0.4.1_messages_fts_update.sql` — Missing FTS UPDATE trigger on messages
+- `0.4.2_domains_table.sql` — Domains as first-class entity, items table CHECK removal, CDC domain support
 
-**Domain enum values:** literature, janatpmp, janat, atlas, meax, janatavern,
-amphitheatre, nexusweaver, websites, social, speaking, life
+**Domains** are managed in the `domains` table (not hardcoded). 13 seeded domains:
+5 active (janat, janatpmp, literature, websites, becoming) and 8 inactive (atlas, meax,
+janatavern, amphitheatre, nexusweaver, social, speaking, life). Domain validation in
+`create_item()` checks all domains (active + inactive). UI dropdowns show active only.
 
 ## Commands
 
@@ -507,9 +516,10 @@ with gr.Blocks() as demo:
 demo.launch(mcp_server=True)
 ```
 
-All 22 functions in `db/operations.py` plus 8 chat operations from `db/chat_operations.py`
-plus 4 vector operations from `services/` are exposed via `gr.api()` (36 total MCP tools).
-They MUST have Google-style docstrings with Args/Returns for MCP tool generation.
+All 26 functions in `db/operations.py` (including 4 domain CRUD) plus 8 chat operations
+from `db/chat_operations.py` plus 5 vector/embedding operations from `services/` plus 1
+import operation are exposed via `gr.api()` (45 total MCP tools). They MUST have
+Google-style docstrings with Args/Returns for MCP tool generation.
 
 ### Common Mistakes to Avoid
 
@@ -621,6 +631,7 @@ Tool toggles in right sidebar control availability per-session. Full routing is 
 
 - `embed_all_documents()` — queries DB directly for documents with content, embeds into Qdrant
 - `embed_all_messages()` — embeds all messages with user_prompt + model_response concatenated
+- `embed_all_domains()` — embeds domain descriptions into `janatpmp_documents` collection with `entity_type: "domain"` metadata
 
 ## Phase 6A: Content Ingestion Pipeline (Complete)
 

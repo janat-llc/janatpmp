@@ -4,12 +4,6 @@
 
 PROJECT_TYPES = ["project", "epic", "book", "website", "milestone"]
 
-DOMAINS = [
-    "", "literature", "janatpmp", "janat", "atlas", "meax",
-    "janatavern", "amphitheatre", "nexusweaver", "websites",
-    "social", "speaking", "life",
-]
-
 ALL_TYPES = [
     "project", "epic", "feature", "component", "milestone",
     "book", "chapter", "section",
@@ -54,7 +48,7 @@ RAG_SCORE_THRESHOLD = 0.3
 DEFAULT_CHAT_HISTORY = [{
     "role": "assistant",
     "content": (
-        "I'm connected with 22 database tools. "
-        "Ask me to create items, update tasks, or check project status."
+        "I'm connected with 45 database tools. "
+        "Ask me to create items, manage domains, update tasks, or check project status."
     ),
 }]

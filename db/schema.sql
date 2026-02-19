@@ -35,20 +35,8 @@ CREATE TABLE items (
         'project', 'milestone'
     )),
     
-    domain TEXT NOT NULL CHECK (domain IN (
-        'literature',      -- 9 books
-        'janatpmp',        -- This platform
-        'janat',           -- Core JANAT tech
-        'atlas',           -- ATLAS architecture
-        'meax',            -- MEAX framework
-        'janatavern',      -- JanatAvern concepts
-        'amphitheatre',    -- Troubadourian Amphitheatre
-        'nexusweaver',     -- The Nexus Weaver platform
-        'websites',        -- All 6 domains
-        'social',          -- Social media presence
-        'speaking',        -- Speaking engagements
-        'life'             -- Personal life management
-    )),
+    -- Domain validation is app-level via get_domain() against the domains table
+    domain TEXT NOT NULL,
     
     -- Hierarchy support
     parent_id TEXT REFERENCES items(id) ON DELETE CASCADE,
@@ -479,7 +467,7 @@ CREATE TABLE cdc_outbox (
     
     -- What changed
     operation TEXT NOT NULL CHECK (operation IN ('INSERT', 'UPDATE', 'DELETE')),
-    entity_type TEXT NOT NULL CHECK (entity_type IN ('item', 'task', 'document', 'relationship', 'conversation', 'message')),
+    entity_type TEXT NOT NULL CHECK (entity_type IN ('item', 'task', 'document', 'relationship', 'conversation', 'message', 'domain')),
     entity_id TEXT NOT NULL,
     
     -- Change payload (JSON snapshot of the entity)
@@ -677,3 +665,68 @@ END;
 
 INSERT OR IGNORE INTO schema_version (version, description) VALUES
     ('0.2.0', 'Add settings table for persistent configuration');
+
+-- ============================================================================
+-- DOMAINS: First-class organizational entity
+-- Replaces hardcoded domain lists — managed via CRUD + MCP tools
+-- ============================================================================
+
+CREATE TABLE domains (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    name TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL,
+    description TEXT,
+    color TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TRIGGER domains_updated_at AFTER UPDATE ON domains
+FOR EACH ROW
+BEGIN
+    UPDATE domains SET updated_at = datetime('now') WHERE id = NEW.id;
+END;
+
+-- CDC triggers for Qdrant/Neo4j sync
+CREATE TRIGGER cdc_domains_insert AFTER INSERT ON domains
+BEGIN
+    INSERT INTO cdc_outbox (operation, entity_type, entity_id, payload)
+    VALUES ('INSERT', 'domain', NEW.id, json_object(
+        'id', NEW.id, 'name', NEW.name,
+        'display_name', NEW.display_name, 'description', NEW.description
+    ));
+END;
+
+CREATE TRIGGER cdc_domains_update AFTER UPDATE ON domains
+BEGIN
+    INSERT INTO cdc_outbox (operation, entity_type, entity_id, payload)
+    VALUES ('UPDATE', 'domain', NEW.id, json_object(
+        'id', NEW.id, 'name', NEW.name,
+        'display_name', NEW.display_name, 'description', NEW.description
+    ));
+END;
+
+-- Seed domains (5 active, 8 inactive)
+INSERT OR IGNORE INTO domains (id, name, display_name, description, is_active) VALUES
+    (lower(hex(randomblob(16))), 'janat', 'Janat Initiative',
+     'The institutional body of work — platform, research, literature, websites. Output of the Dyad.', 1),
+    (lower(hex(randomblob(16))), 'janatpmp', 'JANATPMP',
+     'The platform itself — development, architecture, tooling.', 1),
+    (lower(hex(randomblob(16))), 'literature', 'Literature',
+     'Dyadic Being: An Epoch and all written works.', 1),
+    (lower(hex(randomblob(16))), 'websites', 'Websites',
+     'All web properties across the six domains.', 1),
+    (lower(hex(randomblob(16))), 'becoming', 'Becoming',
+     'The biological half of the Dyad in motion. Not self-improvement — substrate preparation.', 1),
+    (lower(hex(randomblob(16))), 'atlas', 'ATLAS', 'ATLAS architecture domain.', 0),
+    (lower(hex(randomblob(16))), 'meax', 'MEAX', 'MEAX framework domain.', 0),
+    (lower(hex(randomblob(16))), 'janatavern', 'JanatAvern', 'JanatAvern concepts domain.', 0),
+    (lower(hex(randomblob(16))), 'amphitheatre', 'Amphitheatre', 'Troubadourian Amphitheatre domain.', 0),
+    (lower(hex(randomblob(16))), 'nexusweaver', 'Nexus Weaver', 'The Nexus Weaver platform domain.', 0),
+    (lower(hex(randomblob(16))), 'social', 'Social', 'Social media presence domain.', 0),
+    (lower(hex(randomblob(16))), 'speaking', 'Speaking', 'Speaking engagements domain.', 0),
+    (lower(hex(randomblob(16))), 'life', 'Life', 'Personal life management domain.', 0);
+
+INSERT OR IGNORE INTO schema_version (version, description) VALUES
+    ('0.4.2', 'Domains as first-class entity — table, seed data, items CHECK removal, CDC');

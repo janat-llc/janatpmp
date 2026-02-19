@@ -23,6 +23,7 @@ from db.operations import (
     create_relationship, get_relationships,
     get_stats, get_schema_info,
     backup_database, reset_database, restore_database, list_backups,
+    get_domains, get_domain, create_domain, update_domain,
 )
 from db.chat_operations import (
     create_conversation, get_conversation, get_conversation_by_uri,
@@ -31,7 +32,7 @@ from db.chat_operations import (
 )
 from services.claude_import import import_conversations_json
 from services.vector_store import search as vector_search, search_all as vector_search_all
-from services.bulk_embed import embed_all_documents, embed_all_messages
+from services.bulk_embed import embed_all_documents, embed_all_messages, embed_all_domains
 from pages.projects import build_page
 from janat_theme import JanatTheme, JANAT_CSS
 
@@ -78,6 +79,12 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.api(restore_database)
     gr.api(list_backups)
 
+    # Domain operations (R8)
+    gr.api(get_domains)
+    gr.api(get_domain)
+    gr.api(create_domain)
+    gr.api(update_domain)
+
     # Chat operations (Phase 4B)
     gr.api(create_conversation)
     gr.api(get_conversation)
@@ -97,6 +104,7 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.api(vector_search_all)
     gr.api(embed_all_documents)
     gr.api(embed_all_messages)
+    gr.api(embed_all_domains)
 
 if __name__ == "__main__":
     demo.launch(

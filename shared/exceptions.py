@@ -23,3 +23,7 @@ class IngestionError(JANATPMPError):
 
 class VectorStoreError(JANATPMPError):
     """Qdrant communication or embedding failure."""
+
+
+class DomainNotFoundError(JANATPMPError):
+    """Requested domain does not exist in the domains table."""

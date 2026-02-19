@@ -132,13 +132,15 @@ def get_conversation_by_uri(conversation_uri: str) -> dict:
         return dict(row) if row else {}
 
 
-def list_conversations(limit: int = 50, active_only: bool = True, title_filter: str = "") -> list:
-    """List conversations ordered by most recent activity.
+def list_conversations(limit: int = 50, active_only: bool = True, title_filter: str = "", source: str = "", oldest_first: bool = False) -> list:
+    """List conversations ordered by activity (newest first by default).
 
     Args:
         limit: Maximum number of conversations to return
         active_only: If true, only return active (non-archived) conversations
         title_filter: Filter by title substring (case-insensitive). Empty = no filter.
+        source: Filter by source (platform, claude_export, imported). Empty = no filter.
+        oldest_first: If true, sort oldest first instead of newest first.
 
     Returns:
         List of conversation dicts
@@ -153,9 +155,13 @@ def list_conversations(limit: int = 50, active_only: bool = True, title_filter: 
         if title_filter:
             conditions.append("title LIKE ?")
             params.append(f"%{title_filter}%")
+        if source:
+            conditions.append("source = ?")
+            params.append(source)
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY updated_at DESC LIMIT ?"
+        order = "ASC" if oldest_first else "DESC"
+        query += f" ORDER BY updated_at {order} LIMIT ?"
         params.append(limit)
         cursor.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
@@ -245,6 +251,8 @@ def search_conversations(query: str, limit: int = 50) -> list:
     Returns:
         List of matching conversations with snippet context
     """
+    # Wrap in double quotes so FTS5 treats special chars (. * - etc.) as literals
+    safe_query = '"' + query.replace('"', '""') + '"'
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -255,7 +263,7 @@ def search_conversations(query: str, limit: int = 50) -> list:
             WHERE messages_fts MATCH ?
             ORDER BY c.updated_at DESC
             LIMIT ?
-        """, (query, limit))
+        """, (safe_query, limit))
         return [dict(row) for row in cursor.fetchall()]
 
 

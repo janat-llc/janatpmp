@@ -5,6 +5,7 @@ from db.operations import (
     get_item, create_item, update_item,
     get_task, create_task, update_task,
     get_document, create_document,
+    get_domains,
 )
 from tabs.tab_database import build_database_tab
 from services.claude_export import is_configured as is_export_configured
@@ -15,7 +16,7 @@ from db.chat_operations import (
     update_conversation, delete_conversation,
 )
 from shared.constants import (
-    DOMAINS, ALL_TYPES, STATUSES,
+    ALL_TYPES, STATUSES,
     TASK_STATUSES, TASK_TYPES, ASSIGNEES, PRIORITIES,
     DOC_TYPES, DOC_SOURCES, DEFAULT_CHAT_HISTORY,
 )
@@ -32,6 +33,13 @@ from tabs.tab_knowledge import (
     _run_ingest, _open_in_chat, _delete_knowledge_conv, _run_import,
     _run_search, _lookup_connections, _on_conn_create,
 )
+
+
+def _domain_choices(include_blank: bool = True) -> list[str]:
+    """Load active domain names for UI dropdowns."""
+    domains = get_domains(active_only=True)
+    names = [d["name"] for d in domains]
+    return ([""] + names) if include_blank else names
 
 
 # --- Page builder ---
@@ -179,7 +187,7 @@ def build_page():
                     with gr.Column(visible=False) as create_section:
                         with gr.Row():
                             new_type = gr.Dropdown(label="Type", choices=ALL_TYPES, value="project", scale=1)
-                            new_domain = gr.Dropdown(label="Domain", choices=DOMAINS[1:], value="janatpmp", scale=1)
+                            new_domain = gr.Dropdown(label="Domain", choices=_domain_choices(include_blank=False), value="janatpmp", scale=1)
                             new_status = gr.Dropdown(label="Status", choices=STATUSES, value="not_started", scale=1)
                         new_title = gr.Textbox(label="Title", placeholder="Project title...")
                         new_desc = gr.Textbox(label="Description", lines=3, placeholder="Optional...")
@@ -505,7 +513,7 @@ def build_page():
                 gr.Markdown("### Projects")
                 with gr.Row(key="proj-filter-row"):
                     domain_filter = gr.Dropdown(
-                        label="Domain", choices=DOMAINS, value="",
+                        label="Domain", choices=_domain_choices(include_blank=True), value="",
                         key="domain-filter", scale=1, min_width=100,
                     )
                     status_filter = gr.Dropdown(

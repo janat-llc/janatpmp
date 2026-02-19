@@ -104,3 +104,47 @@ def embed_all_messages() -> dict:
     logger.info("Bulk embed messages: %d embedded, %d skipped, %d errors",
                 embedded, skipped, len(errors))
     return {"embedded": embedded, "skipped": skipped, "errors": errors}
+
+
+def embed_all_domains() -> dict:
+    """Embed all domain descriptions into the Qdrant documents collection.
+
+    Queries all domains with non-empty descriptions, embeds each description,
+    and upserts into janatpmp_documents with entity_type='domain' metadata.
+
+    Returns:
+        Dict with keys: embedded (int), skipped (int), errors (list[str]).
+    """
+    ensure_collections()
+    embedded = 0
+    skipped = 0
+    errors = []
+
+    with get_connection() as conn:
+        cursor = conn.execute("""
+            SELECT id, name, display_name, description
+            FROM domains
+            WHERE description IS NOT NULL AND length(description) > 10
+        """)
+        rows = cursor.fetchall()
+
+    logger.info("Bulk embed domains: %d candidates", len(rows))
+    for row in rows:
+        try:
+            upsert_document(
+                doc_id=row["id"],
+                text=row["description"],
+                metadata={
+                    "entity_type": "domain",
+                    "name": row["name"] or "",
+                    "display_name": row["display_name"] or "",
+                    "title": row["display_name"] or row["name"],
+                },
+            )
+            embedded += 1
+        except Exception as e:
+            logger.error("Embed failed for domain %s: %s", row['name'], e)
+            errors.append(f"{row['name']}: {str(e)}")
+
+    logger.info("Bulk embed domains: %d embedded, %d errors", embedded, len(errors))
+    return {"embedded": embedded, "skipped": skipped, "errors": errors}

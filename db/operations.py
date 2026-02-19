@@ -12,6 +12,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 from contextlib import contextmanager
+from shared.exceptions import DomainNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,17 @@ def init_database():
                     migration_sql = migration_path.read_text(encoding="utf-8")
                     conn.executescript(migration_sql)
 
+            # Migration 0.4.2: domains as first-class entity
+            # Guard on schema_version (not domains table) so partial prior runs re-execute
+            cursor = conn.execute(
+                "SELECT version FROM schema_version WHERE version='0.4.2'"
+            )
+            if cursor.fetchone() is None:
+                migration_path = Path(__file__).parent / "migrations" / "0.4.2_domains_table.sql"
+                if migration_path.exists():
+                    migration_sql = migration_path.read_text(encoding="utf-8")
+                    conn.executescript(migration_sql)
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.
@@ -128,6 +140,130 @@ def cleanup_cdc_outbox(days: int = 90) -> int:
     return deleted
 
 
+# =============================================================================
+# DOMAINS CRUD
+# =============================================================================
+
+# Neo4j: When graph layer is implemented, domains become top-level nodes.
+# All items relate upward to their domain node.
+# Domain nodes carry the same metadata as this table.
+# CDC outbox handles the sync trigger — no additional code needed here.
+
+def create_domain(
+    name: str,
+    display_name: str,
+    description: str = "",
+    color: str = ""
+) -> str:
+    """Create a new domain.
+
+    Args:
+        name: Unique domain identifier (lowercase, no spaces — e.g. 'becoming')
+        display_name: Human-readable name (e.g. 'Becoming')
+        description: Purpose and scope of this domain
+        color: Optional hex color for UI display
+
+    Returns:
+        The ID of the created domain
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO domains (name, display_name, description, color)
+            VALUES (?, ?, ?, ?)
+        """, (
+            name,
+            display_name,
+            description if description else None,
+            color if color else None,
+        ))
+        conn.commit()
+        cursor.execute("SELECT id FROM domains WHERE rowid = ?", (cursor.lastrowid,))
+        row = cursor.fetchone()
+        return row['id'] if row else ""
+
+
+def get_domain(name: str) -> dict:
+    """Get a single domain by name.
+
+    Args:
+        name: The unique domain name (e.g. 'janatpmp', 'becoming')
+
+    Returns:
+        Dict with domain data or empty dict if not found
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM domains WHERE name = ?", (name,))
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+
+
+def get_domains(active_only: bool = True) -> list:
+    """List all domains with metadata.
+
+    Args:
+        active_only: If true, return only active domains. If false, return all domains.
+
+    Returns:
+        List of domain dicts with id, name, display_name, description, color, is_active
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        if active_only:
+            cursor.execute("SELECT * FROM domains WHERE is_active = 1 ORDER BY name")
+        else:
+            cursor.execute("SELECT * FROM domains ORDER BY is_active DESC, name")
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def update_domain(
+    name: str,
+    display_name: str = "",
+    description: str = "",
+    color: str = "",
+    is_active: int = -1
+) -> str:
+    """Update a domain's metadata.
+
+    Args:
+        name: The domain name to update (required, used as lookup key)
+        display_name: New display name (empty string = no change)
+        description: New description (empty string = no change)
+        color: New color hex (empty string = no change)
+        is_active: Set active status (1=active, 0=inactive, -1=no change)
+
+    Returns:
+        Status message confirming the update
+    """
+    updates = []
+    params = []
+    if display_name:
+        updates.append("display_name = ?")
+        params.append(display_name)
+    if description:
+        updates.append("description = ?")
+        params.append(description)
+    if color:
+        updates.append("color = ?")
+        params.append(color)
+    if is_active >= 0:
+        updates.append("is_active = ?")
+        params.append(is_active)
+
+    if not updates:
+        return "No changes specified"
+
+    params.append(name)
+    with get_connection() as conn:
+        conn.execute(
+            f"UPDATE domains SET {', '.join(updates)} WHERE name = ?",
+            params,
+        )
+        conn.commit()
+    return f"Domain '{name}' updated"
+
+
 # Initialize on import
 init_database()
 
@@ -150,7 +286,7 @@ def create_item(
 
     Args:
         entity_type: Type of item (project, epic, feature, component, book, chapter, etc.)
-        domain: Domain this belongs to (literature, janatpmp, janat, atlas, meax, etc.)
+        domain: Domain name — must exist in the domains table (use list_domains to see valid options)
         title: Title of the item
         description: Optional description
         status: Status (not_started, planning, in_progress, blocked, review, completed, shipped, archived)
@@ -159,7 +295,17 @@ def create_item(
 
     Returns:
         The ID of the created item
+
+    Raises:
+        DomainNotFoundError: If the domain does not exist in the domains table
     """
+    # Validate domain exists (active or inactive — is_active is for UI filtering only)
+    domain_record = get_domain(domain)
+    if not domain_record:
+        raise DomainNotFoundError(
+            f"Domain '{domain}' does not exist. Use create_domain() first."
+        )
+
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -740,6 +886,8 @@ def search_items(query: str, limit: int = 50) -> list:
     Returns:
         List of matching items
     """
+    # Wrap in double quotes so FTS5 treats special chars (. * - etc.) as literals
+    safe_query = '"' + query.replace('"', '""') + '"'
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -747,7 +895,7 @@ def search_items(query: str, limit: int = 50) -> list:
             JOIN items_fts ON items.id = items_fts.id
             WHERE items_fts MATCH ?
             LIMIT ?
-        """, (query, limit))
+        """, (safe_query, limit))
         return [dict(row) for row in cursor.fetchall()]
 
 
@@ -762,6 +910,8 @@ def search_documents(query: str, limit: int = 50) -> list:
     Returns:
         List of matching documents (without full content)
     """
+    # Wrap in double quotes so FTS5 treats special chars (. * - etc.) as literals
+    safe_query = '"' + query.replace('"', '""') + '"'
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -771,7 +921,7 @@ def search_documents(query: str, limit: int = 50) -> list:
             JOIN documents_fts ON documents.id = documents_fts.id
             WHERE documents_fts MATCH ?
             LIMIT ?
-        """, (query, limit))
+        """, (safe_query, limit))
         return [dict(row) for row in cursor.fetchall()]
 
 
