@@ -97,8 +97,8 @@ SETTINGS_REGISTRY = {
     "claude_export_json_dir": ("/data/claude_export", False, "export", None),
 
     # Ingestion
-    "ingestion_google_ai_dir": ("/app/imports/raw_data/google_ai", False, "ingestion", None),
-    "ingestion_markdown_dir":  ("/app/imports/raw_data/markdown", False, "ingestion", None),
+    "ingestion_google_ai_dir": ("/app/imports/google_ai", False, "ingestion", None),
+    "ingestion_markdown_dir":  ("/app/imports/markdown", False, "ingestion", None),
     "ingestion_quest_dir":     ("", False, "ingestion", None),
 
     # RAG

@@ -17,10 +17,22 @@ from services.vector_store import (
 
 logger = logging.getLogger(__name__)
 
+from atlas.config import MAX_TEXT_CHARS
+
 BATCH_SIZE = 4
-# Conservative limit: the VL model's attention is O(n²) in sequence length.
-# 8000 chars ≈ 2000 tokens — well within the 8192 token max with safety margin.
-MAX_TEXT_CHARS = 8_000
+# MAX_TEXT_CHARS imported from atlas.config (6000 chars ≈ 2000 tokens).
+# The real guard is atlas/config.MAX_SEQ_LENGTH (2048 tokens) enforced at the
+# tokenizer level in embedding_service.py. This char limit is a pre-filter to
+# avoid sending unnecessarily long text to the tokenizer.
+
+# CUDA errors that corrupt the context — no point retrying after these.
+_CUDA_FATAL_KEYWORDS = ("CUDA error", "cudaError", "device-side assert")
+
+
+def _is_cuda_fatal(error: Exception) -> bool:
+    """Check if an error indicates a poisoned CUDA context (abort immediately)."""
+    msg = str(error)
+    return any(kw in msg for kw in _CUDA_FATAL_KEYWORDS)
 
 
 def embed_all_documents() -> dict:
@@ -90,8 +102,13 @@ def embed_all_documents() -> dict:
         except Exception as e:
             logger.error("Batch embed failed at offset %d: %s", batch_start, e)
             errors.append(f"batch@{batch_start}: {str(e)}")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if _is_cuda_fatal(e):
+                logger.error("CUDA context corrupted — aborting. Restart container to resume.")
+                break
+
+        # Release intermediate tensors between batches
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         processed = embedded + skipped + len(errors)
         if processed > 0 and processed % 100 < BATCH_SIZE:
@@ -177,8 +194,13 @@ def embed_all_messages() -> dict:
         except Exception as e:
             logger.error("Batch embed failed at offset %d: %s", batch_start, e)
             errors.append(f"batch@{batch_start}: {str(e)}")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if _is_cuda_fatal(e):
+                logger.error("CUDA context corrupted — aborting. Restart container to resume.")
+                break
+
+        # Release intermediate tensors between batches
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         processed = embedded + skipped + len(errors)
         if processed > 0 and processed % 100 < BATCH_SIZE:

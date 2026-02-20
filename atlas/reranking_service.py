@@ -9,7 +9,7 @@ import logging
 import torch
 from transformers import AutoConfig, AutoModelForSequenceClassification, AutoProcessor
 
-from atlas.config import RERANKER_MODEL
+from atlas.config import RERANKER_MODEL, GPU_MEMORY_FRACTION, MAX_SEQ_LENGTH
 from atlas.embedding_service import _force_eager_attention
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,9 @@ class NemotronReranker:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         if self.device == "cpu":
             logger.warning("CUDA not available — reranker running on CPU (slow)")
+        elif not torch.cuda.memory_reserved(0):
+            # First CUDA user in this process — set hard VRAM cap
+            torch.cuda.set_per_process_memory_fraction(GPU_MEMORY_FRACTION)
 
         logger.info("Loading reranker model: %s on %s", self.model_name, self.device)
 
@@ -47,7 +50,7 @@ class NemotronReranker:
         self.processor = AutoProcessor.from_pretrained(
             self.model_name,
             trust_remote_code=True,
-            rerank_max_length=8192,
+            rerank_max_length=MAX_SEQ_LENGTH,
         )
         logger.info("Reranker model loaded: %s", self.model_name)
 

@@ -9,7 +9,7 @@ import logging
 import torch
 from transformers import AutoConfig, AutoModel
 
-from atlas.config import EMBEDDING_MODEL
+from atlas.config import EMBEDDING_MODEL, GPU_MEMORY_FRACTION, MAX_SEQ_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,13 @@ class NemotronEmbedder:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         if self.device == "cpu":
             logger.warning("CUDA not available — embedder running on CPU (slow)")
+        elif not torch.cuda.memory_reserved(0):
+            # First CUDA user in this process — set hard VRAM cap
+            torch.cuda.set_per_process_memory_fraction(GPU_MEMORY_FRACTION)
+            logger.info("CUDA memory capped at %.0f%% (%.1f GB of %.1f GB)",
+                        GPU_MEMORY_FRACTION * 100,
+                        torch.cuda.get_device_properties(0).total_mem * GPU_MEMORY_FRACTION / 1e9,
+                        torch.cuda.get_device_properties(0).total_mem / 1e9)
 
         logger.info("Loading embedding model: %s on %s", self.model_name, self.device)
 
@@ -82,8 +89,10 @@ class NemotronEmbedder:
             device_map="auto",
         ).eval()
 
-        # Configure processor for text embedding
-        self.model.processor.p_max_length = 8192
+        # Configure processor — hard truncation at MAX_SEQ_LENGTH tokens.
+        # This is the real VRAM guard: attention is O(seq_len²), so capping
+        # tokens caps the worst-case allocation regardless of input text length.
+        self.model.processor.p_max_length = MAX_SEQ_LENGTH
         self.model.processor.max_input_tiles = 6
         self.model.processor.use_thumbnail = True
         logger.info("Embedding model loaded: %s", self.model_name)

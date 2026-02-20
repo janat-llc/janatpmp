@@ -678,10 +678,10 @@ Parsers for importing conversations and documents from multiple external sources
 | `markdown_ingest.py` | Markdown (.md) and plain text (.txt) files | Tested: title extraction + doc_type classification |
 | `dedup.py` | SHA-256 content-hash deduplication | Tested: exact-match detection working |
 
-### Content Corpus (`imports/raw_data/`)
+### Content Corpus (`imports/`)
 
+- `claude/`: 4 Claude exports (244 MB) — handled by `services/claude_import.py`
 - `google_ai/` + `other/`: 300 Google AI Studio conversations (100.8 MB)
-- `claude/`: 1 Claude export (8.3 MB) — handled by `services/claude_import.py`
 - `chatgpt/`: 1 ChatGPT export (2.5 MB) — future parser needed (tree structure)
 - `markdown/`: 15 markdown files (0.3 MB)
 - `text/`: 18 text files (2.5 MB)

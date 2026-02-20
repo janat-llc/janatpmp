@@ -21,7 +21,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - HF_TOKEN=${HF_TOKEN}
       - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,garbage_collection_threshold:0.8
-      - OLLAMA_GPU_MEMORY_FRACTION=0.55
+      - OLLAMA_GPU_MEMORY_FRACTION=0.70
     depends_on:
       - ollama
       - janatpmp-qdrant
@@ -47,7 +47,7 @@ services:
       - OLLAMA_FLASH_ATTENTION=1
       - OLLAMA_NUM_GPU=999
       - OLLAMA_KEEP_ALIVE=30m
-      - OLLAMA_GPU_MEMORY_FRACTION=0.55
+      - OLLAMA_GPU_MEMORY_FRACTION=0.70
     restart: unless-stopped
     networks:
       - janatpmp_network
