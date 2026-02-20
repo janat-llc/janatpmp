@@ -3,5 +3,7 @@ pandas
 anthropic
 google-genai
 openai
-sentence-transformers==5.2.2
+transformers>=4.47.1,<5.0.0
+accelerate>=0.26.0
 qdrant-client==1.16.2
+Pillow

@@ -15,6 +15,8 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 - **Gradio** 6.5.1 with MCP support (`gradio[mcp]==6.5.1`)
 - **SQLite3** for persistence (WAL mode, FTS5 full-text search)
 - **Pandas** for data display
+- **PyTorch** 2.10+ with CUDA 12.8 (GPU-accelerated embedding/reranking)
+- **Transformers** 4.47+ (Nemotron VL model loading)
 
 ## Project Structure
 
@@ -49,15 +51,22 @@ JANATPMP/
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups
 │   └── __init__.py
+├── atlas/                    # ATLAS model infrastructure (R9)
+│   ├── __init__.py
+│   ├── config.py             # Model names, dimensions, salience constants
+│   ├── embedding_service.py  # Nemotron VL embedder (GPU, bfloat16, eager attn)
+│   ├── reranking_service.py  # Nemotron VL reranker (GPU, bfloat16)
+│   ├── memory_service.py     # Salience write-back to Qdrant payloads
+│   └── pipeline.py           # Two-stage search: ANN → rerank → salience
 ├── services/
 │   ├── __init__.py
 │   ├── log_config.py         # SQLiteLogHandler + setup_logging() + get_logs()
 │   ├── chat.py               # Multi-provider chat with tool use (Anthropic/Gemini/Ollama)
 │   ├── claude_export.py      # Claude Export service: ingest/query external conversation DB
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (Phase 5)
-│   ├── embedding.py          # Llama-Nemotron-Embed-1B-v2 text embedding (Phase 5)
-│   ├── vector_store.py       # Qdrant vector DB operations (configurable URL, Phase 5)
-│   ├── bulk_embed.py         # Batch embed documents, messages & domains into Qdrant (Phase 5)
+│   ├── embedding.py          # Thin shim → atlas.embedding_service (R9)
+│   ├── vector_store.py       # Qdrant vector DB + two-stage search pipeline (R9)
+│   ├── bulk_embed.py         # GPU batch embed with progress & checkpointing (R9)
 │   ├── settings.py           # Settings registry with validation and categories
 │   └── ingestion/            # Content ingestion parsers (Phase 6A)
 │       ├── __init__.py
@@ -76,7 +85,7 @@ JANATPMP/
 ├── screenshots/              # UI screenshots for reference
 ├── requirements.txt          # Python dependencies (pinned)
 ├── pyproject.toml            # Project metadata
-├── Dockerfile                # Container image (Python 3.14-slim)
+├── Dockerfile                # Container image (Python 3.14-slim + PyTorch CUDA)
 ├── docker-compose.yml        # Container orchestration (port 7860, volume mount)
 ├── Janat_Brand_Guide.md      # Brand colors, fonts, design system
 └── CLAUDE.md                 # This file
@@ -391,13 +400,15 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
 
 ## Docker
 
-- **Image:** Python 3.14-slim
+- **Image:** Python 3.14-slim + PyTorch CUDA 12.8 (installed from CUDA wheel index)
 - **Port:** 7860
 - **Volume:** `.:/app` for live code changes without rebuild
 - **MCP:** Enabled via `GRADIO_MCP_SERVER=True` environment variable
-- **CMD:** `gradio app.py` (uses Gradio's built-in server)
+- **CMD:** `python app.py`
+- **GPU:** Both core and ollama services have NVIDIA GPU passthrough
 - **Container names:** `janatpmp-core` (app), `janatpmp-ollama` (LLM), `janatpmp-qdrant` (vector DB)
   - Docker service `core` (was `janatpmp` before Phase 4 rename)
+  - Core has GPU access for ATLAS embedding/reranking models
 - **Qdrant:** `janatpmp-qdrant` container on ports 6343:6333/6344:6334
   - Internal URL: `http://janatpmp-qdrant:6333` (Docker DNS)
   - External URL: `http://localhost:6343` (host access, dashboard at `/dashboard`)
@@ -407,6 +418,7 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
   - Internal URL: `http://ollama:11434/v1` (Docker DNS)
   - External URL: `http://localhost:11435` (host access for testing)
   - GPU passthrough via NVIDIA Container Toolkit
+  - `OLLAMA_KEEP_ALIVE=30m` keeps model warm between turns (prevents GPU spike/crash)
   - Available models: Nemotron-3-Nano-30B-A3B IQ4_XS (default, 18 GB, 53/53 layers on GPU),
     nemotron-3-nano (BF16, 24 GB — too large for single GPU), deepseek-r1:7b-qwen-distill-q4_K_M,
     deepseek-r1:latest, qwen3:4b-instruct-2507-q4_K_M, phi4-mini-reasoning:latest
@@ -517,8 +529,8 @@ demo.launch(mcp_server=True)
 ```
 
 All 26 functions in `db/operations.py` (including 4 domain CRUD) plus 8 chat operations
-from `db/chat_operations.py` plus 5 vector/embedding operations from `services/` plus 1
-import operation are exposed via `gr.api()` (45 total MCP tools). They MUST have
+from `db/chat_operations.py` plus 6 vector/embedding operations from `services/` plus 1
+import operation are exposed via `gr.api()` (46 total MCP tools). They MUST have
 Google-style docstrings with Args/Returns for MCP tool generation.
 
 ### Common Mistakes to Avoid
@@ -603,15 +615,32 @@ Tool toggles in right sidebar control availability per-session. Full routing is 
 - Import scoping: NEVER local imports inside render_left for names already imported at
   module level (causes UnboundLocalError due to Python scoping).
 
-## Phase 5: RAG Pipeline (Complete)
+## Phase 5: RAG Pipeline (Complete, upgraded in R9)
+
+### Two-Stage Search Pipeline (R9)
+
+Search uses a two-stage retrieval pipeline orchestrated by `atlas/pipeline.py`:
+
+1. **ANN search** — Qdrant approximate nearest neighbor, top-20 candidates (configurable via `RERANK_CANDIDATES`)
+2. **Cross-encoder reranking** — `nvidia/llama-nemotron-rerank-vl-1b-v2` rescores candidates by relevance
+3. **Salience write-back** — Rerank scores update `salience` metadata in Qdrant payloads
+
+Both `search()` and `search_all()` in `services/vector_store.py` accept `rerank=True` (default).
+Set `rerank=False` for bulk operations or when the reranker is not needed. Graceful degradation:
+if the reranker is unavailable, ANN results are returned with a warning.
 
 ### Vector Search Architecture
 
 - **Qdrant** vector database with two collections: `janatpmp_documents` and `janatpmp_messages`
-- **NVIDIA Llama-Nemotron-Embed-1B-v2** embedding model (2048-dim, asymmetric encoding)
-  - Document encoding: `prompt_name="document"`
-  - Query encoding: `prompt_name="query"`
+- **NVIDIA Llama-Nemotron-Embed-VL-1B-v2** multimodal embedding model (2048-dim, GPU, bfloat16)
+  - Document encoding: `model.encode_documents(texts=...)`
+  - Query encoding: `model.encode_queries([query])`
+  - Attention: eager (forced via config property override — model hardcodes flash_attention_2)
+- **NVIDIA Llama-Nemotron-Rerank-VL-1B-v2** cross-encoder reranker (GPU, bfloat16)
+  - Scores query-document relevance via logits (raw, not sigmoid)
+  - Adds `rerank_score` field to results
 - **HuggingFace cache** shared via external Docker volume (`huggingface_cache`)
+- **Salience metadata** — Qdrant payloads track `salience` (weighted score) and `last_retrieved` (ISO timestamp)
 
 ### RAG Context Injection
 
@@ -629,9 +658,12 @@ Tool toggles in right sidebar control availability per-session. Full routing is 
 
 ### Bulk Embedding (`services/bulk_embed.py`)
 
-- `embed_all_documents()` — queries DB directly for documents with content, embeds into Qdrant
-- `embed_all_messages()` — embeds all messages with user_prompt + model_response concatenated
-- `embed_all_domains()` — embeds domain descriptions into `janatpmp_documents` collection with `entity_type: "domain"` metadata
+- `embed_all_documents()` — batch-embeds documents into Qdrant (batch size 32, GPU-accelerated)
+- `embed_all_messages()` — batch-embeds messages with user_prompt + model_response concatenated
+- `embed_all_domains()` — batch-embeds domain descriptions into `janatpmp_documents` collection
+- **Checkpointing** — skips already-embedded points via `point_exists()` (resume after restart)
+- **Progress logging** — logs every 100 items with count/total and elapsed time
+- **Returns** `elapsed_seconds` in result dict for performance tracking
 
 ## Phase 6A: Content Ingestion Pipeline (Complete)
 
@@ -656,6 +688,54 @@ Parsers for importing conversations and documents from multiple external sources
 
 See `docs/INVENTORY_CONTENT_CORPUS.md` for full catalog and schema samples.
 See `docs/INVENTORY_OLD_PARSERS.md` for old pipeline code analysis.
+
+## Phase R9: ATLAS Model Infrastructure & GPU Hardening
+
+**The line:** JANATPMP stores and retrieves. ATLAS remembers.
+
+R9 establishes the `atlas/` module as the model layer — embedding, reranking, and
+salience memory. The core Docker container gains GPU access alongside Ollama.
+
+### ATLAS Module (`atlas/`)
+
+| File | Purpose |
+| ---- | ------- |
+| `config.py` | Model identifiers, vector dimensions, salience constants, rerank parameters |
+| `embedding_service.py` | `NemotronEmbedder` — VL multimodal embedder (GPU, bfloat16, eager attn) |
+| `reranking_service.py` | `NemotronReranker` — cross-encoder reranker (GPU, bfloat16) |
+| `memory_service.py` | `write_salience()` — weighted salience write-back to Qdrant payloads |
+| `pipeline.py` | `rerank_and_write_salience()` — orchestrator for two-stage search |
+
+### Model Stack
+
+- **Embedder:** `nvidia/llama-nemotron-embed-vl-1b-v2` (multimodal, ~1.7B params, 2048-dim)
+- **Reranker:** `nvidia/llama-nemotron-rerank-vl-1b-v2` (cross-encoder, ~1.7B params)
+- **Attention:** eager (forced via config property override — the VL model hardcodes flash_attention_2)
+- **Precision:** bfloat16 on GPU, with CPU fallback (logs warning)
+- **Loading:** Lazy singletons — models load on first use, cached for process lifetime
+
+### Key Decisions
+
+- **Eager attention over flash-attention-2:** flash-attn requires nvcc compilation, incompatible
+  with python:3.14-slim. SDPA (the next best option) is not registered by this model class.
+  Eager attention works via a config property override that intercepts the model's hardcoded
+  `flash_attention_2` write at `modeling_llama_nemotron_vl.py:291`.
+- **Removed sentence-transformers:** Clean break. The VL model uses raw `transformers` API
+  (`model.encode_queries()` / `model.encode_documents()`), not `SentenceTransformer()`.
+- **services/embedding.py as thin shim:** Preserves `embed_passages()` / `embed_query()`
+  signatures for all downstream consumers. Atlas owns the model; services provides the interface.
+
+### VRAM Budget (RTX 5090, 32GB)
+
+| Component | Estimated VRAM |
+| --------- | -------------- |
+| Ollama (Nemotron-3-Nano IQ4_XS) | ~18-21 GB |
+| ATLAS Embedder | ~3.4 GB |
+| ATLAS Reranker | ~3.4 GB |
+| **Headroom** | ~4-7 GB |
+
+Embedder and reranker load lazily. During normal operation only the embedder needs to be
+resident alongside Ollama. The reranker loads on-demand for search calls.
 
 ## Future Architecture (not in scope, for context only)
 

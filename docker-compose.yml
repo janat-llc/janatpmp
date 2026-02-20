@@ -8,9 +8,20 @@ services:
       - .:/app
       - C:\Janat\Claude\Claude_Export:/data/claude_export:ro
       - huggingface_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     environment:
       - GRADIO_SERVER_NAME=0.0.0.0
       - GRADIO_MCP_SERVER=True
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_TOKEN=${HF_TOKEN}
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,garbage_collection_threshold:0.8
+      - OLLAMA_GPU_MEMORY_FRACTION=0.55
     depends_on:
       - ollama
       - janatpmp-qdrant
@@ -34,6 +45,9 @@ services:
               capabilities: [gpu]
     environment:
       - OLLAMA_FLASH_ATTENTION=1
+      - OLLAMA_NUM_GPU=999
+      - OLLAMA_KEEP_ALIVE=30m
+      - OLLAMA_GPU_MEMORY_FRACTION=0.55
     restart: unless-stopped
     networks:
       - janatpmp_network

@@ -3,6 +3,10 @@
 Collections:
 - janatpmp_documents: Embedded document chunks
 - janatpmp_messages: Embedded conversation messages
+
+Search uses a two-stage pipeline (R9):
+1. ANN search (embedder) → top-k candidates
+2. Cross-encoder reranker → reordered results + salience write-back
 """
 
 import os
@@ -12,6 +16,7 @@ from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
 )
 from services.embedding import embed_passages, embed_query
+from atlas.config import RERANK_CANDIDATES
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +66,38 @@ def ensure_collections():
             )
 
 
+def recreate_collections() -> str:
+    """Drop and recreate all Qdrant collections at correct dimensions.
+
+    WARNING: This destroys all existing embeddings. Use when switching
+    embedding models (different vector space) or resetting the vector store.
+    Re-run embed_all_documents(), embed_all_messages(), embed_all_domains()
+    after calling this.
+
+    Returns:
+        Status message confirming recreation.
+    """
+    client = _get_client()
+    existing = [c.name for c in client.get_collections().collections]
+    recreated = []
+
+    for name in [COLLECTION_DOCUMENTS, COLLECTION_MESSAGES]:
+        if name in existing:
+            client.delete_collection(name)
+            logger.info("Deleted Qdrant collection: %s", name)
+        client.create_collection(
+            collection_name=name,
+            vectors_config=VectorParams(
+                size=VECTOR_DIM,
+                distance=Distance.COSINE,
+            ),
+        )
+        recreated.append(name)
+        logger.info("Created Qdrant collection: %s (%d-dim, cosine)", name, VECTOR_DIM)
+
+    return f"Recreated collections: {', '.join(recreated)} at {VECTOR_DIM} dimensions"
+
+
 def upsert_document(doc_id: str, text: str, metadata: dict):
     """Embed and store a document chunk.
 
@@ -103,28 +140,67 @@ def upsert_message(message_id: str, text: str, metadata: dict):
     )
 
 
-def search(query: str, collection: str = COLLECTION_DOCUMENTS, limit: int = 5) -> list[dict]:
-    """Semantic search across a collection.
+def upsert_batch(collection: str, points: list[PointStruct]):
+    """Upsert a batch of pre-embedded points into a collection.
+
+    Args:
+        collection: Target Qdrant collection name.
+        points: List of PointStruct with id, vector, and payload.
+    """
+    client = _get_client()
+    client.upsert(collection_name=collection, points=points)
+
+
+def point_exists(collection: str, point_id: str) -> bool:
+    """Check if a point exists in a Qdrant collection.
+
+    Args:
+        collection: Qdrant collection name.
+        point_id: The point ID to check.
+
+    Returns:
+        True if the point exists, False otherwise.
+    """
+    client = _get_client()
+    try:
+        result = client.retrieve(collection, [point_id])
+        return len(result) > 0
+    except Exception:
+        return False
+
+
+def search(query: str, collection: str = COLLECTION_DOCUMENTS,
+           limit: int = 5, rerank: bool = True) -> list[dict]:
+    """Semantic search across a collection with optional reranking.
+
+    Two-stage pipeline: ANN search produces candidates, then cross-encoder
+    reranker reorders them and writes salience back to Qdrant.
 
     Args:
         query: Natural language search query.
         collection: Which collection to search.
         limit: Max results to return.
+        rerank: If True, apply cross-encoder reranking (default). Set False
+            for bulk operations or when reranker is not needed.
 
     Returns:
         List of dicts with keys: id, score, text, and all metadata fields.
+        When reranked, also includes rerank_score.
     """
     client = _get_client()
     query_vector = embed_query(query)
 
+    # Wider ANN net when reranking (retrieve more candidates for reranker to score)
+    ann_limit = RERANK_CANDIDATES if rerank else limit
+
     results = client.query_points(
         collection_name=collection,
         query=query_vector,
-        limit=limit,
+        limit=ann_limit,
         with_payload=True,
     )
 
-    return [
+    candidates = [
         {
             "id": str(hit.id),
             "score": hit.score,
@@ -133,25 +209,42 @@ def search(query: str, collection: str = COLLECTION_DOCUMENTS, limit: int = 5) -
         for hit in results.points
     ]
 
+    if rerank and candidates:
+        try:
+            from atlas.pipeline import rerank_and_write_salience
+            candidates = rerank_and_write_salience(query, candidates, collection, limit)
+        except Exception as e:
+            logger.warning("Reranker unavailable, returning ANN results: %s", e)
+            candidates = candidates[:limit]
+    else:
+        candidates = candidates[:limit]
 
-def search_all(query: str, limit: int = 5) -> list[dict]:
-    """Search across ALL collections, merged and sorted by score.
+    return candidates
+
+
+def search_all(query: str, limit: int = 5, rerank: bool = True) -> list[dict]:
+    """Search across ALL collections, merged and sorted by relevance.
+
+    Two-stage pipeline applied per-collection, then merged. When reranking,
+    results are sorted by rerank_score; otherwise by ANN score.
 
     Args:
         query: Natural language search query.
         limit: Max results per collection (total may be up to 2x limit).
+        rerank: If True, apply cross-encoder reranking (default).
 
     Returns:
         List of dicts with source_collection field added, sorted by score desc.
     """
-    docs = search(query, COLLECTION_DOCUMENTS, limit)
+    docs = search(query, COLLECTION_DOCUMENTS, limit, rerank=rerank)
     for d in docs:
         d["source_collection"] = "documents"
 
-    msgs = search(query, COLLECTION_MESSAGES, limit)
+    msgs = search(query, COLLECTION_MESSAGES, limit, rerank=rerank)
     for m in msgs:
         m["source_collection"] = "messages"
 
     combined = docs + msgs
-    combined.sort(key=lambda x: x["score"], reverse=True)
+    sort_key = "rerank_score" if rerank else "score"
+    combined.sort(key=lambda x: x.get(sort_key, 0), reverse=True)
     return combined[:limit]

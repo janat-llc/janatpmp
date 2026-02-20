@@ -31,7 +31,10 @@ from db.chat_operations import (
     search_conversations, add_message, get_messages,
 )
 from services.claude_import import import_conversations_json
-from services.vector_store import search as vector_search, search_all as vector_search_all
+from services.vector_store import (
+    search as vector_search, search_all as vector_search_all,
+    recreate_collections,
+)
 from services.bulk_embed import embed_all_documents, embed_all_messages, embed_all_domains
 from pages.projects import build_page
 from janat_theme import JanatTheme, JANAT_CSS
@@ -99,12 +102,13 @@ with gr.Blocks(title="JANATPMP") as demo:
     # Import pipeline (Phase 5)
     gr.api(import_conversations_json)
 
-    # RAG pipeline (Phase 5 Layer 2)
+    # RAG pipeline (R9: ATLAS two-stage search + embedding)
     gr.api(vector_search)
     gr.api(vector_search_all)
     gr.api(embed_all_documents)
     gr.api(embed_all_messages)
     gr.api(embed_all_domains)
+    gr.api(recreate_collections)
 
 if __name__ == "__main__":
     demo.launch(

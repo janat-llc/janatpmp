@@ -3,7 +3,7 @@
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
 ![Gradio 6.5.1](https://img.shields.io/badge/Gradio-6.5.1-orange?logo=gradio&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-45%20Tools-blueviolet)
+![MCP](https://img.shields.io/badge/MCP-46%20Tools-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 
 A **strategic command center** for solo architects and engineers working with AI partners. JANATPMP gives your AI assistants persistent memory — project state, task queues, documents, conversation history, and semantic search — all readable and writable via [MCP (Model Context Protocol)](https://modelcontextprotocol.io/). Conversations become durable, searchable knowledge. Context survives session boundaries.
@@ -19,8 +19,8 @@ Built by and for [The Janat Initiative](https://janatinitiative.org), powering c
 ```mermaid
 graph TB
     subgraph Docker Compose
-        Core[JANATPMP Core<br/>Gradio 6.5.1<br/>Port 7860]
-        Ollama[Ollama<br/>Nemotron-3-Nano<br/>Port 11435]
+        Core[JANATPMP Core<br/>Gradio 6.5.1 + ATLAS<br/>GPU · Port 7860]
+        Ollama[Ollama<br/>Nemotron-3-Nano<br/>GPU · Port 11435]
         Qdrant[Qdrant<br/>Vector Search<br/>Port 6343]
     end
 
@@ -28,6 +28,7 @@ graph TB
     Core --> SQLite
     Core --> Ollama
     Core --> Qdrant
+    Core -. ATLAS .-> Core
 
     Claude[Claude Desktop<br/>via MCP] --> Core
     Browser[Web Browser<br/>Desktop / Mobile] --> Core
@@ -37,7 +38,7 @@ graph TB
 
 ```mermaid
 graph TB
-    MCP[MCP Tools<br/>45 operations] --> DB[db/operations.py]
+    MCP[MCP Tools<br/>46 operations] --> DB[db/operations.py]
     UI[Gradio UI] --> DB
     API[REST API] --> DB
     DB --> SQLite[(SQLite)]
@@ -50,9 +51,10 @@ One set of functions in `db/operations.py` serves all three surfaces — UI even
 
 ## Features
 
-- **45 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, settings, backups)
+- **46 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, settings, backups)
 - **Multi-provider chat** with triplet message persistence (Anthropic, Gemini, Ollama/local models)
-- **RAG pipeline** — Qdrant vector search with NVIDIA Llama-Nemotron-Embed-1B-v2 embeddings (2048-dim)
+- **ATLAS two-stage search** — ANN retrieval + cross-encoder reranking with salience write-back
+- **RAG pipeline** — Qdrant vector search with GPU-accelerated NVIDIA Llama-Nemotron-Embed-VL-1B-v2 embeddings (2048-dim, multimodal)
 - **Content ingestion** — parsers for Google AI Studio, quest files, markdown, and text with SHA-256 deduplication
 - **Dynamic domain management** — domains are first-class database entities, creatable via MCP without code changes
 - **Project / Task / Document management** with typed relationships and hierarchy
@@ -72,9 +74,11 @@ One set of functions in `db/operations.py` serves all three surfaces — UI even
 | Language | Python 3.14 |
 | Database | SQLite (WAL mode, FTS5 full-text search) |
 | Vector DB | Qdrant — semantic search over documents and messages |
-| Embeddings | NVIDIA Llama-Nemotron-Embed-1B-v2 (2048-dim, asymmetric encoding) |
+| Embeddings | NVIDIA Llama-Nemotron-Embed-VL-1B-v2 (2048-dim, multimodal, GPU) |
+| Reranking | NVIDIA Llama-Nemotron-Rerank-VL-1B-v2 (cross-encoder, GPU) |
+| ML Runtime | PyTorch 2.10+ (CUDA 12.8) + Transformers 4.47+ |
 | Inference | Ollama — Nemotron-3-Nano (default), DeepSeek-R1, Qwen3, Phi-4 |
-| Container | Docker Compose (Python 3.14-slim + NVIDIA GPU passthrough) |
+| Container | Docker Compose (Python 3.14-slim + NVIDIA GPU passthrough for core + Ollama) |
 | Data Display | Pandas DataFrames |
 
 ---
@@ -138,17 +142,23 @@ JANATPMP/
 │   ├── chat_operations.py     # Conversation + message CRUD
 │   ├── migrations/            # Versioned schema migrations
 │   └── backups/               # Timestamped database backups
+├── atlas/
+│   ├── config.py              # Model identifiers, dimensions, salience constants
+│   ├── embedding_service.py   # NemotronEmbedder (VL, GPU, bfloat16, eager attn)
+│   ├── reranking_service.py   # NemotronReranker (cross-encoder, GPU)
+│   ├── memory_service.py      # Salience write-back to Qdrant
+│   └── pipeline.py            # Two-stage search orchestrator
 ├── services/
 │   ├── log_config.py          # SQLite log handler + setup_logging()
 │   ├── chat.py                # Multi-provider chat with tool use
 │   ├── settings.py            # Settings registry with validation
 │   ├── claude_export.py       # Claude Export ingestion service
 │   ├── claude_import.py       # Claude JSON → triplet messages
-│   ├── embedding.py           # Llama-Nemotron-Embed-1B-v2 text embedding
-│   ├── vector_store.py        # Qdrant vector DB operations
-│   ├── bulk_embed.py          # Batch embed into Qdrant
+│   ├── embedding.py           # Thin shim → atlas/embedding_service.py
+│   ├── vector_store.py        # Qdrant ops + two-stage search pipeline
+│   ├── bulk_embed.py          # GPU batch embed with checkpointing
 │   └── ingestion/             # Content ingestion parsers
-├── Dockerfile                 # Python 3.14-slim image
+├── Dockerfile                 # Python 3.14-slim + PyTorch CUDA 12.8
 ├── docker-compose.yml         # Multi-container orchestration
 ├── Janat_Brand_Guide.md       # Design system (colors, fonts)
 └── CLAUDE.md                  # Development guidelines for AI assistants
@@ -158,7 +168,7 @@ JANATPMP/
 
 ## MCP Integration
 
-JANATPMP exposes **45 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
+JANATPMP exposes **46 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
 
 ```
 http://localhost:7860/gradio_api/mcp/sse
@@ -176,7 +186,7 @@ Full API documentation is available at `/gradio_api/docs` while the server is ru
 | Domains | `get_domains`, `get_domain`, `create_domain`, `update_domain` | Organizational categories — database-managed, no code deploys needed |
 | Relationships | `create_relationship`, `get_relationships` | Typed connections (blocks, enables, informs, etc.) |
 | Conversations | `create_conversation`, `list_conversations`, `search_conversations`, `add_message`, `get_messages`, ... | Chat history with triplet schema |
-| Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains` | Qdrant semantic search and bulk embedding |
+| Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains`, `recreate_collections` | ATLAS two-stage search, GPU bulk embedding, collection management |
 | System | `get_stats`, `get_schema_info`, `backup_database`, `restore_database`, `list_backups`, `reset_database` | Database administration |
 | Import | `import_conversations_json` | Claude conversation JSON import |
 
@@ -275,5 +285,6 @@ Built by **Mat Gallagher** — [Janat, LLC](https://janat.org) / [The Janat Init
 | UI Framework | [Gradio](https://gradio.app) 6.5.1 |
 | Local Inference | [Ollama](https://ollama.ai) + NVIDIA Nemotron |
 | Vector Search | [Qdrant](https://qdrant.tech) |
-| Embeddings | [NVIDIA Llama-Nemotron-Embed-1B-v2](https://huggingface.co/nvidia/llama-nemotron-embed-1b-v2) |
+| Embeddings | [NVIDIA Llama-Nemotron-Embed-VL-1B-v2](https://huggingface.co/nvidia/llama-nemotron-embed-vl-1b-v2) |
+| Reranking | [NVIDIA Llama-Nemotron-Rerank-VL-1B-v2](https://huggingface.co/nvidia/llama-nemotron-rerank-vl-1b-v2) |
 | Persistence | [SQLite](https://sqlite.org) |

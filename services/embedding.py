@@ -1,28 +1,15 @@
-"""Embedding service using NVIDIA Llama-Nemotron-Embed-1B-v2.
+"""Embedding service — delegates to atlas.embedding_service.
 
-Provides document embedding and query embedding with asymmetric encoding.
-Model is loaded lazily on first use and cached for the process lifetime.
+Thin shim preserving the embed_passages() / embed_query() interface that
+services/vector_store.py and services/bulk_embed.py already import.
+The atlas module owns the model; this module provides the stable interface.
 """
 
 import logging
-from sentence_transformers import SentenceTransformer
+
+from atlas.embedding_service import get_embedder
 
 logger = logging.getLogger(__name__)
-
-_model = None
-
-
-def _get_model() -> SentenceTransformer:
-    """Lazy-load the embedding model (first call downloads ~2GB)."""
-    global _model
-    if _model is None:
-        logger.info("Loading embedding model: nvidia/llama-nemotron-embed-1b-v2")
-        _model = SentenceTransformer(
-            "nvidia/llama-nemotron-embed-1b-v2",
-            trust_remote_code=True,
-        )
-        logger.info("Embedding model loaded")
-    return _model
 
 
 def embed_passages(texts: list[str]) -> list[list[float]]:
@@ -34,9 +21,7 @@ def embed_passages(texts: list[str]) -> list[list[float]]:
     Returns:
         List of embedding vectors (2048-dim each).
     """
-    model = _get_model()
-    embeddings = model.encode(texts, prompt_name="document")
-    return embeddings.tolist()
+    return get_embedder().embed_texts(texts)
 
 
 def embed_query(query: str) -> list[float]:
@@ -48,6 +33,4 @@ def embed_query(query: str) -> list[float]:
     Returns:
         Single embedding vector (2048-dim).
     """
-    model = _get_model()
-    embedding = model.encode([query], prompt_name="query")
-    return embedding[0].tolist()
+    return get_embedder().embed_query(query)
