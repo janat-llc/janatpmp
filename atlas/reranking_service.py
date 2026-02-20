@@ -7,7 +7,7 @@ matched pair with the Nemotron VL embedder — benchmarked together as a pipelin
 import logging
 
 import torch
-from transformers import AutoConfig, AutoModelForSequenceClassification, AutoProcessor
+from transformers import AutoConfig, AutoModelForSequenceClassification, AutoProcessor, BitsAndBytesConfig
 
 from atlas.config import RERANKER_MODEL, GPU_MEMORY_FRACTION, MAX_SEQ_LENGTH
 from atlas.embedding_service import _force_eager_attention
@@ -30,7 +30,7 @@ class NemotronReranker:
             # First CUDA user in this process — set hard VRAM cap
             torch.cuda.set_per_process_memory_fraction(GPU_MEMORY_FRACTION)
 
-        logger.info("Loading reranker model: %s on %s", self.model_name, self.device)
+        logger.info("Loading reranker model (INT8): %s on %s", self.model_name, self.device)
 
         # Same flash_attention_2 hardcoding fix as embedding_service.py
         config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=True)
@@ -39,12 +39,22 @@ class NemotronReranker:
         if hasattr(config, "vision_config"):
             _force_eager_attention(config.vision_config)
 
+        # Tell accelerate our actual VRAM budget so it doesn't assume 90% of full GPU.
+        max_memory = None
+        if self.device == "cuda":
+            budget = int(torch.cuda.get_device_properties(0).total_memory * GPU_MEMORY_FRACTION)
+            max_memory = {0: budget, "cpu": "8GiB"}
+
+        # INT8 quantization via BitsAndBytes — halves VRAM (~1.7 GB vs 3.4 GB bfloat16).
+        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+
         self.model = AutoModelForSequenceClassification.from_pretrained(
             self.model_name,
             config=config,
-            dtype=torch.bfloat16,
+            quantization_config=bnb_config,
             trust_remote_code=True,
             device_map="auto",
+            max_memory=max_memory,
         ).eval()
 
         self.processor = AutoProcessor.from_pretrained(
@@ -105,11 +115,10 @@ class NemotronReranker:
 
 
 def get_reranker() -> NemotronReranker:
-    """Get or create the reranker instance.
+    """Get or create the reranker singleton.
 
-    Loads on demand — the reranker is NOT kept resident. After each use,
-    call release_reranker() to free ~3.4 GB of VRAM back for Ollama.
-    Caches load errors to prevent retry spam.
+    With INT8 quantization, the reranker stays resident alongside the embedder
+    (~1.7 GB each, ~3.4 GB total). Caches load errors to prevent retry spam.
     """
     global _reranker, _reranker_load_error
     if _reranker_load_error is not None:
@@ -125,7 +134,7 @@ def get_reranker() -> NemotronReranker:
 
 
 def release_reranker():
-    """Unload reranker from GPU after use. Recovers ~3.4 GB VRAM."""
+    """Unload reranker from GPU. Available for explicit cleanup if needed."""
     global _reranker
     if _reranker is not None:
         _reranker.unload()

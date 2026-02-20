@@ -12,6 +12,9 @@ COPY requirements.txt .
 # Must happen before requirements.txt to prevent CPU-only torch overwrite
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu128
 
+# Install bitsandbytes for INT8 quantization (must come after PyTorch CUDA)
+RUN pip install --no-cache-dir bitsandbytes>=0.49.0
+
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 

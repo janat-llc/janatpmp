@@ -7,7 +7,7 @@ The atlas module owns the model; this module provides the stable interface.
 
 import logging
 
-from atlas.embedding_service import get_embedder
+from atlas.embedding_service import get_embedder, release_embedder
 
 logger = logging.getLogger(__name__)
 

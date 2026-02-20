@@ -17,6 +17,7 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 - **Pandas** for data display
 - **PyTorch** 2.10+ with CUDA 12.8 (GPU-accelerated embedding/reranking)
 - **Transformers** 4.47+ (Nemotron VL model loading)
+- **BitsAndBytes** 0.49+ (INT8 quantization for ATLAS models)
 
 ## Project Structure
 
@@ -54,8 +55,8 @@ JANATPMP/
 ├── atlas/                    # ATLAS model infrastructure (R9)
 │   ├── __init__.py
 │   ├── config.py             # Model names, dimensions, salience constants
-│   ├── embedding_service.py  # Nemotron VL embedder (GPU, bfloat16, eager attn)
-│   ├── reranking_service.py  # Nemotron VL reranker (GPU, bfloat16)
+│   ├── embedding_service.py  # Nemotron VL embedder (GPU, INT8 via BitsAndBytes)
+│   ├── reranking_service.py  # Nemotron VL reranker (GPU, INT8 via BitsAndBytes)
 │   ├── memory_service.py     # Salience write-back to Qdrant payloads
 │   └── pipeline.py           # Two-stage search: ANN → rerank → salience
 ├── services/
@@ -419,9 +420,10 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
   - External URL: `http://localhost:11435` (host access for testing)
   - GPU passthrough via NVIDIA Container Toolkit
   - `OLLAMA_KEEP_ALIVE=30m` keeps model warm between turns (prevents GPU spike/crash)
-  - Available models: Nemotron-3-Nano-30B-A3B IQ4_XS (default, 18 GB, 53/53 layers on GPU),
-    nemotron-3-nano (BF16, 24 GB — too large for single GPU), deepseek-r1:7b-qwen-distill-q4_K_M,
-    deepseek-r1:latest, qwen3:4b-instruct-2507-q4_K_M, phi4-mini-reasoning:latest
+  - Available models (all Nemotron family via bartowski GGUFs):
+    Nemotron-3-Nano-30B-A3B IQ4_XS (default, ~18 GB),
+    Nemotron-Nano-12B-v2 Q4_K_M, Nemotron-Nano-9B-v2 Q4_K_M (~6.5 GB),
+    nemotron-mini (Ollama registry)
 
 ## Gradio Development Patterns (CRITICAL — READ BEFORE WRITING UI CODE)
 
@@ -632,13 +634,14 @@ if the reranker is unavailable, ANN results are returned with a warning.
 ### Vector Search Architecture
 
 - **Qdrant** vector database with two collections: `janatpmp_documents` and `janatpmp_messages`
-- **NVIDIA Llama-Nemotron-Embed-VL-1B-v2** multimodal embedding model (2048-dim, GPU, bfloat16)
+- **NVIDIA Llama-Nemotron-Embed-VL-1B-v2** multimodal embedding model (2048-dim, GPU, INT8 via BitsAndBytes)
   - Document encoding: `model.encode_documents(texts=...)`
   - Query encoding: `model.encode_queries([query])`
   - Attention: eager (forced via config property override — model hardcodes flash_attention_2)
-- **NVIDIA Llama-Nemotron-Rerank-VL-1B-v2** cross-encoder reranker (GPU, bfloat16)
+- **NVIDIA Llama-Nemotron-Rerank-VL-1B-v2** cross-encoder reranker (GPU, INT8 via BitsAndBytes)
   - Scores query-document relevance via logits (raw, not sigmoid)
   - Adds `rerank_score` field to results
+  - Both models stay resident simultaneously (~1.7 GB each INT8, ~3.4 GB total)
 - **HuggingFace cache** shared via external Docker volume (`huggingface_cache`)
 - **Salience metadata** — Qdrant payloads track `salience` (weighted score) and `last_retrieved` (ISO timestamp)
 
@@ -701,8 +704,8 @@ salience memory. The core Docker container gains GPU access alongside Ollama.
 | File | Purpose |
 | ---- | ------- |
 | `config.py` | Model identifiers, vector dimensions, salience constants, rerank parameters |
-| `embedding_service.py` | `NemotronEmbedder` — VL multimodal embedder (GPU, bfloat16, eager attn) |
-| `reranking_service.py` | `NemotronReranker` — cross-encoder reranker (GPU, bfloat16) |
+| `embedding_service.py` | `NemotronEmbedder` — VL multimodal embedder (GPU, INT8 via BitsAndBytes) |
+| `reranking_service.py` | `NemotronReranker` — cross-encoder reranker (GPU, INT8 via BitsAndBytes) |
 | `memory_service.py` | `write_salience()` — weighted salience write-back to Qdrant payloads |
 | `pipeline.py` | `rerank_and_write_salience()` — orchestrator for two-stage search |
 
@@ -711,8 +714,8 @@ salience memory. The core Docker container gains GPU access alongside Ollama.
 - **Embedder:** `nvidia/llama-nemotron-embed-vl-1b-v2` (multimodal, ~1.7B params, 2048-dim)
 - **Reranker:** `nvidia/llama-nemotron-rerank-vl-1b-v2` (cross-encoder, ~1.7B params)
 - **Attention:** eager (forced via config property override — the VL model hardcodes flash_attention_2)
-- **Precision:** bfloat16 on GPU, with CPU fallback (logs warning)
-- **Loading:** Lazy singletons — models load on first use, cached for process lifetime
+- **Precision:** INT8 via BitsAndBytes (was bfloat16), with CPU fallback (logs warning)
+- **Loading:** Lazy singletons — both models stay resident simultaneously (~3.4 GB total INT8)
 
 ### Key Decisions
 
@@ -729,13 +732,14 @@ salience memory. The core Docker container gains GPU access alongside Ollama.
 
 | Component | Estimated VRAM |
 | --------- | -------------- |
-| Ollama (Nemotron-3-Nano IQ4_XS) | ~18-21 GB |
-| ATLAS Embedder | ~3.4 GB |
-| ATLAS Reranker | ~3.4 GB |
-| **Headroom** | ~4-7 GB |
+| Ollama (Nemotron-3-Nano IQ4_XS) | ~18-21 GB (70%) |
+| ATLAS Embedder (INT8) | ~1.7 GB |
+| ATLAS Reranker (INT8) | ~1.7 GB |
+| Working memory | ~1-2 GB |
+| **Total PyTorch** | **~4-5 GB (25% cap)** |
 
-Embedder and reranker load lazily. During normal operation only the embedder needs to be
-resident alongside Ollama. The reranker loads on-demand for search calls.
+Both ATLAS models stay resident simultaneously thanks to INT8 quantization via
+BitsAndBytes. No model swapping needed — embed and rerank in a single pass.
 
 ## Future Architecture (not in scope, for context only)
 

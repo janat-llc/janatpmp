@@ -19,11 +19,14 @@ logger = logging.getLogger(__name__)
 
 from atlas.config import MAX_TEXT_CHARS
 
-BATCH_SIZE = 4
+BATCH_SIZE = 1
 # MAX_TEXT_CHARS imported from atlas.config (6000 chars ≈ 2000 tokens).
 # The real guard is atlas/config.MAX_SEQ_LENGTH (2048 tokens) enforced at the
 # tokenizer level in embedding_service.py. This char limit is a pre-filter to
 # avoid sending unnecessarily long text to the tokenizer.
+# Batch size 1: GPU is already saturated on a single 2048-token sequence through
+# 24 layers × 16 heads. Batching only saves Python loop overhead (negligible).
+# Peak VRAM: ~3.4 GB weights + ~0.8 GB attention = ~4.2 GB, half the 8 GB budget.
 
 # CUDA errors that corrupt the context — no point retrying after these.
 _CUDA_FATAL_KEYWORDS = ("CUDA error", "cudaError", "device-side assert")

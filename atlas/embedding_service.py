@@ -1,13 +1,14 @@
 """ATLAS embedding service using NVIDIA Llama-Nemotron-Embed-VL-1B-v2.
 
-Multimodal embedder (text + image) running on GPU with bfloat16 precision.
-Singleton pattern — model loads lazily on first use, cached for process lifetime.
+Multimodal embedder (text + image) running on GPU with INT8 quantization
+via BitsAndBytes. Singleton pattern — model loads lazily on first use,
+cached for process lifetime.
 """
 
 import logging
 
 import torch
-from transformers import AutoConfig, AutoModel
+from transformers import AutoConfig, AutoModel, BitsAndBytesConfig
 
 from atlas.config import EMBEDDING_MODEL, GPU_MEMORY_FRACTION, MAX_SEQ_LENGTH
 
@@ -62,10 +63,10 @@ class NemotronEmbedder:
             torch.cuda.set_per_process_memory_fraction(GPU_MEMORY_FRACTION)
             logger.info("CUDA memory capped at %.0f%% (%.1f GB of %.1f GB)",
                         GPU_MEMORY_FRACTION * 100,
-                        torch.cuda.get_device_properties(0).total_mem * GPU_MEMORY_FRACTION / 1e9,
-                        torch.cuda.get_device_properties(0).total_mem / 1e9)
+                        torch.cuda.get_device_properties(0).total_memory * GPU_MEMORY_FRACTION / 1e9,
+                        torch.cuda.get_device_properties(0).total_memory / 1e9)
 
-        logger.info("Loading embedding model: %s on %s", self.model_name, self.device)
+        logger.info("Loading embedding model (INT8): %s on %s", self.model_name, self.device)
 
         # The model's custom code (modeling_llama_nemotron_vl.py:291) hardcodes:
         #   config.llm_config._attn_implementation = "flash_attention_2"
@@ -81,12 +82,23 @@ class NemotronEmbedder:
         if hasattr(config, "vision_config"):
             _force_eager_attention(config.vision_config)
 
+        # Tell accelerate our actual VRAM budget so it doesn't assume 90% of full GPU.
+        max_memory = None
+        if self.device == "cuda":
+            budget = int(torch.cuda.get_device_properties(0).total_memory * GPU_MEMORY_FRACTION)
+            max_memory = {0: budget, "cpu": "8GiB"}
+
+        # INT8 quantization via BitsAndBytes — halves VRAM (~1.7 GB vs 3.4 GB bfloat16).
+        # Both embedder and reranker stay resident simultaneously within 8 GB budget.
+        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+
         self.model = AutoModel.from_pretrained(
             self.model_name,
             config=config,
-            dtype=torch.bfloat16,
+            quantization_config=bnb_config,
             trust_remote_code=True,
             device_map="auto",
+            max_memory=max_memory,
         ).eval()
 
         # Configure processor — hard truncation at MAX_SEQ_LENGTH tokens.
@@ -142,3 +154,21 @@ def get_embedder() -> NemotronEmbedder:
             logger.error("Embedder failed to load (cached — restart to retry): %s", e)
             raise
     return _embedder
+
+
+def release_embedder():
+    """Unload embedder from GPU to free VRAM.
+
+    With INT8 quantization both models fit simultaneously, so this is
+    no longer called automatically. Available for explicit cleanup
+    (e.g. before a large Ollama inference). Embedder reloads lazily.
+    """
+    global _embedder
+    if _embedder is not None:
+        if hasattr(_embedder, "model") and _embedder.model is not None:
+            _embedder.model.to("cpu")
+            del _embedder.model
+        _embedder = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info("Embedder unloaded from GPU")
