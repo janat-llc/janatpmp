@@ -11,10 +11,11 @@ EMBEDDING_DIM = 2048
 # Ollama is capped at 70% (~22.4 GB) via OLLAMA_GPU_MEMORY_FRACTION.
 # That covers 18.2 GB model weights + ~4 GB KV cache for 16K in / 8K out.
 # PyTorch (embedder + reranker) gets 25% (~8 GB). 5% headroom for system.
-# INT8 quantization via BitsAndBytes: both models stay resident simultaneously.
-#   Embedder: ~1.7 GB INT8 (was ~3.4 GB bfloat16)
-#   Reranker: ~1.7 GB INT8 (was ~3.4 GB bfloat16)
-#   Both resident: ~3.4 GB + working memory = ~4-5 GB peak (half the 8 GB cap)
+# NF4 quantization via BitsAndBytes: both models stay resident simultaneously.
+# INT8 was tried first but used ~5.6 GB/model (FP16 outlier features + buffers).
+#   Embedder: ~1.0 GB NF4 (was ~3.4 GB bfloat16, ~5.6 GB INT8)
+#   Reranker: ~1.0 GB NF4
+#   Both resident: ~2-3 GB + working memory — well within 8 GB cap
 GPU_MEMORY_FRACTION = 0.25
 # Max sequence length in tokens. Tokenizer truncates beyond this.
 # Batch size 1 — GPU saturated on single sequence (24 layers × 16 heads).

@@ -30,7 +30,7 @@ class NemotronReranker:
             # First CUDA user in this process — set hard VRAM cap
             torch.cuda.set_per_process_memory_fraction(GPU_MEMORY_FRACTION)
 
-        logger.info("Loading reranker model (INT8): %s on %s", self.model_name, self.device)
+        logger.info("Loading reranker model (NF4): %s on %s", self.model_name, self.device)
 
         # Same flash_attention_2 hardcoding fix as embedding_service.py
         config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=True)
@@ -45,8 +45,13 @@ class NemotronReranker:
             budget = int(torch.cuda.get_device_properties(0).total_memory * GPU_MEMORY_FRACTION)
             max_memory = {0: budget, "cpu": "8GiB"}
 
-        # INT8 quantization via BitsAndBytes — halves VRAM (~1.7 GB vs 3.4 GB bfloat16).
-        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+        # NF4 quantization via BitsAndBytes — ~75% VRAM reduction vs bfloat16.
+        # INT8 was tried but used ~5.6 GB per model due to FP16 outlier features.
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+        )
 
         self.model = AutoModelForSequenceClassification.from_pretrained(
             self.model_name,

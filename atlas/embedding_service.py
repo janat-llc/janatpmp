@@ -66,7 +66,7 @@ class NemotronEmbedder:
                         torch.cuda.get_device_properties(0).total_memory * GPU_MEMORY_FRACTION / 1e9,
                         torch.cuda.get_device_properties(0).total_memory / 1e9)
 
-        logger.info("Loading embedding model (INT8): %s on %s", self.model_name, self.device)
+        logger.info("Loading embedding model (NF4): %s on %s", self.model_name, self.device)
 
         # The model's custom code (modeling_llama_nemotron_vl.py:291) hardcodes:
         #   config.llm_config._attn_implementation = "flash_attention_2"
@@ -88,9 +88,14 @@ class NemotronEmbedder:
             budget = int(torch.cuda.get_device_properties(0).total_memory * GPU_MEMORY_FRACTION)
             max_memory = {0: budget, "cpu": "8GiB"}
 
-        # INT8 quantization via BitsAndBytes — halves VRAM (~1.7 GB vs 3.4 GB bfloat16).
+        # NF4 quantization via BitsAndBytes — ~75% VRAM reduction (~0.9 GB vs 3.4 GB bfloat16).
         # Both embedder and reranker stay resident simultaneously within 8 GB budget.
-        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+        # INT8 was tried but used ~5.6 GB per model due to FP16 outlier features.
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+        )
 
         self.model = AutoModel.from_pretrained(
             self.model_name,
