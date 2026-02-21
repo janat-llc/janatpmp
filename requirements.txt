@@ -1,4 +1,4 @@
-gradio[mcp]==6.5.1
+gradio[mcp]==6.6.0
 pandas
 anthropic
 google-genai

@@ -147,20 +147,68 @@ JANAT_CSS = """
     .sidebar.right .message { padding: 6px 8px !important; max-width: 100% !important; }
     .sidebar.right .bubble-wrap { padding: 0 !important; }
 
-    /* === Branded header — fixed above sidebars and content === */
-    #janat-header {
-        background: transparent !important; border: none !important;
-        margin: 0 !important; padding: 0 !important;
-        position: fixed !important; top: 0 !important;
-        left: 0 !important; right: 0 !important; width: 100% !important;
-        z-index: 10001 !important;
-        pointer-events: none;
-    }
-    #janat-header > * { pointer-events: auto; }
-    /* Push sidebars below fixed header */
+    /* Push fixed sidebars below the navbar (Gradio doesn't do this automatically) */
     .sidebar { top: 48px !important; height: calc(100vh - 48px) !important; }
-    /* Push main content below fixed header */
-    .main { padding-top: 48px !important; }
+
+    /* === Branded navbar — restyle Gradio's built-in nav === */
+    .nav-holder {
+        background: transparent !important;
+        border-bottom: 1px solid #1a1a1a !important;
+        padding: 0 20px !important;
+        display: flex !important;
+        align-items: center !important;
+        height: 48px !important;
+        box-sizing: border-box !important;
+    }
+    /* JANATPMP title — injected via CSS pseudo-element */
+    .nav-holder::before {
+        content: "JANATPMP";
+        font-family: 'Orbitron', sans-serif;
+        font-size: 1.4rem;
+        font-weight: 700;
+        color: #00FFFF;
+        letter-spacing: 0.15em;
+        margin-right: 24px;
+        flex-shrink: 0;
+    }
+    /* "Powered by" + logo on the right */
+    .nav-holder::after {
+        content: "Powered by";
+        font-family: 'Rajdhani', sans-serif;
+        font-size: 0.75rem;
+        color: #808080;
+        letter-spacing: 0.05em;
+        flex-shrink: 0;
+        margin-left: auto;
+        padding-right: 36px;
+        background: url("/gradio_api/file=assets/janat_logo_bold_transparent.png") right center / auto 28px no-repeat;
+        line-height: 28px;
+    }
+    /* Nav links — left-aligned, brand-styled */
+    .nav-holder nav {
+        justify-content: flex-start !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        flex: 0 0 auto !important;
+        flex-wrap: nowrap !important;
+        gap: 16px !important;
+    }
+    .nav-holder nav a {
+        font-family: 'Rajdhani', sans-serif !important;
+        font-size: 0.95rem !important;
+        font-weight: 600 !important;
+        color: #808080 !important;
+        letter-spacing: 0.05em !important;
+        border: none !important;
+        background: transparent !important;
+        padding: 4px 0 !important;
+    }
+    .nav-holder nav a:hover { color: #00FFFF !important; }
+    .nav-holder nav a.active {
+        color: #00FFFF !important;
+        background: transparent !important;
+        border: none !important;
+    }
 
     /* Hide Gradio footer */
     footer { display: none !important; }
