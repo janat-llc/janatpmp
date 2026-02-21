@@ -149,9 +149,6 @@ TOOL_DEFINITIONS = _build_tool_definitions()
 DEFAULT_SYSTEM_PROMPT = """You are an AI assistant embedded in JANATPMP (Janat Project Management Platform).
 You help Mat manage projects, tasks, and documents across multiple domains.
 
-You have access to 22 database tools. Use them freely when asked to create, update, search,
-or manage items, tasks, and documents. Always confirm what you did after using a tool.
-
 Key context:
 - Items are projects, books, features, websites, etc. organized by domain and hierarchy.
 - Tasks are work items assigned to agents, Claude, Mat, Janus, or unassigned.
@@ -160,15 +157,23 @@ Key context:
 
 Domains: literature, janatpmp, janat, atlas, nexusweaver, websites, social, speaking, life
 
-When listing or searching, present results concisely. When creating, confirm the ID and key fields.
-Be direct and helpful. You are a collaborator, not just an assistant."""
+You are a collaborator, not just an assistant. Be thoughtful, expressive, and thorough in your responses."""
+
+DEFAULT_SYSTEM_PROMPT_TOOLS = """
+You have access to 22 database tools. Use them freely when asked to create, update, search,
+or manage items, tasks, and documents. Always confirm what you did after using a tool.
+When listing or searching, present results concisely. When creating, confirm the ID and key fields."""
 
 
-def _build_system_prompt() -> str:
+def _build_system_prompt(has_tools: bool = True) -> str:
     """Compose the full system prompt from default + custom + auto-context.
 
-    Layers: DEFAULT_SYSTEM_PROMPT + user custom prompt (from settings) +
-    live project context snapshot (active items, pending tasks).
+    Layers: DEFAULT_SYSTEM_PROMPT + tool instructions (if model supports tools)
+    + user custom prompt (from settings) + live project context snapshot.
+
+    Args:
+        has_tools: Whether the model supports tool calling. If False,
+            tool-related instructions are omitted to avoid confusing the model.
 
     Returns:
         Complete system prompt string for injection into API call.
@@ -177,6 +182,8 @@ def _build_system_prompt() -> str:
     from db.operations import get_context_snapshot
 
     base = DEFAULT_SYSTEM_PROMPT
+    if has_tools:
+        base += DEFAULT_SYSTEM_PROMPT_TOOLS
 
     custom = get_setting("chat_system_prompt")
     if custom and custom.strip():
@@ -211,12 +218,20 @@ def _build_rag_context(user_message: str) -> str:
 
         context_parts = []
         for r in results:
+            # Prefer rerank_score (cross-encoder relevance) over ANN score.
+            # Qwen3-Reranker scores are 0-1 probabilities (via vLLM).
+            # ANN scores are cosine similarity (0-1), only used as fallback.
+            rerank = r.get("rerank_score")
+            if rerank is not None:
+                if rerank < 0.3:
+                    continue  # Reranker says low relevance (0-1 scale)
+            else:
+                if r.get("score", 0) <= threshold:
+                    continue  # ANN fallback — below threshold
             source = r.get("source_collection", "unknown")
             title = r.get("title", r.get("conv_title", ""))
             text = r.get("text", "")[:500]
-            score = r.get("score", 0)
-            if score > threshold:
-                context_parts.append(f"[{source}] {title}: {text}")
+            context_parts.append(f"[{source}] {title}: {text}")
 
         if not context_parts:
             return ""
@@ -257,12 +272,12 @@ PROVIDER_PRESETS = {
     "ollama": {
         "name": "Ollama (Local)",
         "models": [
-            "hf.co/bartowski/nvidia_Nemotron-3-Nano-30B-A3B-GGUF:IQ4_XS",
+            "hf.co/unsloth/Nemotron-3-Nano-30B-A3B-GGUF:IQ4_XS",
             "hf.co/bartowski/nvidia_NVIDIA-Nemotron-Nano-12B-v2-GGUF:Q4_K_M",
             "hf.co/bartowski/nvidia_NVIDIA-Nemotron-Nano-9B-v2-GGUF:Q4_K_M",
             "nemotron-mini",
         ],
-        "default_model": "hf.co/bartowski/nvidia_Nemotron-3-Nano-30B-A3B-GGUF:IQ4_XS",
+        "default_model": "hf.co/unsloth/Nemotron-3-Nano-30B-A3B-GGUF:IQ4_XS",
         "needs_api_key": False,
         "base_url": "http://ollama:11434/v1",
     },
@@ -512,13 +527,17 @@ def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: s
     return _run_tool_loop(make_call, parse, handle_tools, history)
 
 
+_ollama_no_tools_models: set[str] = set()
+
+
 def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: str,
                  temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 8192,
                  num_ctx: int = 0, keep_alive: str = "") -> list[dict]:
     """Run chat loop using Ollama via OpenAI-compatible API.
 
     Tool use depends on model capability — gracefully falls back to no tools
-    if the model doesn't support function calling.
+    if the model doesn't support function calling. Models that reject tools
+    are cached for the process lifetime to avoid repeated failed attempts.
 
     Args:
         base_url: Ollama OpenAI-compatible endpoint URL.
@@ -538,23 +557,28 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
     client = OpenAI(api_key="ollama", base_url=base_url)
     messages = _build_api_messages(history, include_system=system_prompt)
     tools = _tools_openai()
+    use_tools = bool(tools) and model not in _ollama_no_tools_models
     ollama_opts = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
 
     def make_call():
-        try:
-            return client.chat.completions.create(
-                model=model, messages=messages,
-                tools=tools if tools else None,
-                temperature=temperature, top_p=top_p, max_tokens=max_tokens,
-                extra_body=ollama_opts,
-            )
-        except Exception as e:
-            logger.info("Ollama tool use failed, retrying without tools: %s", e)
-            return client.chat.completions.create(
-                model=model, messages=messages,
-                temperature=temperature, top_p=top_p, max_tokens=max_tokens,
-                extra_body=ollama_opts,
-            )
+        nonlocal use_tools
+        if use_tools:
+            try:
+                return client.chat.completions.create(
+                    model=model, messages=messages,
+                    tools=tools,
+                    temperature=temperature, top_p=top_p, max_tokens=max_tokens,
+                    extra_body=ollama_opts,
+                )
+            except Exception as e:
+                logger.info("Ollama model %s does not support tools, disabling: %s", model, e)
+                _ollama_no_tools_models.add(model)
+                use_tools = False
+        return client.chat.completions.create(
+            model=model, messages=messages,
+            temperature=temperature, top_p=top_p, max_tokens=max_tokens,
+            extra_body=ollama_opts,
+        )
 
     def parse(response):
         msg = response.choices[0].message
@@ -603,7 +627,9 @@ def chat(message: str, history: list[dict],
     model = model_override or get_setting("chat_model")
     logger.info("Chat: provider=%s, model=%s", provider, model)
     base_url = get_setting("chat_base_url")
-    system_prompt = _build_system_prompt()
+    # Ollama models that don't support tools get a cleaner system prompt
+    has_tools = provider != "ollama" or model not in _ollama_no_tools_models
+    system_prompt = _build_system_prompt(has_tools=has_tools)
     if system_prompt_append and system_prompt_append.strip():
         system_prompt += f"\n\n{system_prompt_append.strip()}"
 

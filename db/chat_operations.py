@@ -64,11 +64,11 @@ def parse_reasoning(raw_response: str) -> tuple[str, str]:
 
 def create_conversation(
     provider: str = "ollama",
-    model: str = "hf.co/bartowski/nvidia_Nemotron-3-Nano-30B-A3B-GGUF:IQ4_XS",
+    model: str = "hf.co/unsloth/Nemotron-3-Nano-30B-A3B-GGUF:IQ4_XS",
     system_prompt_append: str = "",
     temperature: float = 0.7,
     top_p: float = 0.9,
-    max_tokens: int = 2048,
+    max_tokens: int = 8192,
     title: str = "New Chat",
     source: str = "platform",
 ) -> str:

@@ -1,12 +1,11 @@
 """Bulk embed existing JANATPMP data into Qdrant.
 
 Run once to backfill, then incremental embedding happens via CDC or on-create.
-GPU-accelerated with batch processing, progress logging, and checkpoint support.
+Embedding is done via Ollama HTTP API — no in-process GPU needed.
 """
 
 import logging
 import time
-import torch
 from qdrant_client.models import PointStruct
 from db.operations import get_connection
 from services.embedding import embed_passages
@@ -19,30 +18,16 @@ logger = logging.getLogger(__name__)
 
 from atlas.config import MAX_TEXT_CHARS
 
-BATCH_SIZE = 1
-# MAX_TEXT_CHARS imported from atlas.config (6000 chars ≈ 2000 tokens).
-# The real guard is atlas/config.MAX_SEQ_LENGTH (2048 tokens) enforced at the
-# tokenizer level in embedding_service.py. This char limit is a pre-filter to
-# avoid sending unnecessarily long text to the tokenizer.
-# Batch size 1: GPU is already saturated on a single 2048-token sequence through
-# 24 layers × 16 heads. Batching only saves Python loop overhead (negligible).
-# Peak VRAM: ~3.4 GB weights + ~0.8 GB attention = ~4.2 GB, half the 8 GB budget.
-
-# CUDA errors that corrupt the context — no point retrying after these.
-_CUDA_FATAL_KEYWORDS = ("CUDA error", "cudaError", "device-side assert")
-
-
-def _is_cuda_fatal(error: Exception) -> bool:
-    """Check if an error indicates a poisoned CUDA context (abort immediately)."""
-    msg = str(error)
-    return any(kw in msg for kw in _CUDA_FATAL_KEYWORDS)
+BATCH_SIZE = 32
+# Ollama handles batching server-side. HTTP overhead is the bottleneck,
+# so larger client-side batches reduce round-trips.
 
 
 def embed_all_documents() -> dict:
     """Embed all documents with content into the Qdrant documents collection.
 
     Queries all documents with non-trivial content (>10 chars), embeds in
-    GPU-accelerated batches, and upserts into janatpmp_documents. Supports
+    batches via Ollama, and upserts into janatpmp_documents. Supports
     checkpoint resume — skips documents already in Qdrant.
 
     Returns:
@@ -105,13 +90,6 @@ def embed_all_documents() -> dict:
         except Exception as e:
             logger.error("Batch embed failed at offset %d: %s", batch_start, e)
             errors.append(f"batch@{batch_start}: {str(e)}")
-            if _is_cuda_fatal(e):
-                logger.error("CUDA context corrupted — aborting. Restart container to resume.")
-                break
-
-        # Release intermediate tensors between batches
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
 
         processed = embedded + skipped + len(errors)
         if processed > 0 and processed % 100 < BATCH_SIZE:
@@ -129,8 +107,8 @@ def embed_all_messages() -> dict:
     """Embed all conversation messages into the Qdrant messages collection.
 
     Combines user_prompt + model_response as 'Q: ... A: ...' text,
-    skips messages with less than 20 chars of content. GPU-accelerated
-    with batch processing and checkpoint resume.
+    skips messages with less than 20 chars of content. Batch processing
+    via Ollama with checkpoint resume.
 
     Returns:
         Dict with keys: embedded (int), skipped (int), errors (list[str]),
@@ -197,13 +175,6 @@ def embed_all_messages() -> dict:
         except Exception as e:
             logger.error("Batch embed failed at offset %d: %s", batch_start, e)
             errors.append(f"batch@{batch_start}: {str(e)}")
-            if _is_cuda_fatal(e):
-                logger.error("CUDA context corrupted — aborting. Restart container to resume.")
-                break
-
-        # Release intermediate tensors between batches
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
 
         processed = embedded + skipped + len(errors)
         if processed > 0 and processed % 100 < BATCH_SIZE:

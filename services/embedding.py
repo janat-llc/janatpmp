@@ -2,12 +2,12 @@
 
 Thin shim preserving the embed_passages() / embed_query() interface that
 services/vector_store.py and services/bulk_embed.py already import.
-The atlas module owns the model; this module provides the stable interface.
+The atlas module owns the HTTP client; this module provides the stable interface.
 """
 
 import logging
 
-from atlas.embedding_service import get_embedder, release_embedder
+from atlas.embedding_service import embed_texts, embed_query as _embed_query
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +19,9 @@ def embed_passages(texts: list[str]) -> list[list[float]]:
         texts: List of text passages to embed.
 
     Returns:
-        List of embedding vectors (2048-dim each).
+        List of embedding vectors (2560-dim each).
     """
-    return get_embedder().embed_texts(texts)
+    return embed_texts(texts)
 
 
 def embed_query(query: str) -> list[float]:
@@ -31,6 +31,6 @@ def embed_query(query: str) -> list[float]:
         query: The search query text.
 
     Returns:
-        Single embedding vector (2048-dim).
+        Single embedding vector (2560-dim).
     """
-    return get_embedder().embed_query(query)
+    return _embed_query(query)

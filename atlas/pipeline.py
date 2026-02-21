@@ -7,7 +7,7 @@ reorders them, salience signal is written back to Qdrant.
 import logging
 
 from atlas.config import RERANK_CANDIDATES, RERANK_RETURN
-from atlas.reranking_service import get_reranker
+from atlas.reranking_service import rerank
 from atlas.memory_service import write_salience
 
 logger = logging.getLogger(__name__)
@@ -34,8 +34,7 @@ def rerank_and_write_salience(
         return candidates
 
     try:
-        reranker = get_reranker()
-        reranked = reranker.rerank(query, candidates)
+        reranked = rerank(query, candidates)
     except Exception as e:
         logger.warning("Reranker unavailable, returning ANN results: %s", e)
         return candidates[:limit]

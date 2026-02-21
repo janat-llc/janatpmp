@@ -16,11 +16,11 @@ from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
 )
 from services.embedding import embed_passages, embed_query
-from atlas.config import RERANK_CANDIDATES
+from atlas.config import RERANK_CANDIDATES, EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
 
-VECTOR_DIM = 2048
+VECTOR_DIM = EMBEDDING_DIM
 COLLECTION_DOCUMENTS = "janatpmp_documents"
 COLLECTION_MESSAGES = "janatpmp_messages"
 

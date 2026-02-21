@@ -7,15 +7,8 @@ WORKDIR /app
 # Copy the requirements file into the container at /app
 COPY requirements.txt .
 
-# Install PyTorch with CUDA 12.8 support FIRST (from CUDA wheel index)
-# cu128 required for RTX 5090 Blackwell (sm_120) — cu126 only supports up to sm_90
-# Must happen before requirements.txt to prevent CPU-only torch overwrite
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu128
-
-# Install bitsandbytes for INT8 quantization (must come after PyTorch CUDA)
-RUN pip install --no-cache-dir bitsandbytes>=0.49.0
-
 # Install any needed packages specified in requirements.txt
+# No PyTorch/CUDA — GPU work is offloaded to Ollama (embed) and vLLM (rerank)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code
