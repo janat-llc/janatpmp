@@ -59,7 +59,8 @@ try:
 except Exception:
     logger.warning("Qdrant not available -- vector search disabled")
 
-# Branded header HTML — shared across all pages via route
+# Branded header HTML — shared across all pages via route.
+# JavaScript auto-highlights the active page link based on current URL.
 JANAT_HEADER = """
 <div id="janat-header-bar" style="display:flex; align-items:center; justify-content:space-between;
             padding:10px 20px; border-bottom:1px solid #1a1a1a; background:#000;">
@@ -70,17 +71,13 @@ JANAT_HEADER = """
                 JANATPMP
             </span>
         </a>
-        <nav style="display:flex; gap:16px; align-items:center;">
-            <a href="/" style="font-family:'Rajdhani',sans-serif; font-size:0.95rem;
-                        color:#b3b3b3; text-decoration:none; letter-spacing:0.05em;"
-               onmouseover="this.style.color='#00FFFF'" onmouseout="this.style.color='#b3b3b3'">
-                Projects
-            </a>
-            <a href="/chat" style="font-family:'Rajdhani',sans-serif; font-size:0.95rem;
-                        color:#b3b3b3; text-decoration:none; letter-spacing:0.05em;"
-               onmouseover="this.style.color='#00FFFF'" onmouseout="this.style.color='#b3b3b3'">
-                Chat
-            </a>
+        <nav id="janat-nav" style="display:flex; gap:16px; align-items:center;">
+            <a href="/" data-path="/"
+               style="font-family:'Rajdhani',sans-serif; font-size:0.95rem; font-weight:600;
+                      text-decoration:none; letter-spacing:0.05em;">Dashboard</a>
+            <a href="/chat" data-path="/chat"
+               style="font-family:'Rajdhani',sans-serif; font-size:0.95rem; font-weight:600;
+                      text-decoration:none; letter-spacing:0.05em;">Chat</a>
         </nav>
     </div>
     <div style="display:flex; align-items:center; gap:8px;">
@@ -92,6 +89,24 @@ JANAT_HEADER = """
              alt="Janat" style="height:28px; width:auto; opacity:0.85;" />
     </div>
 </div>
+<script>
+(function() {
+    var path = window.location.pathname.replace(/\\/$/, '') || '/';
+    document.querySelectorAll('#janat-nav a').forEach(function(a) {
+        var linkPath = a.getAttribute('data-path');
+        if (path === linkPath || (linkPath === '/' && path === '')) {
+            a.style.color = '#00FFFF';
+        } else {
+            a.style.color = '#808080';
+        }
+        a.onmouseover = function() { this.style.color = '#00FFFF'; };
+        a.onmouseout = function() {
+            var p = window.location.pathname.replace(/\\/$/, '') || '/';
+            this.style.color = (this.getAttribute('data-path') === p) ? '#00FFFF' : '#808080';
+        };
+    });
+})();
+</script>
 """
 
 # Build multipage application

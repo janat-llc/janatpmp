@@ -124,10 +124,6 @@ JANAT_CSS = """
     /* Right panel header — right-justified to avoid toggle overlap */
     .right-panel-header { text-align: right !important; }
 
-    /* Header — strip Gradio wrapper chrome */
-    #janat-header { background: transparent !important; border: none !important;
-                    padding: 0 !important; }
-
     /* === Right sidebar — chatbot fills available height === */
     .sidebar.right .sidebar-content {
         height: 100% !important;
@@ -151,9 +147,18 @@ JANAT_CSS = """
     .sidebar.right .message { padding: 6px 8px !important; max-width: 100% !important; }
     .sidebar.right .bubble-wrap { padding: 0 !important; }
 
-    /* Branded header — strip Gradio wrapper, pin above content */
-    #janat-header { background: transparent !important; border: none !important;
-                    padding: 0 !important; position: relative; z-index: 100; }
+    /* === Branded header — fixed above sidebars and content === */
+    #janat-header {
+        background: transparent !important; border: none !important;
+        padding: 0 !important;
+        position: fixed !important; top: 0 !important;
+        left: 0 !important; right: 0 !important;
+        z-index: 10001 !important;
+    }
+    /* Push sidebars below fixed header */
+    .sidebar { top: 52px !important; height: calc(100vh - 52px) !important; }
+    /* Push main content below fixed header */
+    .main { padding-top: 52px !important; }
 
     /* Hide Gradio footer */
     footer { display: none !important; }
