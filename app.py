@@ -63,7 +63,8 @@ except Exception:
 # JavaScript auto-highlights the active page link based on current URL.
 JANAT_HEADER = """
 <div id="janat-header-bar" style="display:flex; align-items:center; justify-content:space-between;
-            padding:10px 20px; border-bottom:1px solid #1a1a1a; background:#000;">
+            padding:8px 20px; border-bottom:1px solid #1a1a1a; background:#000;
+            box-sizing:border-box; height:48px;">
     <div style="display:flex; align-items:center; gap:24px;">
         <a href="/" style="text-decoration:none;">
             <span style="font-family:'Orbitron',sans-serif; font-size:1.4rem;

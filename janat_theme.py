@@ -150,15 +150,17 @@ JANAT_CSS = """
     /* === Branded header — fixed above sidebars and content === */
     #janat-header {
         background: transparent !important; border: none !important;
-        padding: 0 !important;
+        margin: 0 !important; padding: 0 !important;
         position: fixed !important; top: 0 !important;
-        left: 0 !important; right: 0 !important;
+        left: 0 !important; right: 0 !important; width: 100% !important;
         z-index: 10001 !important;
+        pointer-events: none;
     }
+    #janat-header > * { pointer-events: auto; }
     /* Push sidebars below fixed header */
-    .sidebar { top: 52px !important; height: calc(100vh - 52px) !important; }
+    .sidebar { top: 48px !important; height: calc(100vh - 48px) !important; }
     /* Push main content below fixed header */
-    .main { padding-top: 52px !important; }
+    .main { padding-top: 48px !important; }
 
     /* Hide Gradio footer */
     footer { display: none !important; }
