@@ -36,8 +36,8 @@ services:
     environment:
       - OLLAMA_FLASH_ATTENTION=1
       - OLLAMA_NUM_GPU=999
-      - OLLAMA_KEEP_ALIVE=30m
-      - OLLAMA_GPU_MEMORY_FRACTION=0.70
+      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_GPU_MEMORY_FRACTION=0.85
       - OLLAMA_NUM_CTX=16384
     restart: unless-stopped
     networks:
@@ -60,11 +60,12 @@ services:
     environment:
       - HF_TOKEN=${HF_TOKEN}
     command: >
-      --model Qwen/Qwen3-Reranker-0.6B
-      --task score
-      --trust-remote-code
+      Qwen/Qwen3-Reranker-0.6B
+      --hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+      --runner pooling
+      --convert classify
       --max-model-len 8192
-      --gpu-memory-utilization 0.05
+      --gpu-memory-utilization 0.10
     restart: unless-stopped
     networks:
       - janatpmp_network

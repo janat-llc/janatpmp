@@ -271,17 +271,37 @@ PROVIDER_PRESETS = {
     },
     "ollama": {
         "name": "Ollama (Local)",
-        "models": [
-            "hf.co/unsloth/Nemotron-3-Nano-30B-A3B-GGUF:IQ4_XS",
-            "hf.co/bartowski/nvidia_NVIDIA-Nemotron-Nano-12B-v2-GGUF:Q4_K_M",
-            "hf.co/bartowski/nvidia_NVIDIA-Nemotron-Nano-9B-v2-GGUF:Q4_K_M",
-            "nemotron-mini",
-        ],
-        "default_model": "hf.co/unsloth/Nemotron-3-Nano-30B-A3B-GGUF:IQ4_XS",
+        "models": [],  # Populated dynamically via fetch_ollama_models()
+        "default_model": "nemotron-3-nano:latest",
         "needs_api_key": False,
         "base_url": "http://ollama:11434/v1",
     },
 }
+
+
+def fetch_ollama_models(base_url: str = "") -> list[str]:
+    """Fetch available model names from Ollama /api/tags endpoint.
+
+    Args:
+        base_url: Ollama base URL override. Defaults to settings or Docker internal URL.
+
+    Returns:
+        Sorted list of model name strings. Empty list on error.
+    """
+    import httpx
+    url = base_url or get_setting("chat_base_url") or "http://ollama:11434/v1"
+    # Strip /v1 suffix — /api/tags is on the root
+    api_base = url.replace("/v1", "").rstrip("/")
+    try:
+        resp = httpx.get(f"{api_base}/api/tags", timeout=5.0)
+        resp.raise_for_status()
+        models = [m["name"] for m in resp.json().get("models", [])]
+        # Filter out embedding models — they aren't useful for chat
+        chat_models = [m for m in models if "embedding" not in m.lower()]
+        return sorted(chat_models)
+    except Exception as e:
+        logger.debug("Could not fetch Ollama models: %s", e)
+        return []
 
 
 # --- Anthropic Tool Format (native) ---

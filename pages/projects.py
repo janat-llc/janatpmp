@@ -10,7 +10,7 @@ from db.operations import (
 from tabs.tab_database import build_database_tab
 from services.claude_export import is_configured as is_export_configured
 from services.settings import get_setting, set_setting
-from services.chat import PROVIDER_PRESETS
+from services.chat import PROVIDER_PRESETS, fetch_ollama_models
 from db.chat_operations import (
     get_messages, list_conversations,
     update_conversation, delete_conversation,
@@ -117,9 +117,11 @@ def build_page():
                 choices=["anthropic", "gemini", "ollama"],
                 value="ollama", label="Provider", interactive=True,
             )
+            _ollama_preset = PROVIDER_PRESETS.get("ollama", {})
+            _rs_models = fetch_ollama_models() or [_ollama_preset.get("default_model", "")]
             rs_model = gr.Dropdown(
-                choices=PROVIDER_PRESETS.get("ollama", {}).get("models", []),
-                value=PROVIDER_PRESETS.get("ollama", {}).get("default_model", ""),
+                choices=_rs_models,
+                value=_rs_models[0] if _rs_models else "",
                 label="Model", interactive=True, allow_custom_value=True,
             )
             rs_temperature = gr.Slider(
@@ -783,6 +785,10 @@ def build_page():
                 current_url = get_setting("chat_base_url")
 
                 preset = PROVIDER_PRESETS.get(current_provider, {})
+                if current_provider == "ollama":
+                    model_choices = fetch_ollama_models() or [preset.get("default_model", "")]
+                else:
+                    model_choices = preset.get("models", [])
 
                 sidebar_provider = gr.Dropdown(
                     choices=["anthropic", "gemini", "ollama"],
@@ -792,7 +798,7 @@ def build_page():
                     interactive=True,
                 )
                 sidebar_model = gr.Dropdown(
-                    choices=preset.get("models", []),
+                    choices=model_choices,
                     value=current_model,
                     label="Model",
                     key="admin-model",
@@ -819,10 +825,14 @@ def build_page():
                 def _save_provider(provider):
                     set_setting("chat_provider", provider)
                     p = PROVIDER_PRESETS.get(provider, {})
-                    default_model = p.get("default_model", "")
+                    if provider == "ollama":
+                        models = fetch_ollama_models() or [p.get("default_model", "")]
+                    else:
+                        models = p.get("models", [])
+                    default_model = models[0] if models else p.get("default_model", "")
                     set_setting("chat_model", default_model)
                     return (
-                        gr.Dropdown(choices=p.get("models", []), value=default_model),
+                        gr.Dropdown(choices=models, value=default_model),
                         gr.Textbox(visible=p.get("needs_api_key", True)),
                         gr.Textbox(visible=(provider == "ollama")),
                     )
@@ -873,8 +883,11 @@ def build_page():
     # === RIGHT SIDEBAR SETTINGS WIRING ===
     def _rs_sync_provider(provider):
         preset = PROVIDER_PRESETS.get(provider, {})
-        models = preset.get("models", [])
-        default = preset.get("default_model", models[0] if models else "")
+        if provider == "ollama":
+            models = fetch_ollama_models() or [preset.get("default_model", "")]
+        else:
+            models = preset.get("models", [])
+        default = models[0] if models else preset.get("default_model", "")
         return gr.Dropdown(choices=models, value=default), provider, default
 
     rs_provider.change(

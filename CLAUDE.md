@@ -417,15 +417,16 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
 - **Ollama:** `janatpmp-ollama` container on port 11435, shares `ollama_data` external volume
   - Internal URL: `http://ollama:11434/v1` (Docker DNS)
   - External URL: `http://localhost:11435` (host access for testing)
-  - GPU passthrough via NVIDIA Container Toolkit (~70% VRAM)
-  - `OLLAMA_KEEP_ALIVE=30m` keeps model warm between turns (prevents GPU spike/crash)
-  - Chat model: Nemotron-3-Nano-30B-A3B IQ4_XS (~18 GB)
+  - GPU passthrough via NVIDIA Container Toolkit (~85% VRAM)
+  - `OLLAMA_KEEP_ALIVE=-1` keeps models loaded permanently (no unload timeout)
+  - Chat model: nemotron-3-nano:latest Q4_K_M (~24 GB)
   - Embedding model: Qwen3-Embedding-4B Q4_K_M GGUF (~2.5 GB) — used via `/v1/embeddings`
+  - Ollama model list is fetched dynamically via `/api/tags` — no hardcoded model names
 - **vLLM Reranker:** `janatpmp-vllm-rerank` container on port 8002
   - Internal URL: `http://janatpmp-vllm-rerank:8000` (Docker DNS)
   - External URL: `http://localhost:8002` (host access for testing)
-  - Runs Qwen3-Reranker-0.6B FP16 (~1.7 GB) with `--task score`
-  - GPU passthrough via NVIDIA Container Toolkit (~5% VRAM)
+  - Runs Qwen3-Reranker-0.6B FP16 (~1.7 GB) with `--runner pooling --convert classify`
+  - GPU passthrough via NVIDIA Container Toolkit (~10% VRAM)
   - Volume: `huggingface_cache` (shared HF model cache)
 
 ## Gradio Development Patterns (CRITICAL — READ BEFORE WRITING UI CODE)
@@ -716,7 +717,7 @@ Core is now a thin HTTP client layer — no PyTorch, no CUDA, no in-process mode
 
 - **Embedder:** Qwen3-Embedding-4B Q4_K_M GGUF via Ollama (2560-dim Matryoshka)
 - **Reranker:** Qwen3-Reranker-0.6B FP16 via vLLM (0-1 probability scores)
-- **Chat LLM:** Nemotron-3-Nano-30B-A3B IQ4_XS via Ollama
+- **Chat LLM:** nemotron-3-nano:latest Q4_K_M via Ollama (dynamic model list from `/api/tags`)
 - **Core container:** No GPU, no PyTorch — HTTP clients only (~500 MB image)
 
 ### Key Decisions
@@ -724,8 +725,9 @@ Core is now a thin HTTP client layer — no PyTorch, no CUDA, no in-process mode
 - **Ollama for embedding:** Qwen3-Embedding-4B runs as an additional model in the existing
   Ollama container. Ollama manages loading/unloading dynamically alongside the chat LLM.
   Accessed via OpenAI-compatible `/v1/embeddings` API using the `openai` Python package.
-- **vLLM sidecar for reranking:** Dedicated container running `--task score` mode.
-  Lightweight (~1.7 GB VRAM at 5% gpu-memory-utilization). Uses httpx for `/v1/score` calls.
+- **vLLM sidecar for reranking:** Dedicated container running `--runner pooling --convert classify`
+  with `--hf-overrides` for Qwen3ForSequenceClassification architecture.
+  Lightweight (~1.7 GB VRAM at 10% gpu-memory-utilization). Uses httpx for `/v1/score` calls.
 - **Matryoshka truncation:** Client-side `[:EMBEDDING_DIM]` ensures correct 2560-dim output
   even if Ollama ignores the `dimensions` parameter.
 - **Asymmetric encoding:** Qwen3-Embedding-4B uses instruction prefix for queries
@@ -737,11 +739,11 @@ Core is now a thin HTTP client layer — no PyTorch, no CUDA, no in-process mode
 
 | Component | Estimated VRAM |
 | --------- | -------------- |
-| Ollama — chat (Nemotron-3-Nano IQ4_XS) | ~18 GB |
+| Ollama — chat (nemotron-3-nano Q4_K_M) | ~24 GB |
 | Ollama — embed (Qwen3-Embedding-4B Q4_K_M) | ~2.5 GB |
 | vLLM — rerank (Qwen3-Reranker-0.6B FP16) | ~1.7 GB |
-| **Total** | **~22.2 GB** |
-| **Headroom** | **~9.8 GB** |
+| **Total** | **~28.2 GB** |
+| **Headroom** | **~3.8 GB** |
 
 All GPU work is offloaded to sidecars. Core container uses zero VRAM.
 
