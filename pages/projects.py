@@ -27,10 +27,10 @@ from shared.data_helpers import (
     _load_documents, _all_docs_df,
     _msgs_to_history, _load_most_recent_chat,
 )
-from tabs.tab_chat import _handle_chat, _handle_chat_tab
+from tabs.tab_chat import _handle_chat
 from tabs.tab_knowledge import (
     _load_conv_stats, _load_conv_list, _load_selected_conversation,
-    _run_ingest, _open_in_chat, _delete_knowledge_conv, _run_import,
+    _run_ingest, _delete_knowledge_conv, _run_import,
     _run_search, _lookup_connections, _on_conn_create,
 )
 
@@ -60,17 +60,9 @@ def build_page():
     docs_state = gr.State(_load_documents())
     _initial_conv_id, _initial_chat_history = _load_most_recent_chat()
     chat_history = gr.State(list(_initial_chat_history))
-    chat_tab_history = gr.State(_initial_chat_history)
     active_conversation_id = gr.State(_initial_conv_id)
     conversations_state = gr.State(list_conversations(limit=30))
-    conv_search_query = gr.State("")
     selected_knowledge_conv_id = gr.State("")
-    chat_tab_provider_state = gr.State("ollama")
-    chat_tab_model_state = gr.State(PROVIDER_PRESETS.get("ollama", {}).get("default_model", "nemotron-3-nano:latest"))
-    chat_tab_temperature = gr.State(0.7)
-    chat_tab_top_p = gr.State(0.9)
-    chat_tab_max_tokens = gr.State(8192)
-    chat_tab_system_append = gr.State("")
 
     # === BRANDED HEADER ===
     gr.HTML("""
@@ -94,53 +86,20 @@ def build_page():
     </div>
     """, elem_id="janat-header")
 
-    # === RIGHT SIDEBAR (conditional — Janat chat or Chat Settings) ===
+    # === RIGHT SIDEBAR — Janat quick-chat (all tabs) ===
     with gr.Sidebar(position="right"):
-        # Section A: Janat quick-chat (visible on all tabs except Chat)
-        with gr.Column(scale=1) as right_chat_section:
-            gr.Markdown("### Janat", elem_classes=["right-panel-header"])
-            chatbot = gr.Chatbot(
-                value=list(_initial_chat_history),
-                show_label=False,
-                buttons=["copy"],
-                scale=1, min_height=300,
-                elem_id="sidebar-chatbot",
-            )
-            chat_input = gr.Textbox(
-                placeholder="What should We do?",
-                show_label=False, interactive=True, max_lines=5, lines=3,
-            )
-        # Section B: Chat Settings (visible only on Chat tab)
-        with gr.Column(visible=False) as right_settings_section:
-            gr.Markdown("### Chat Settings", elem_classes=["right-panel-header"])
-            rs_provider = gr.Dropdown(
-                choices=["anthropic", "gemini", "ollama"],
-                value="ollama", label="Provider", interactive=True,
-            )
-            _ollama_preset = PROVIDER_PRESETS.get("ollama", {})
-            _rs_models = fetch_ollama_models() or [_ollama_preset.get("default_model", "")]
-            rs_model = gr.Dropdown(
-                choices=_rs_models,
-                value=_rs_models[0] if _rs_models else "",
-                label="Model", interactive=True, allow_custom_value=True,
-            )
-            rs_temperature = gr.Slider(
-                label="Temperature", minimum=0.0, maximum=2.0,
-                step=0.1, value=0.7, interactive=True,
-            )
-            rs_top_p = gr.Slider(
-                label="Top P", minimum=0.0, maximum=1.0,
-                step=0.05, value=0.9, interactive=True,
-            )
-            rs_max_tokens = gr.Slider(
-                label="Max Tokens", minimum=256, maximum=16384,
-                step=256, value=8192, interactive=True,
-            )
-            rs_system_append = gr.Textbox(
-                label="System Prompt (session)",
-                placeholder="Additional instructions for this conversation...",
-                lines=3, interactive=True,
-            )
+        gr.Markdown("### Janat", elem_classes=["right-panel-header"])
+        chatbot = gr.Chatbot(
+            value=list(_initial_chat_history),
+            show_label=False,
+            buttons=["copy"],
+            scale=1, min_height=300,
+            elem_id="sidebar-chatbot",
+        )
+        chat_input = gr.Textbox(
+            placeholder="What should We do?",
+            show_label=False, interactive=True, max_lines=5, lines=3,
+        )
 
     # === CENTER TABS (defined before left sidebar so render can reference them) ===
     with gr.Tabs(elem_id="main-tabs") as main_tabs:
@@ -489,28 +448,13 @@ def build_page():
                                 height=600,
                             )
 
-        # --- Chat tab ---
-        with gr.Tab("Chat", id="chat") as chat_tab:
-            chat_tab_chatbot = gr.Chatbot(
-                value=_initial_chat_history,
-                height=600,
-                label="Chat",
-            )
-            chat_tab_input = gr.Textbox(
-                placeholder="Ask anything... (Enter to send, Shift+Enter for newline)",
-                show_label=False,
-                interactive=True,
-                max_lines=5,
-            )
-            chat_tab_status = gr.Markdown("*Ready*")
-
         # --- Admin tab ---
         admin_components = build_database_tab()
 
     # === LEFT SIDEBAR (contextual — defined after center so it can reference components) ===
     with gr.Sidebar():
-        @gr.render(inputs=[active_tab, projects_state, tasks_state, docs_state, conversations_state, active_conversation_id, conv_search_query])
-        def render_left(tab, projects, tasks, docs, conversations, active_conv_id, search_q):
+        @gr.render(inputs=[active_tab, projects_state, tasks_state, docs_state, conversations_state, active_conversation_id])
+        def render_left(tab, projects, tasks, docs, conversations, active_conv_id):
             if tab == "Projects":
                 gr.Markdown("### Projects")
                 with gr.Row(key="proj-filter-row"):
@@ -673,109 +617,6 @@ def build_page():
                     key="new-doc-click",
                 )
 
-            elif tab == "Chat":
-                gr.Markdown("### Conversations")
-                conv_search_input = gr.Textbox(
-                    placeholder="Search by title... (Enter)",
-                    show_label=False, key="conv-search",
-                    value=search_q, max_lines=1,
-                )
-                new_chat_btn = gr.Button("+ New Chat", variant="primary", size="sm", key="new-chat-btn")
-
-                if not conversations:
-                    gr.Markdown("*No conversations found.*")
-                else:
-                    for conv in conversations:
-                        title = (conv.get('title') or 'New Chat')[:40]
-                        date = (conv.get('updated_at') or '')[:10]
-                        is_active = conv['id'] == active_conv_id
-                        with gr.Row(key=f"convrow-{conv['id'][:8]}"):
-                            conv_btn = gr.Button(
-                                f"{title}\n{date}",
-                                key=f"conv-{conv['id'][:8]}",
-                                size="sm",
-                                variant="primary" if is_active else "secondary",
-                                scale=4,
-                            )
-                            del_btn = gr.Button(
-                                "X", key=f"del-{conv['id'][:8]}",
-                                size="sm", variant="stop", scale=0, min_width=32,
-                            )
-
-                        # Click to load conversation
-                        def on_conv_click(c_id=conv["id"]):
-                            msgs = get_messages(c_id)
-                            history = _msgs_to_history(msgs) or list(DEFAULT_CHAT_HISTORY)
-                            return c_id, history, history
-                        conv_btn.click(
-                            on_conv_click,
-                            outputs=[active_conversation_id, chat_tab_chatbot, chat_tab_history],
-                            api_visibility="private",
-                            key=f"conv-click-{conv['id'][:8]}",
-                        )
-
-                        # Delete handler
-                        def on_delete(c_id=conv["id"], was_active=(conv['id'] == active_conv_id)):
-                            delete_conversation(c_id)
-                            new_convs = list_conversations(limit=30)
-                            if was_active:
-                                return new_convs, "", list(DEFAULT_CHAT_HISTORY), list(DEFAULT_CHAT_HISTORY)
-                            return new_convs, gr.skip(), gr.skip(), gr.skip()
-                        del_btn.click(
-                            on_delete,
-                            outputs=[conversations_state, active_conversation_id, chat_tab_chatbot, chat_tab_history],
-                            api_visibility="private",
-                            key=f"del-click-{conv['id'][:8]}",
-                        )
-
-                        # Rename (only for active conversation)
-                        if is_active:
-                            with gr.Row(key=f"rename-{conv['id'][:8]}"):
-                                rename_input = gr.Textbox(
-                                    value=conv.get('title') or '',
-                                    show_label=False, key=f"ren-inp-{conv['id'][:8]}",
-                                    scale=3, max_lines=1,
-                                )
-                                rename_btn = gr.Button(
-                                    "Save", key=f"ren-btn-{conv['id'][:8]}",
-                                    size="sm", variant="secondary", scale=1,
-                                )
-
-                            def on_rename(new_title, c_id=conv["id"]):
-                                if new_title.strip():
-                                    update_conversation(c_id, title=new_title.strip())
-                                return list_conversations(limit=30)
-                            rename_btn.click(
-                                on_rename,
-                                inputs=[rename_input],
-                                outputs=[conversations_state],
-                                api_visibility="private",
-                                key=f"ren-click-{conv['id'][:8]}",
-                            )
-
-                # Search handler
-                def _search_convs(query):
-                    if query and query.strip():
-                        return list_conversations(limit=100, title_filter=query.strip()), query
-                    return list_conversations(limit=30), ""
-                conv_search_input.submit(
-                    _search_convs,
-                    inputs=[conv_search_input],
-                    outputs=[conversations_state, conv_search_query],
-                    api_visibility="private",
-                    key="conv-search-submit",
-                )
-
-                # New chat handler
-                def _new_chat():
-                    return "", list(DEFAULT_CHAT_HISTORY), list(DEFAULT_CHAT_HISTORY), list_conversations(limit=30)
-                new_chat_btn.click(
-                    _new_chat,
-                    outputs=[active_conversation_id, chat_tab_chatbot, chat_tab_history, conversations_state],
-                    api_visibility="private",
-                    key="new-chat-click",
-                )
-
             elif tab == "Admin":
                 gr.Markdown("### Quick Settings")
 
@@ -857,50 +698,11 @@ def build_page():
                 sidebar_api_key.change(_save_api_key, inputs=[sidebar_api_key], api_visibility="private", key="admin-apikey-change")
                 sidebar_base_url.change(_save_base_url, inputs=[sidebar_base_url], api_visibility="private", key="admin-baseurl-change")
 
-    # === TAB TRACKING (with right sidebar visibility toggle) ===
-    _tab_outputs = [active_tab, right_chat_section, right_settings_section]
-    projects_tab.select(
-        lambda: ("Projects", gr.Column(visible=True), gr.Column(visible=False)),
-        outputs=_tab_outputs, api_visibility="private",
-    )
-    work_tab.select(
-        lambda: ("Work", gr.Column(visible=True), gr.Column(visible=False)),
-        outputs=_tab_outputs, api_visibility="private",
-    )
-    knowledge_tab.select(
-        lambda: ("Knowledge", gr.Column(visible=True), gr.Column(visible=False)),
-        outputs=_tab_outputs, api_visibility="private",
-    )
-    chat_tab.select(
-        lambda: ("Chat", gr.Column(visible=False), gr.Column(visible=True)),
-        outputs=_tab_outputs, api_visibility="private",
-    )
-    admin_components['tab'].select(
-        lambda: ("Admin", gr.Column(visible=True), gr.Column(visible=False)),
-        outputs=_tab_outputs, api_visibility="private",
-    )
-
-    # === RIGHT SIDEBAR SETTINGS WIRING ===
-    def _rs_sync_provider(provider):
-        preset = PROVIDER_PRESETS.get(provider, {})
-        if provider == "ollama":
-            models = fetch_ollama_models() or [preset.get("default_model", "")]
-        else:
-            models = preset.get("models", [])
-        default = models[0] if models else preset.get("default_model", "")
-        return gr.Dropdown(choices=models, value=default), provider, default
-
-    rs_provider.change(
-        _rs_sync_provider,
-        inputs=[rs_provider],
-        outputs=[rs_model, chat_tab_provider_state, chat_tab_model_state],
-        api_visibility="private",
-    )
-    rs_model.change(lambda m: m, inputs=[rs_model], outputs=[chat_tab_model_state], api_visibility="private")
-    rs_temperature.change(lambda v: v, inputs=[rs_temperature], outputs=[chat_tab_temperature], api_visibility="private")
-    rs_top_p.change(lambda v: v, inputs=[rs_top_p], outputs=[chat_tab_top_p], api_visibility="private")
-    rs_max_tokens.change(lambda v: int(v), inputs=[rs_max_tokens], outputs=[chat_tab_max_tokens], api_visibility="private")
-    rs_system_append.change(lambda v: v, inputs=[rs_system_append], outputs=[chat_tab_system_append], api_visibility="private")
+    # === TAB TRACKING ===
+    projects_tab.select(lambda: "Projects", outputs=[active_tab], api_visibility="private")
+    work_tab.select(lambda: "Work", outputs=[active_tab], api_visibility="private")
+    knowledge_tab.select(lambda: "Knowledge", outputs=[active_tab], api_visibility="private")
+    admin_components['tab'].select(lambda: "Admin", outputs=[active_tab], api_visibility="private")
 
     # === PROJECT EVENT WIRING ===
 
@@ -1186,14 +988,19 @@ def build_page():
         outputs=[conv_viewer, selected_knowledge_conv_id], api_visibility="private"
     )
 
-    # Open in Chat button
+    # Open in Chat — store conversation ID in shared state, user navigates via navbar
+    def _open_in_chat_page(conv_id):
+        if not conv_id:
+            return gr.skip(), gr.skip(), "No conversation selected."
+        from shared.chat_service import set_active_conversation_id
+        set_active_conversation_id(conv_id)
+        convs = list_conversations(limit=30)
+        return conv_id, convs, "Conversation ready — click **Chat** in the navbar to open it."
+
     conv_open_chat_btn.click(
-        _open_in_chat,
+        _open_in_chat_page,
         inputs=[selected_knowledge_conv_id],
-        outputs=[
-            active_conversation_id, chat_tab_chatbot, chat_tab_history,
-            conversations_state, active_tab, main_tabs, conv_action_status,
-        ],
+        outputs=[active_conversation_id, conversations_state, conv_action_status],
         api_visibility="private",
     )
 
@@ -1242,24 +1049,6 @@ def build_page():
         _handle_chat,
         inputs=[chat_input, chat_history],
         outputs=[chatbot, chat_history, chat_input],
-        api_visibility="private",
-    )
-    # === CHAT TAB WIRING ===
-    _chat_tab_inputs = [
-        chat_tab_input, chat_tab_history, active_conversation_id,
-        chat_tab_provider_state, chat_tab_model_state,
-        chat_tab_temperature, chat_tab_top_p, chat_tab_max_tokens,
-        chat_tab_system_append,
-    ]
-    _chat_tab_outputs = [
-        chat_tab_chatbot, chat_tab_history, chat_tab_input,
-        active_conversation_id, conversations_state, chat_tab_status,
-    ]
-
-    chat_tab_input.submit(
-        _handle_chat_tab,
-        inputs=_chat_tab_inputs,
-        outputs=_chat_tab_outputs,
         api_visibility="private",
     )
 

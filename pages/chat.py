@@ -2,8 +2,8 @@
 
 Three-panel layout:
 - Left sidebar: Conversation list with search, New Chat button
-- Center: Chatbot + input + collapsed config accordion
-- No right sidebar (chat IS the main panel)
+- Center: Chatbot + input + status
+- Right sidebar: Chat settings (provider, model, temperature, etc.)
 
 Can run standalone: python pages/chat.py
 """
@@ -251,7 +251,43 @@ def build_chat_page():
                 key="new-chat-click",
             )
 
-    # === CENTER PANEL — Chatbot + input + config ===
+    # === RIGHT SIDEBAR — Chat settings ===
+    with gr.Sidebar(position="right"):
+        gr.Markdown("### Chat Settings")
+        cfg_provider = gr.Dropdown(
+            choices=["anthropic", "gemini", "ollama"],
+            value=current_provider,
+            label="Provider", interactive=True,
+        )
+        _ollama_preset = PROVIDER_PRESETS.get("ollama", {})
+        if current_provider == "ollama":
+            _model_choices = fetch_ollama_models() or [_ollama_preset.get("default_model", "")]
+        else:
+            _model_choices = PROVIDER_PRESETS.get(current_provider, {}).get("models", [])
+        cfg_model = gr.Dropdown(
+            choices=_model_choices,
+            value=current_model,
+            label="Model", interactive=True, allow_custom_value=True,
+        )
+        cfg_temperature = gr.Slider(
+            label="Temperature", minimum=0.0, maximum=2.0,
+            step=0.1, value=config["temperature"], interactive=True,
+        )
+        cfg_top_p = gr.Slider(
+            label="Top P", minimum=0.0, maximum=1.0,
+            step=0.05, value=config["top_p"], interactive=True,
+        )
+        cfg_max_tokens = gr.Slider(
+            label="Max Tokens", minimum=256, maximum=16384,
+            step=256, value=config["max_tokens"], interactive=True,
+        )
+        cfg_system_append = gr.Textbox(
+            label="System Prompt (session)",
+            placeholder="Additional instructions for this conversation...",
+            lines=2, interactive=True,
+        )
+
+    # === CENTER PANEL — Chatbot + input ===
     chatbot = gr.Chatbot(
         value=list(initial_history),
         show_label=False,
@@ -269,43 +305,6 @@ def build_chat_page():
     )
 
     chat_status = gr.Markdown("*Ready*")
-
-    # --- Configuration accordion (collapsed by default) ---
-    with gr.Accordion("Configuration", open=False):
-        with gr.Row():
-            cfg_provider = gr.Dropdown(
-                choices=["anthropic", "gemini", "ollama"],
-                value=current_provider,
-                label="Provider", interactive=True, scale=1,
-            )
-            _ollama_preset = PROVIDER_PRESETS.get("ollama", {})
-            if current_provider == "ollama":
-                _model_choices = fetch_ollama_models() or [_ollama_preset.get("default_model", "")]
-            else:
-                _model_choices = PROVIDER_PRESETS.get(current_provider, {}).get("models", [])
-            cfg_model = gr.Dropdown(
-                choices=_model_choices,
-                value=current_model,
-                label="Model", interactive=True, allow_custom_value=True, scale=2,
-            )
-        with gr.Row():
-            cfg_temperature = gr.Slider(
-                label="Temperature", minimum=0.0, maximum=2.0,
-                step=0.1, value=config["temperature"], interactive=True,
-            )
-            cfg_top_p = gr.Slider(
-                label="Top P", minimum=0.0, maximum=1.0,
-                step=0.05, value=config["top_p"], interactive=True,
-            )
-            cfg_max_tokens = gr.Slider(
-                label="Max Tokens", minimum=256, maximum=16384,
-                step=256, value=config["max_tokens"], interactive=True,
-            )
-        cfg_system_append = gr.Textbox(
-            label="System Prompt (session)",
-            placeholder="Additional instructions for this conversation...",
-            lines=2, interactive=True,
-        )
 
     # === EVENT WIRING ===
 

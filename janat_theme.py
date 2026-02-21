@@ -151,6 +151,9 @@ JANAT_CSS = """
     .sidebar.right .message { padding: 6px 8px !important; max-width: 100% !important; }
     .sidebar.right .bubble-wrap { padding: 0 !important; }
 
+    /* Navbar above sidebars */
+    nav { z-index: 10001 !important; }
+
     /* Hide Gradio footer */
     footer { display: none !important; }
 """
