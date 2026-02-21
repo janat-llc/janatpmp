@@ -1,8 +1,4 @@
-"""JANATPMP — Multipage Gradio application with MCP server.
-
-Hybrid architecture: monolith at / (Projects, Work, Knowledge, Admin)
-plus Sovereign Chat at /chat via demo.route().
-"""
+"""JANATPMP — Single-page Gradio application with MCP server."""
 
 import sys
 import logging
@@ -41,7 +37,6 @@ from services.vector_store import (
 )
 from services.bulk_embed import embed_all_documents, embed_all_messages, embed_all_domains
 from pages.projects import build_page
-from pages import chat as chat_page
 from janat_theme import JanatTheme, JANAT_CSS
 
 # Initialize database and settings BEFORE building UI
@@ -59,9 +54,8 @@ try:
 except Exception:
     logger.warning("Qdrant not available -- vector search disabled")
 
-# Build multipage application
+# Build single-page application
 with gr.Blocks(title="JANATPMP") as demo:
-    gr.Navbar(main_page_name="JANATPMP")
     build_page()
 
     # Expose ALL operations as MCP tools
@@ -115,10 +109,6 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.api(embed_all_messages)
     gr.api(embed_all_domains)
     gr.api(recreate_collections)
-
-# --- Sovereign Chat route (outside main Blocks context) ---
-with demo.route("Chat", "/chat"):
-    chat_page.build_chat_page()
 
 if __name__ == "__main__":
     demo.launch(

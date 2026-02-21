@@ -396,7 +396,9 @@ def update_item(
     title: str = "",
     description: str = "",
     status: str = "",
-    priority: int = 0
+    priority: int = 0,
+    parent_id: str = "",
+    entity_type: str = "",
 ) -> str:
     """
     Update an existing item.
@@ -407,6 +409,8 @@ def update_item(
         description: New description (optional)
         status: New status (optional)
         priority: New priority 1-5 (optional, 0 = no change)
+        parent_id: New parent item ID for reparenting (optional, empty string = no change)
+        entity_type: New entity type (optional, empty string = no change)
 
     Returns:
         Success message or error
@@ -429,6 +433,12 @@ def update_item(
         if priority > 0:
             updates.append("priority = ?")
             params.append(priority)
+        if parent_id:
+            updates.append("parent_id = ?")
+            params.append(parent_id)
+        if entity_type:
+            updates.append("entity_type = ?")
+            params.append(entity_type)
 
         if not updates:
             return "No updates provided"
