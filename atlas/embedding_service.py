@@ -1,4 +1,4 @@
-"""ATLAS embedding service — Qwen3-Embedding-4B via Ollama.
+"""ATLAS embedding service — Qwen3-Embedding-0.6B via Ollama.
 
 HTTP client to Ollama's OpenAI-compatible /v1/embeddings endpoint.
 No GPU, no model loading, no VRAM management in the core container.

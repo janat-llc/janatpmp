@@ -37,8 +37,7 @@ services:
       - OLLAMA_FLASH_ATTENTION=1
       - OLLAMA_NUM_GPU=999
       - OLLAMA_KEEP_ALIVE=-1
-      - OLLAMA_GPU_MEMORY_FRACTION=0.85
-      - OLLAMA_NUM_CTX=16384
+      - OLLAMA_MAX_LOADED_MODELS=2
     restart: unless-stopped
     networks:
       - janatpmp_network

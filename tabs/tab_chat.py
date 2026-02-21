@@ -18,7 +18,8 @@ def _handle_chat(message, history):
     if not message.strip():
         return history, history, ""
     from services.chat import chat
-    updated = chat(message, history)
+    result = chat(message, history)
+    updated = result["history"]
 
     # Split display vs API history (keep <details> out of API history
     # so model doesn't mimic HTML formatting on subsequent turns)
@@ -63,12 +64,13 @@ def _handle_chat_tab(message, history, conv_id, provider, model,
         )
 
     try:
-        updated = chat(
+        result = chat(
             message, history,
             provider_override=provider, model_override=model,
             temperature=temperature, top_p=top_p,
             max_tokens=int(max_tokens), system_prompt_append=system_append,
         )
+        updated = result["history"]
 
         # Extract final model response (skip tool-use status messages)
         raw_response = ""

@@ -88,3 +88,69 @@ def _load_most_recent_chat() -> tuple[str, list[dict]]:
         return conv_id, list(DEFAULT_CHAT_HISTORY)
     history = _msgs_to_history(msgs)
     return conv_id, history if history else list(DEFAULT_CHAT_HISTORY)
+
+
+def _load_chat_session() -> dict:
+    """Load most recent conversation with full session data for sovereign chat.
+
+    Returns dict with: conv_id, display_history, api_history, token_totals.
+    Display history has reasoning in <details> accordion.
+    API history has clean responses only (no HTML — prevents model mimicry).
+    Token totals are cumulative across all turns in the conversation.
+    """
+    empty = {
+        "conv_id": "",
+        "display_history": list(DEFAULT_CHAT_HISTORY),
+        "api_history": list(DEFAULT_CHAT_HISTORY),
+        "token_totals": {"prompt": 0, "reasoning": 0, "response": 0, "total": 0},
+        "turn_count": 0,
+    }
+    convs = list_conversations(limit=1)
+    if not convs:
+        return empty
+    conv_id = convs[0]["id"]
+    msgs = get_messages(conv_id)
+    if not msgs:
+        return {**empty, "conv_id": conv_id}
+
+    display_history = []
+    api_history = []
+    totals = {"prompt": 0, "reasoning": 0, "response": 0, "total": 0}
+
+    for m in msgs:
+        user_msg = {"role": "user", "content": m["user_prompt"]}
+        display_history.append(user_msg)
+        api_history.append(user_msg)
+
+        resp = m.get("model_response", "")
+        reasoning = m.get("model_reasoning", "")
+        if resp:
+            # API history: clean response only
+            api_history.append({"role": "assistant", "content": resp})
+            # Display history: reasoning in accordion + clean response
+            if reasoning:
+                formatted = (
+                    f"<details><summary>Thinking</summary>\n\n"
+                    f"{reasoning}\n\n</details>\n\n{resp}"
+                )
+                display_history.append({"role": "assistant", "content": formatted})
+            else:
+                display_history.append({"role": "assistant", "content": resp})
+
+        # Accumulate token counts
+        totals["prompt"] += m.get("tokens_prompt", 0) or 0
+        totals["reasoning"] += m.get("tokens_reasoning", 0) or 0
+        totals["response"] += m.get("tokens_response", 0) or 0
+        totals["total"] += (
+            (m.get("tokens_prompt", 0) or 0)
+            + (m.get("tokens_reasoning", 0) or 0)
+            + (m.get("tokens_response", 0) or 0)
+        )
+
+    return {
+        "conv_id": conv_id,
+        "display_history": display_history or list(DEFAULT_CHAT_HISTORY),
+        "api_history": api_history or list(DEFAULT_CHAT_HISTORY),
+        "token_totals": totals,
+        "turn_count": len(msgs),
+    }

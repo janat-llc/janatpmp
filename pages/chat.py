@@ -1,9 +1,9 @@
 """Sovereign Chat page — standalone Gradio Blocks app for /chat route.
 
 Three-panel layout:
-- Left sidebar: Conversation list with search, New Chat button
-- Center: Chatbot + input + status
-- Right sidebar: Chat settings (provider, model, temperature, etc.)
+- Left sidebar: RAG/Chat metrics dashboard (per-turn + cumulative)
+- Center: Chatbot + input + New Chat + status
+- Right sidebar: Per-turn parameters (top) + Global defaults (bottom)
 
 Can run standalone: python pages/chat.py
 """
@@ -11,15 +11,14 @@ Can run standalone: python pages/chat.py
 import json
 import gradio as gr
 from db.chat_operations import (
-    create_conversation, get_messages, list_conversations,
-    update_conversation, delete_conversation, parse_reasoning, add_message,
+    create_conversation, parse_reasoning, add_message,
 )
-from services.chat import chat, PROVIDER_PRESETS, fetch_ollama_models
+from services.chat import chat, PROVIDER_PRESETS, fetch_ollama_models, _EMPTY_RAG_METRICS, _EMPTY_TOKEN_COUNTS
 from services.settings import get_setting, set_setting
 from shared.constants import DEFAULT_CHAT_HISTORY
-from shared.data_helpers import _msgs_to_history, _load_most_recent_chat
+from shared.data_helpers import _load_most_recent_chat, _load_chat_session
 from shared.chat_service import (
-    get_active_conversation_id, set_active_conversation_id,
+    set_active_conversation_id,
     get_chat_config,
 )
 
@@ -29,14 +28,14 @@ from shared.chat_service import (
 # ---------------------------------------------------------------------------
 
 def _handle_send(message, history, conv_id, provider, model,
-                 temperature, top_p, max_tokens, system_append):
-    """Process a chat message: inference → triplet persistence → UI update.
+                 temperature, top_p, max_tokens, system_append, metrics):
+    """Process a chat message: inference → triplet persistence → metrics → UI update.
 
     Returns (display_history, api_history, cleared_input,
-             conv_id, conversations_list, status_markdown).
+             conv_id, turn_metrics).
     """
     if not message.strip():
-        return history, history, "", conv_id, gr.skip(), "*Ready*"
+        return history, history, "", conv_id, gr.skip()
 
     # Auto-create conversation on first message
     if not conv_id:
@@ -52,12 +51,15 @@ def _handle_send(message, history, conv_id, provider, model,
     set_active_conversation_id(conv_id)
 
     try:
-        updated = chat(
+        result = chat(
             message, history,
             provider_override=provider, model_override=model,
             temperature=temperature, top_p=top_p,
             max_tokens=int(max_tokens), system_prompt_append=system_append,
         )
+        updated = result["history"]
+        rag_metrics = result.get("rag_metrics", dict(_EMPTY_RAG_METRICS))
+        token_counts = result.get("token_counts", dict(_EMPTY_TOKEN_COUNTS))
 
         # Extract final model response (skip tool-use status messages)
         raw_response = ""
@@ -100,17 +102,33 @@ def _handle_send(message, history, conv_id, provider, model,
             model_response=clean_response or raw_response,
             provider=provider, model=model,
             tools_called=json.dumps(tools_used),
+            tokens_prompt=token_counts.get("prompt", 0),
+            tokens_reasoning=token_counts.get("reasoning", 0),
+            tokens_response=token_counts.get("response", 0),
         )
 
-        convs = list_conversations(limit=30)
-        status = f"*{provider} / {model}*"
-        return display_history, api_history, "", conv_id, convs, status
+        # Accumulate cumulative tokens
+        prev_cum = metrics.get("cumulative_tokens", dict(_EMPTY_TOKEN_COUNTS))
+        new_cum = {
+            "prompt": prev_cum.get("prompt", 0) + token_counts.get("prompt", 0),
+            "reasoning": prev_cum.get("reasoning", 0) + token_counts.get("reasoning", 0),
+            "response": prev_cum.get("response", 0) + token_counts.get("response", 0),
+            "total": prev_cum.get("total", 0) + token_counts.get("total", 0),
+        }
+        new_metrics = {
+            "rag_metrics": rag_metrics,
+            "token_counts": token_counts,
+            "cumulative_tokens": new_cum,
+            "turn_count": metrics.get("turn_count", 0) + 1,
+        }
+
+        return display_history, api_history, "", conv_id, new_metrics
     except Exception as e:
         error_history = history + [
             {"role": "user", "content": message},
             {"role": "assistant", "content": f"Error: {str(e)}"},
         ]
-        return error_history, error_history, "", conv_id, gr.skip(), f"*Error: {str(e)[:80]}*"
+        return error_history, error_history, "", conv_id, gr.skip()
 
 
 # ---------------------------------------------------------------------------
@@ -120,20 +138,18 @@ def _handle_send(message, history, conv_id, provider, model,
 def build_chat_page():
     """Build the Sovereign Chat page layout. Call inside a gr.Blocks context."""
 
-    # --- Load initial state ---
-    initial_conv_id, initial_history = _load_most_recent_chat()
-    if initial_conv_id:
-        set_active_conversation_id(initial_conv_id)
+    # --- Load initial state (build-time snapshot — overwritten per-session by timer) ---
+    initial = _load_chat_session()
+    if initial["conv_id"]:
+        set_active_conversation_id(initial["conv_id"])
 
     config = get_chat_config()
     current_provider = config["provider"]
     current_model = config["model"]
 
     # --- States ---
-    chat_history = gr.State(list(initial_history))
-    active_conv_id = gr.State(initial_conv_id)
-    conversations_state = gr.State(list_conversations(limit=30))
-    conv_search_query = gr.State("")
+    chat_history = gr.State(list(initial["api_history"]))
+    active_conv_id = gr.State(initial["conv_id"])
     provider_state = gr.State(current_provider)
     model_state = gr.State(current_model)
     temperature_state = gr.State(config["temperature"])
@@ -141,119 +157,80 @@ def build_chat_page():
     max_tokens_state = gr.State(config["max_tokens"])
     system_append_state = gr.State("")
 
-    # === LEFT SIDEBAR — Conversation list ===
+    # Metrics state — updated after each send, drives left sidebar render
+    turn_metrics = gr.State({
+        "rag_metrics": dict(_EMPTY_RAG_METRICS),
+        "token_counts": dict(_EMPTY_TOKEN_COUNTS),
+        "cumulative_tokens": dict(_EMPTY_TOKEN_COUNTS),
+        "turn_count": 0,
+    })
+
+    # === LEFT SIDEBAR — Metrics Dashboard ===
     with gr.Sidebar(position="left"):
-        gr.Markdown("### Conversations")
+        gr.Markdown("### Chat Metrics")
 
-        @gr.render(inputs=[conversations_state, active_conv_id, conv_search_query])
-        def render_conv_list(conversations, active_id, search_q):
-            conv_search_input = gr.Textbox(
-                placeholder="Search by title... (Enter)",
-                show_label=False, key="conv-search",
-                value=search_q, max_lines=1,
-            )
-            new_chat_btn = gr.Button("+ New Chat", variant="primary", size="sm", key="new-chat-btn")
+        @gr.render(inputs=[turn_metrics])
+        def render_metrics(metrics):
+            tc = metrics.get("turn_count", 0)
+            rag = metrics.get("rag_metrics", {})
+            tok = metrics.get("token_counts", {})
+            cum = metrics.get("cumulative_tokens", {})
 
-            if not conversations:
-                gr.Markdown("*No conversations found.*")
-            else:
-                for conv in conversations:
-                    title = (conv.get("title") or "New Chat")[:40]
-                    date = (conv.get("updated_at") or "")[:10]
-                    is_active = conv["id"] == active_id
-                    with gr.Row(key=f"convrow-{conv['id'][:8]}"):
-                        conv_btn = gr.Button(
-                            f"{title}\n{date}",
-                            key=f"conv-{conv['id'][:8]}",
-                            size="sm",
-                            variant="primary" if is_active else "secondary",
-                            scale=4,
-                        )
-                        del_btn = gr.Button(
-                            "X", key=f"del-{conv['id'][:8]}",
-                            size="sm", variant="stop", scale=0, min_width=32,
-                        )
+            gr.Markdown(f"**Turn {tc}**" if tc > 0 else "*No messages yet*")
 
-                    # Load conversation on click
-                    def on_conv_click(c_id=conv["id"]):
-                        msgs = get_messages(c_id)
-                        history = _msgs_to_history(msgs) or list(DEFAULT_CHAT_HISTORY)
-                        set_active_conversation_id(c_id)
-                        return c_id, history, history
-                    conv_btn.click(
-                        on_conv_click,
-                        outputs=[active_conv_id, chatbot, chat_history],
-                        api_visibility="private",
-                        key=f"conv-click-{conv['id'][:8]}",
-                    )
+            if tc > 0:
+                # RAG section
+                gr.Markdown("#### RAG Retrieval")
+                hits_used = rag.get("hits_used", 0)
+                hit_count = rag.get("hit_count", 0)
+                collections = rag.get("collections_searched", [])
+                avg_rerank = rag.get("avg_rerank_score", 0.0)
+                avg_sal = rag.get("avg_salience", 0.0)
 
-                    # Delete conversation
-                    def on_delete(c_id=conv["id"], was_active=(conv["id"] == active_id)):
-                        delete_conversation(c_id)
-                        new_convs = list_conversations(limit=30)
-                        if was_active:
-                            set_active_conversation_id("")
-                            return new_convs, "", list(DEFAULT_CHAT_HISTORY), list(DEFAULT_CHAT_HISTORY)
-                        return new_convs, gr.skip(), gr.skip(), gr.skip()
-                    del_btn.click(
-                        on_delete,
-                        outputs=[conversations_state, active_conv_id, chatbot, chat_history],
-                        api_visibility="private",
-                        key=f"del-click-{conv['id'][:8]}",
-                    )
+                gr.Markdown(
+                    f"Hits: **{hits_used}** / {hit_count} candidates\n\n"
+                    f"Collections: {', '.join(collections) if collections else 'none'}\n\n"
+                    f"Avg rerank: **{avg_rerank:.3f}**\n\n"
+                    f"Avg salience: **{avg_sal:.3f}**"
+                )
 
-                    # Rename for active conversation
-                    if is_active:
-                        with gr.Row(key=f"rename-{conv['id'][:8]}"):
-                            rename_input = gr.Textbox(
-                                value=conv.get("title") or "",
-                                show_label=False, key=f"ren-inp-{conv['id'][:8]}",
-                                scale=3, max_lines=1,
-                            )
-                            rename_btn = gr.Button(
-                                "Save", key=f"ren-btn-{conv['id'][:8]}",
-                                size="sm", variant="secondary", scale=1,
+                # Per-hit details (collapsed)
+                scores = rag.get("scores", [])
+                if scores:
+                    with gr.Accordion("Hit Details", open=False):
+                        for i, s in enumerate(scores):
+                            src = s.get("source", "?")
+                            title = (s.get("title", "") or "untitled")[:30]
+                            gr.Markdown(
+                                f"**{i+1}.** {title}\n\n"
+                                f"  {src} — rerank: {s.get('rerank_score', 0):.3f}, "
+                                f"sal: {s.get('salience', 0):.3f}, "
+                                f"ann: {s.get('ann_score', 0):.3f}",
+                                key=f"hit-{i}",
                             )
 
-                        def on_rename(new_title, c_id=conv["id"]):
-                            if new_title.strip():
-                                update_conversation(c_id, title=new_title.strip())
-                            return list_conversations(limit=30)
-                        rename_btn.click(
-                            on_rename,
-                            inputs=[rename_input],
-                            outputs=[conversations_state],
-                            api_visibility="private",
-                            key=f"ren-click-{conv['id'][:8]}",
-                        )
+                # Token counts — this turn
+                gr.Markdown("#### Tokens (this turn)")
+                gr.Markdown(
+                    f"Prompt: **{tok.get('prompt', 0):,}**\n\n"
+                    f"Reasoning: **{tok.get('reasoning', 0):,}**\n\n"
+                    f"Response: **{tok.get('response', 0):,}**\n\n"
+                    f"Total: **{tok.get('total', 0):,}**"
+                )
 
-            # Search handler
-            def _search_convs(query):
-                if query and query.strip():
-                    return list_conversations(limit=100, title_filter=query.strip()), query
-                return list_conversations(limit=30), ""
-            conv_search_input.submit(
-                _search_convs,
-                inputs=[conv_search_input],
-                outputs=[conversations_state, conv_search_query],
-                api_visibility="private",
-                key="conv-search-submit",
-            )
+                # Cumulative tokens
+                gr.Markdown("#### Tokens (session)")
+                gr.Markdown(
+                    f"Prompt: **{cum.get('prompt', 0):,}**\n\n"
+                    f"Reasoning: **{cum.get('reasoning', 0):,}**\n\n"
+                    f"Response: **{cum.get('response', 0):,}**\n\n"
+                    f"Total: **{cum.get('total', 0):,}**"
+                )
 
-            # New chat handler
-            def _new_chat():
-                set_active_conversation_id("")
-                return "", list(DEFAULT_CHAT_HISTORY), list(DEFAULT_CHAT_HISTORY), list_conversations(limit=30)
-            new_chat_btn.click(
-                _new_chat,
-                outputs=[active_conv_id, chatbot, chat_history, conversations_state],
-                api_visibility="private",
-                key="new-chat-click",
-            )
-
-    # === RIGHT SIDEBAR — Chat settings ===
+    # === RIGHT SIDEBAR — Session Parameters ===
     with gr.Sidebar(position="right"):
-        gr.Markdown("### Chat Settings")
+        gr.Markdown("### Session")
+        new_chat_btn = gr.Button("New", variant="secondary", size="sm")
         cfg_provider = gr.Dropdown(
             choices=["anthropic", "gemini", "ollama"],
             value=current_provider,
@@ -282,42 +259,137 @@ def build_chat_page():
             step=256, value=config["max_tokens"], interactive=True,
         )
         cfg_system_append = gr.Textbox(
-            label="System Prompt (session)",
-            placeholder="Additional instructions for this conversation...",
-            lines=2, interactive=True,
+            label="Session Instructions",
+            placeholder="Additional instructions for this session...",
+            lines=3, interactive=True,
         )
 
-    # === CENTER PANEL — Chatbot + input ===
-    chatbot = gr.Chatbot(
-        value=list(initial_history),
-        show_label=False,
-        buttons=["copy"],
-        scale=1,
-        min_height=500,
-        elem_id="chat-page-chatbot",
-    )
+    # === CENTER PANEL — Tabs: Chat + Settings ===
+    with gr.Tabs():
+        # --- Chat Tab ---
+        with gr.Tab("Chat"):
+            chatbot = gr.Chatbot(
+                value=list(initial["display_history"]),
+                show_label=False,
+                buttons=["copy"],
+                elem_id="chat-page-chatbot",
+            )
 
-    chat_input = gr.Textbox(
-        placeholder="Ask anything... (Enter to send, Shift+Enter for newline)",
-        show_label=False,
-        interactive=True,
-        max_lines=5,
-    )
+            chat_input = gr.Textbox(
+                placeholder="Ask anything... (Enter to send, Shift+Enter for newline)",
+                show_label=False,
+                interactive=True,
+                max_lines=5,
+            )
 
-    chat_status = gr.Markdown("*Ready*")
+        # --- Settings Tab (Platform / User level) ---
+        with gr.Tab("Settings"):
+            gr.Markdown("### Platform Defaults")
+            gr.Markdown("*Persisted to DB. Used as defaults when entering Chat and by sidebar chats on other pages.*")
+
+            global_provider = gr.Dropdown(
+                choices=["anthropic", "gemini", "ollama"],
+                value=current_provider,
+                label="Default Provider", interactive=True,
+            )
+            global_model = gr.Dropdown(
+                choices=_model_choices,
+                value=current_model,
+                label="Default Model", interactive=True, allow_custom_value=True,
+            )
+            with gr.Row():
+                global_temperature = gr.Slider(
+                    label="Default Temperature", minimum=0.0, maximum=2.0,
+                    step=0.1, value=config["temperature"], interactive=True,
+                )
+                global_top_p = gr.Slider(
+                    label="Default Top P", minimum=0.0, maximum=1.0,
+                    step=0.05, value=config["top_p"], interactive=True,
+                )
+            global_max_tokens = gr.Slider(
+                label="Default Max Tokens", minimum=256, maximum=16384,
+                step=256, value=config["max_tokens"], interactive=True,
+            )
+
+            gr.Markdown("---")
+            gr.Markdown("### System Instructions")
+            gr.Markdown("*Base system prompt for all chat interactions. Like Memory in Claude — persistent context.*")
+            global_system_prompt = gr.Textbox(
+                value=get_setting("chat_system_prompt"),
+                label="System Prompt",
+                placeholder="You are a helpful assistant specialized in...",
+                lines=8, interactive=True,
+            )
+
+            gr.Markdown("---")
+            gr.Markdown("### RAG Configuration")
+            rag_threshold = gr.Slider(
+                label="Score Threshold", minimum=0.0, maximum=1.0,
+                step=0.05, value=float(get_setting("rag_score_threshold") or "0.3"),
+                interactive=True,
+            )
+            rag_max_chunks = gr.Slider(
+                label="Max Chunks", minimum=1, maximum=20,
+                step=1, value=int(get_setting("rag_max_chunks") or "3"),
+                interactive=True,
+            )
+
+    # === PER-SESSION INIT (one-shot timer — loads fresh data from DB) ===
+    session_load_timer = gr.Timer(value=0.5, active=True)
+
+    def _init_session():
+        """Reload most recent conversation from DB per session (fires once)."""
+        session = _load_chat_session()
+        if session["conv_id"]:
+            set_active_conversation_id(session["conv_id"])
+        metrics = {
+            "rag_metrics": dict(_EMPTY_RAG_METRICS),
+            "token_counts": dict(_EMPTY_TOKEN_COUNTS),
+            "cumulative_tokens": session["token_totals"],
+            "turn_count": session["turn_count"],
+        }
+        return (
+            list(session["display_history"]),
+            list(session["api_history"]),
+            session["conv_id"],
+            metrics,
+            gr.Timer(active=False),
+        )
+
+    session_load_timer.tick(
+        _init_session,
+        outputs=[chatbot, chat_history, active_conv_id, turn_metrics, session_load_timer],
+        api_visibility="private",
+    )
 
     # === EVENT WIRING ===
+
+    # --- New Chat ---
+    def _new_chat():
+        set_active_conversation_id("")
+        empty_metrics = {
+            "rag_metrics": dict(_EMPTY_RAG_METRICS),
+            "token_counts": dict(_EMPTY_TOKEN_COUNTS),
+            "cumulative_tokens": dict(_EMPTY_TOKEN_COUNTS),
+            "turn_count": 0,
+        }
+        return "", list(DEFAULT_CHAT_HISTORY), list(DEFAULT_CHAT_HISTORY), empty_metrics
+    new_chat_btn.click(
+        _new_chat,
+        outputs=[active_conv_id, chatbot, chat_history, turn_metrics],
+        api_visibility="private",
+    )
 
     # --- Chat send ---
     _send_inputs = [
         chat_input, chat_history, active_conv_id,
         provider_state, model_state,
         temperature_state, top_p_state, max_tokens_state,
-        system_append_state,
+        system_append_state, turn_metrics,
     ]
     _send_outputs = [
         chatbot, chat_history, chat_input,
-        active_conv_id, conversations_state, chat_status,
+        active_conv_id, turn_metrics,
     ]
 
     chat_input.submit(
@@ -325,16 +397,15 @@ def build_chat_page():
         api_visibility="private",
     )
 
-    # --- Config changes → state + DB persistence ---
+    # --- Session config changes → state only (no DB writes) ---
     def _on_provider_change(provider):
-        set_setting("chat_provider", provider)
+        """Update session provider — refresh model list but don't persist."""
         preset = PROVIDER_PRESETS.get(provider, {})
         if provider == "ollama":
             models = fetch_ollama_models() or [preset.get("default_model", "")]
         else:
             models = preset.get("models", [])
         default_model = models[0] if models else preset.get("default_model", "")
-        set_setting("chat_model", default_model)
         return gr.Dropdown(choices=models, value=default_model), provider, default_model
 
     cfg_provider.change(
@@ -343,8 +414,7 @@ def build_chat_page():
         api_visibility="private",
     )
     cfg_model.change(
-        lambda m: (set_setting("chat_model", m), m)[-1],
-        inputs=[cfg_model], outputs=[model_state],
+        lambda m: m, inputs=[cfg_model], outputs=[model_state],
         api_visibility="private",
     )
     cfg_temperature.change(
@@ -361,6 +431,60 @@ def build_chat_page():
     )
     cfg_system_append.change(
         lambda v: v, inputs=[cfg_system_append], outputs=[system_append_state],
+        api_visibility="private",
+    )
+
+    # --- Settings tab: Platform defaults → persist to DB ---
+    def _on_global_provider_change(provider):
+        """Update global default provider — persist to DB and refresh model list."""
+        set_setting("chat_provider", provider)
+        preset = PROVIDER_PRESETS.get(provider, {})
+        if provider == "ollama":
+            models = fetch_ollama_models() or [preset.get("default_model", "")]
+        else:
+            models = preset.get("models", [])
+        default_model = models[0] if models else preset.get("default_model", "")
+        set_setting("chat_model", default_model)
+        return gr.Dropdown(choices=models, value=default_model)
+
+    global_provider.change(
+        _on_global_provider_change, inputs=[global_provider],
+        outputs=[global_model],
+        api_visibility="private",
+    )
+    global_model.change(
+        lambda m: set_setting("chat_model", m),
+        inputs=[global_model],
+        api_visibility="private",
+    )
+    global_temperature.change(
+        lambda v: set_setting("chat_temperature", str(v)),
+        inputs=[global_temperature],
+        api_visibility="private",
+    )
+    global_top_p.change(
+        lambda v: set_setting("chat_top_p", str(v)),
+        inputs=[global_top_p],
+        api_visibility="private",
+    )
+    global_max_tokens.change(
+        lambda v: set_setting("chat_max_tokens", str(int(v))),
+        inputs=[global_max_tokens],
+        api_visibility="private",
+    )
+    global_system_prompt.change(
+        lambda v: set_setting("chat_system_prompt", v),
+        inputs=[global_system_prompt],
+        api_visibility="private",
+    )
+    rag_threshold.change(
+        lambda v: set_setting("rag_score_threshold", str(v)),
+        inputs=[rag_threshold],
+        api_visibility="private",
+    )
+    rag_max_chunks.change(
+        lambda v: set_setting("rag_max_chunks", str(int(v))),
+        inputs=[rag_max_chunks],
         api_visibility="private",
     )
 

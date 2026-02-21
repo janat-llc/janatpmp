@@ -196,7 +196,15 @@ def _build_system_prompt(has_tools: bool = True) -> str:
     return base
 
 
-def _build_rag_context(user_message: str) -> str:
+_EMPTY_RAG_METRICS = {
+    "hit_count": 0, "hits_used": 0, "collections_searched": [],
+    "avg_rerank_score": 0.0, "avg_salience": 0.0, "scores": [],
+}
+
+_EMPTY_TOKEN_COUNTS = {"prompt": 0, "reasoning": 0, "response": 0, "total": 0}
+
+
+def _build_rag_context(user_message: str) -> tuple[str, dict]:
     """Search Qdrant for relevant context and format for injection.
 
     Reads rag_score_threshold and rag_max_chunks from settings DB so they
@@ -206,17 +214,23 @@ def _build_rag_context(user_message: str) -> str:
         user_message: The user's current message.
 
     Returns:
-        Formatted context string, or empty string if no results or Qdrant unavailable.
+        Tuple of (formatted context string, RAG metrics dict).
+        Returns ("", empty_metrics) if no results or Qdrant unavailable.
     """
+    metrics = dict(_EMPTY_RAG_METRICS, scores=[])
     try:
         from services.vector_store import search_all
         threshold = float(get_setting("rag_score_threshold") or RAG_SCORE_THRESHOLD)
         max_chunks = int(get_setting("rag_max_chunks") or 3)
         results = search_all(user_message, limit=max_chunks)
         if not results:
-            return ""
+            return "", metrics
+
+        metrics["hit_count"] = len(results)
+        metrics["collections_searched"] = list({r.get("source_collection", "unknown") for r in results})
 
         context_parts = []
+        used_scores = []
         for r in results:
             # Prefer rerank_score (cross-encoder relevance) over ANN score.
             # Qwen3-Reranker scores are 0-1 probabilities (via vLLM).
@@ -232,14 +246,27 @@ def _build_rag_context(user_message: str) -> str:
             title = r.get("title", r.get("conv_title", ""))
             text = r.get("text", "")[:500]
             context_parts.append(f"[{source}] {title}: {text}")
+            used_scores.append({
+                "source": source, "title": title,
+                "rerank_score": rerank or 0.0,
+                "salience": r.get("salience", 0.0),
+                "ann_score": r.get("score", 0.0),
+            })
+
+        metrics["hits_used"] = len(used_scores)
+        metrics["scores"] = used_scores
+        if used_scores:
+            metrics["avg_rerank_score"] = sum(s["rerank_score"] for s in used_scores) / len(used_scores)
+            metrics["avg_salience"] = sum(s["salience"] for s in used_scores) / len(used_scores)
 
         if not context_parts:
-            return ""
+            return "", metrics
 
-        return "\n\n---\nRelevant context from knowledge base:\n" + "\n\n".join(context_parts) + "\n---\n"
+        context = "\n\n---\nRelevant context from knowledge base:\n" + "\n\n".join(context_parts) + "\n---\n"
+        return context, metrics
     except Exception as e:
         logger.debug("RAG context unavailable: %s", e)
-        return ""  # Graceful degradation if Qdrant is down
+        return "", metrics  # Graceful degradation if Qdrant is down
 
 
 # --- Provider Presets ---
@@ -402,6 +429,7 @@ def _run_tool_loop(
     parse_response_fn: callable,
     handle_tool_calls_fn: callable,
     history: list[dict],
+    last_response: dict | None = None,
 ) -> list[dict]:
     """Run the tool-use iteration loop shared across all providers.
 
@@ -412,12 +440,16 @@ def _run_tool_loop(
         handle_tool_calls_fn: (response, tool_calls, history) -> None.
             Executes tools, updates API message state, appends status to history.
         history: Chat history list to append assistant messages to.
+        last_response: If provided, stores the last API response as last_response["ref"]
+            for token extraction by the calling provider function.
 
     Returns:
         Updated history.
     """
     for iteration in range(MAX_TOOL_ITERATIONS):
         response = api_call_fn()
+        if last_response is not None:
+            last_response["ref"] = response
         text_parts, tool_calls = parse_response_fn(response)
 
         if text_parts:
@@ -435,7 +467,7 @@ def _run_tool_loop(
 # --- Provider-Specific Chat Implementations ---
 
 def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt: str,
-                    temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 2048) -> list[dict]:
+                    temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 2048) -> tuple[list[dict], dict]:
     """Run chat loop using Anthropic API with native tool use.
 
     Args:
@@ -448,11 +480,12 @@ def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt
         max_tokens: Maximum response tokens.
 
     Returns:
-        Updated history with assistant responses and tool-use status messages.
+        Tuple of (updated history, token_counts dict).
     """
     from anthropic import Anthropic
     client = Anthropic(api_key=api_key.strip())
     api_messages = _build_api_messages(history)
+    resp_container = {}
 
     def make_call():
         return client.messages.create(
@@ -482,11 +515,21 @@ def _chat_anthropic(api_key: str, model: str, history: list[dict], system_prompt
             })
         api_messages.append({"role": "user", "content": tool_results})
 
-    return _run_tool_loop(make_call, parse, handle_tools, history)
+    history = _run_tool_loop(make_call, parse, handle_tools, history, resp_container)
+
+    # Extract token counts from the last API response
+    tokens = dict(_EMPTY_TOKEN_COUNTS)
+    resp = resp_container.get("ref")
+    if resp and hasattr(resp, "usage") and resp.usage:
+        tokens["prompt"] = getattr(resp.usage, "input_tokens", 0) or 0
+        tokens["response"] = getattr(resp.usage, "output_tokens", 0) or 0
+        tokens["total"] = tokens["prompt"] + tokens["response"]
+
+    return history, tokens
 
 
 def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: str,
-                 temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 2048) -> list[dict]:
+                 temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 2048) -> tuple[list[dict], dict]:
     """Run chat loop using Google Gemini API with function calling.
 
     Args:
@@ -499,7 +542,7 @@ def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: s
         max_tokens: Maximum response tokens.
 
     Returns:
-        Updated history with assistant responses and tool-use status messages.
+        Tuple of (updated history, token counts dict).
     """
     from google import genai
     from google.genai import types
@@ -544,7 +587,20 @@ def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: s
             ))
         contents.append(types.Content(role="user", parts=fn_response_parts))
 
-    return _run_tool_loop(make_call, parse, handle_tools, history)
+    resp_container = {}
+    history = _run_tool_loop(make_call, parse, handle_tools, history, resp_container)
+
+    # Extract token counts from Gemini usage_metadata
+    tokens = dict(_EMPTY_TOKEN_COUNTS)
+    resp = resp_container.get("ref")
+    if resp and hasattr(resp, "usage_metadata") and resp.usage_metadata:
+        um = resp.usage_metadata
+        tokens["prompt"] = getattr(um, "prompt_token_count", 0) or 0
+        tokens["reasoning"] = getattr(um, "thoughts_token_count", 0) or 0
+        tokens["response"] = getattr(um, "candidates_token_count", 0) or 0
+        tokens["total"] = tokens["prompt"] + tokens["reasoning"] + tokens["response"]
+
+    return history, tokens
 
 
 _ollama_no_tools_models: set[str] = set()
@@ -552,7 +608,7 @@ _ollama_no_tools_models: set[str] = set()
 
 def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: str,
                  temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 8192,
-                 num_ctx: int = 0, keep_alive: str = "") -> list[dict]:
+                 num_ctx: int = 0, keep_alive: str = "") -> tuple[list[dict], dict]:
     """Run chat loop using Ollama via OpenAI-compatible API.
 
     Tool use depends on model capability — gracefully falls back to no tools
@@ -571,7 +627,7 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
         keep_alive: Model keep-alive duration string (e.g. '5m').
 
     Returns:
-        Updated history with assistant responses and tool-use status messages.
+        Tuple of (updated history, token counts dict).
     """
     from openai import OpenAI
     client = OpenAI(api_key="ollama", base_url=base_url)
@@ -632,7 +688,18 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
                 "role": "tool", "tool_call_id": tc.id, "content": result,
             })
 
-    return _run_tool_loop(make_call, parse, handle_tools, history)
+    resp_container = {}
+    history = _run_tool_loop(make_call, parse, handle_tools, history, resp_container)
+
+    # Extract token counts from Ollama/OpenAI usage
+    tokens = dict(_EMPTY_TOKEN_COUNTS)
+    resp = resp_container.get("ref")
+    if resp and hasattr(resp, "usage") and resp.usage:
+        tokens["prompt"] = getattr(resp.usage, "prompt_tokens", 0) or 0
+        tokens["response"] = getattr(resp.usage, "completion_tokens", 0) or 0
+        tokens["total"] = tokens["prompt"] + tokens["response"]
+
+    return history, tokens
 
 
 # --- Main Chat Entry Point ---
@@ -640,7 +707,7 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
 def chat(message: str, history: list[dict],
          provider_override: str = "", model_override: str = "",
          temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 8192,
-         system_prompt_append: str = "") -> list[dict]:
+         system_prompt_append: str = "") -> dict:
     """Send a message using settings from the database (with optional overrides).
 
     Args:
@@ -654,7 +721,7 @@ def chat(message: str, history: list[dict],
         system_prompt_append: Per-conversation system prompt addition.
 
     Returns:
-        Updated history with new user message and all assistant responses.
+        Dict with keys: history, rag_metrics, token_counts, provider, model.
     """
     from services.settings import get_setting
 
@@ -669,37 +736,54 @@ def chat(message: str, history: list[dict],
     if system_prompt_append and system_prompt_append.strip():
         system_prompt += f"\n\n{system_prompt_append.strip()}"
 
+    def _error_result(error_history):
+        return {
+            "history": error_history,
+            "rag_metrics": dict(_EMPTY_RAG_METRICS),
+            "token_counts": dict(_EMPTY_TOKEN_COUNTS),
+            "provider": provider,
+            "model": model,
+        }
+
     # RAG context injection (gracefully degrades if Qdrant unavailable)
-    rag_context = _build_rag_context(message)
+    rag_context, rag_metrics = _build_rag_context(message)
     if rag_context:
         system_prompt += rag_context
 
     # Validate API key for providers that need it
     preset = PROVIDER_PRESETS.get(provider, {})
     if preset.get("needs_api_key") and (not api_key or not api_key.strip()):
-        return history + [
+        return _error_result(history + [
             {"role": "user", "content": message},
             {"role": "assistant", "content": f"No API key set. Add your {preset.get('name', provider)} API key in the Admin tab sidebar."},
-        ]
+        ])
 
     # Add user message
     history = history + [{"role": "user", "content": message}]
 
     try:
         if provider == "anthropic":
-            return _chat_anthropic(api_key, model, history, system_prompt, temperature, top_p, max_tokens)
+            history, token_counts = _chat_anthropic(api_key, model, history, system_prompt, temperature, top_p, max_tokens)
         elif provider == "gemini":
-            return _chat_gemini(api_key, model, history, system_prompt, temperature, top_p, max_tokens)
+            history, token_counts = _chat_gemini(api_key, model, history, system_prompt, temperature, top_p, max_tokens)
         elif provider == "ollama":
             url = base_url or preset.get("base_url", "http://ollama:11434/v1")
             num_ctx = int(get_setting("ollama_num_ctx"))
             keep_alive = get_setting("ollama_keep_alive")
-            return _chat_ollama(url, model, history, system_prompt, temperature, top_p, max_tokens,
-                                num_ctx=num_ctx, keep_alive=keep_alive)
+            history, token_counts = _chat_ollama(url, model, history, system_prompt, temperature, top_p, max_tokens,
+                                                  num_ctx=num_ctx, keep_alive=keep_alive)
         else:
             history.append({"role": "assistant", "content": f"Unknown provider: {provider}"})
-            return history
+            return _error_result(history)
+
+        return {
+            "history": history,
+            "rag_metrics": rag_metrics,
+            "token_counts": token_counts,
+            "provider": provider,
+            "model": model,
+        }
     except Exception as e:
         logger.error("Chat failed: provider=%s, model=%s — %s", provider, model, e)
         history.append({"role": "assistant", "content": f"Error: {str(e)}"})
-        return history
+        return _error_result(history)

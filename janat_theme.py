@@ -212,4 +212,11 @@ JANAT_CSS = """
 
     /* Hide Gradio footer */
     footer { display: none !important; }
+
+    /* === Chat page — chatbot fills viewport === */
+    #chat-page-chatbot {
+        height: calc(100vh - 260px) !important;
+        min-height: 300px !important;
+        overflow-y: auto !important;
+    }
 """

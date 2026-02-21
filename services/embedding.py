@@ -19,7 +19,7 @@ def embed_passages(texts: list[str]) -> list[list[float]]:
         texts: List of text passages to embed.
 
     Returns:
-        List of embedding vectors (2560-dim each).
+        List of embedding vectors (1024-dim each).
     """
     return embed_texts(texts)
 
@@ -31,6 +31,6 @@ def embed_query(query: str) -> list[float]:
         query: The search query text.
 
     Returns:
-        Single embedding vector (2560-dim).
+        Single embedding vector (1024-dim).
     """
     return _embed_query(query)

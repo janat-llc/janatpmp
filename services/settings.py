@@ -87,6 +87,9 @@ SETTINGS_REGISTRY = {
     "chat_api_key":         ("", True, "chat", None),
     "chat_base_url":        ("http://ollama:11434/v1", False, "chat", None),
     "chat_system_prompt":   ("", False, "chat", None),
+    "chat_temperature":     ("0.7", False, "chat", _validate_positive_float),
+    "chat_top_p":           ("0.9", False, "chat", _validate_positive_float),
+    "chat_max_tokens":      ("8192", False, "chat", _validate_positive_int),
 
     # Ollama
     "ollama_num_ctx":       ("32768", False, "ollama", _validate_positive_int),
