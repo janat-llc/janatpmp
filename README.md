@@ -19,16 +19,17 @@ Built by and for [The Janat Initiative](https://janatinitiative.org), powering c
 ```mermaid
 graph TB
     subgraph Docker Compose
-        Core[JANATPMP Core<br/>Gradio 6.5.1 + ATLAS<br/>GPU · Port 7860]
-        Ollama[Ollama<br/>Nemotron-3-Nano<br/>GPU · Port 11435]
+        Core[JANATPMP Core<br/>Gradio 6.5.1<br/>No GPU · Port 7860]
+        Ollama[Ollama<br/>Chat + Embedding<br/>GPU · Port 11435]
+        vLLM[vLLM Reranker<br/>Qwen3-Reranker-0.6B<br/>GPU · Port 8002]
         Qdrant[Qdrant<br/>Vector Search<br/>Port 6343]
     end
 
     SQLite[(SQLite<br/>WAL + FTS5)]
     Core --> SQLite
     Core --> Ollama
+    Core --> vLLM
     Core --> Qdrant
-    Core -. ATLAS .-> Core
 
     Claude[Claude Desktop<br/>via MCP] --> Core
     Browser[Web Browser<br/>Desktop / Mobile] --> Core
@@ -53,10 +54,12 @@ One set of functions in `db/operations.py` serves all three surfaces — UI even
 
 - **46 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, settings, backups)
 - **Multi-provider chat** with triplet message persistence (Anthropic, Gemini, Ollama/local models)
-- **ATLAS two-stage search** — ANN retrieval + cross-encoder reranking with salience write-back
-- **RAG pipeline** — Qdrant vector search with GPU-accelerated NVIDIA Llama-Nemotron-Embed-VL-1B-v2 embeddings (2048-dim, multimodal)
+- **Thinking mode** — chain-of-thought captured separately via Ollama `think=True`, stored as `model_reasoning` in triplet schema for future fine-tuning
+- **ATLAS two-stage search** — ANN retrieval via Qdrant + cross-encoder reranking via vLLM sidecar with salience write-back
+- **RAG pipeline** — Qwen3-Embedding-4B embeddings (2560-dim, Matryoshka) via Ollama, injected into chat context per-message
 - **Content ingestion** — parsers for Google AI Studio, quest files, markdown, and text with SHA-256 deduplication
 - **Dynamic domain management** — domains are first-class database entities, creatable via MCP without code changes
+- **Dynamic model discovery** — Ollama models fetched live via `/api/tags`, no hardcoded model lists
 - **Project / Task / Document management** with typed relationships and hierarchy
 - **Claude conversation import** — ingest Claude export JSON into a searchable triplet schema
 - **Full-text search** via SQLite FTS5 across items, documents, and conversation messages
@@ -74,12 +77,22 @@ One set of functions in `db/operations.py` serves all three surfaces — UI even
 | Language | Python 3.14 |
 | Database | SQLite (WAL mode, FTS5 full-text search) |
 | Vector DB | Qdrant — semantic search over documents and messages |
-| Embeddings | NVIDIA Llama-Nemotron-Embed-VL-1B-v2 (2048-dim, multimodal, GPU) |
-| Reranking | NVIDIA Llama-Nemotron-Rerank-VL-1B-v2 (cross-encoder, GPU) |
-| ML Runtime | PyTorch 2.10+ (CUDA 12.8) + Transformers 4.47+ |
-| Inference | Ollama — Nemotron-3-Nano (default), DeepSeek-R1, Qwen3, Phi-4 |
-| Container | Docker Compose (Python 3.14-slim + NVIDIA GPU passthrough for core + Ollama) |
+| Embeddings | Qwen3-Embedding-4B Q4_K_M via Ollama (2560-dim, Matryoshka) |
+| Reranking | Qwen3-Reranker-0.6B FP16 via vLLM sidecar (0-1 probability scores) |
+| Chat LLM | nemotron-3-nano Q4_K_M via Ollama (with thinking mode) |
+| Container | Docker Compose — 4 services: core (no GPU), Ollama (GPU), vLLM (GPU), Qdrant |
 | Data Display | Pandas DataFrames |
+
+### GPU Budget (RTX 5090, 32 GB)
+
+| Service | Model | Est. VRAM |
+|---------|-------|-----------|
+| Ollama — chat | nemotron-3-nano Q4_K_M | ~24 GB |
+| Ollama — embed | Qwen3-Embedding-4B Q4_K_M | ~2.5 GB |
+| vLLM — rerank | Qwen3-Reranker-0.6B FP16 | ~1.7 GB |
+| **Total** | | **~28.2 GB** |
+
+Core container uses zero GPU — all model inference is offloaded to Ollama and vLLM sidecars.
 
 ---
 
@@ -89,6 +102,7 @@ One set of functions in `db/operations.py` serves all three surfaces — UI even
 
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose
 - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) (for GPU-accelerated inference)
+- A `.env` file with `HF_TOKEN` (for vLLM to download the reranker model from HuggingFace)
 
 ### Run
 
@@ -96,6 +110,15 @@ One set of functions in `db/operations.py` serves all three surfaces — UI even
 git clone <repo-url> && cd JANATPMP
 docker-compose up --build
 ```
+
+### Pull Models (first run)
+
+```bash
+docker exec janatpmp-ollama ollama pull nemotron-3-nano:latest
+docker exec janatpmp-ollama ollama pull qwen3-embedding:4b-q4_K_M
+```
+
+The vLLM reranker downloads its model automatically on first startup.
 
 Once running:
 
@@ -134,32 +157,30 @@ JANATPMP/
 ├── shared/
 │   ├── constants.py           # Enum lists, magic numbers, defaults
 │   ├── formatting.py          # Display helpers (fmt_enum, entity_list_to_df)
-│   ├── data_helpers.py        # Data-loading helpers
-│   └── exceptions.py          # Custom exception hierarchy
+│   └── data_helpers.py        # Data-loading helpers
 ├── db/
 │   ├── schema.sql             # Database DDL
 │   ├── operations.py          # 26 CRUD + lifecycle functions
 │   ├── chat_operations.py     # Conversation + message CRUD
-│   ├── migrations/            # Versioned schema migrations
-│   └── backups/               # Timestamped database backups
-├── atlas/
-│   ├── config.py              # Model identifiers, dimensions, salience constants
-│   ├── embedding_service.py   # NemotronEmbedder (VL, GPU, bfloat16, eager attn)
-│   ├── reranking_service.py   # NemotronReranker (cross-encoder, GPU)
+│   └── migrations/            # Versioned schema migrations
+├── atlas/                     # ATLAS — HTTP client layer for model services
+│   ├── config.py              # Service URLs, model identifiers, dimensions
+│   ├── embedding_service.py   # Qwen3-Embedding-4B via Ollama /v1/embeddings
+│   ├── reranking_service.py   # Qwen3-Reranker-0.6B via vLLM /v1/score
 │   ├── memory_service.py      # Salience write-back to Qdrant
 │   └── pipeline.py            # Two-stage search orchestrator
 ├── services/
 │   ├── log_config.py          # SQLite log handler + setup_logging()
-│   ├── chat.py                # Multi-provider chat with tool use
+│   ├── chat.py                # Multi-provider chat with tool use + thinking mode
 │   ├── settings.py            # Settings registry with validation
 │   ├── claude_export.py       # Claude Export ingestion service
 │   ├── claude_import.py       # Claude JSON → triplet messages
 │   ├── embedding.py           # Thin shim → atlas/embedding_service.py
 │   ├── vector_store.py        # Qdrant ops + two-stage search pipeline
-│   ├── bulk_embed.py          # GPU batch embed with checkpointing
+│   ├── bulk_embed.py          # Batch embed via Ollama with checkpointing
 │   └── ingestion/             # Content ingestion parsers
-├── Dockerfile                 # Python 3.14-slim + PyTorch CUDA 12.8
-├── docker-compose.yml         # Multi-container orchestration
+├── Dockerfile                 # Python 3.14-slim (no PyTorch, no GPU)
+├── docker-compose.yml         # 4-container orchestration
 ├── Janat_Brand_Guide.md       # Design system (colors, fonts)
 └── CLAUDE.md                  # Development guidelines for AI assistants
 ```
@@ -186,7 +207,7 @@ Full API documentation is available at `/gradio_api/docs` while the server is ru
 | Domains | `get_domains`, `get_domain`, `create_domain`, `update_domain` | Organizational categories — database-managed, no code deploys needed |
 | Relationships | `create_relationship`, `get_relationships` | Typed connections (blocks, enables, informs, etc.) |
 | Conversations | `create_conversation`, `list_conversations`, `search_conversations`, `add_message`, `get_messages`, ... | Chat history with triplet schema |
-| Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains`, `recreate_collections` | ATLAS two-stage search, GPU bulk embedding, collection management |
+| Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains`, `recreate_collections` | ATLAS two-stage search, bulk embedding, collection management |
 | System | `get_stats`, `get_schema_info`, `backup_database`, `restore_database`, `list_backups`, `reset_database` | Database administration |
 | Import | `import_conversations_json` | Claude conversation JSON import |
 
@@ -236,7 +257,7 @@ Nine core tables with FTS5 full-text search and a CDC outbox for future sync:
 - **documents** — Session notes, research, artifacts, conversation imports. FTS5 enabled.
 - **relationships** — Universal typed connector between any two entities (items, tasks, documents, conversations).
 - **conversations** — Chat sessions from any source (platform, Claude export, imported). Per-session model/provider config.
-- **messages** — Triplet schema: `user_prompt` + `model_reasoning` + `model_response`. Designed for fine-tuning data extraction.
+- **messages** — Triplet schema: `user_prompt` + `model_reasoning` + `model_response`. Designed for fine-tuning data extraction. NULL reasoning = thinking not captured/not applicable.
 - **settings** — Key-value config with base64 obfuscation for secrets.
 - **cdc_outbox** — Change Data Capture for future graph database synchronization.
 
@@ -283,8 +304,8 @@ Built by **Mat Gallagher** — [Janat, LLC](https://janat.org) / [The Janat Init
 | | |
 |---|---|
 | UI Framework | [Gradio](https://gradio.app) 6.5.1 |
-| Local Inference | [Ollama](https://ollama.ai) + NVIDIA Nemotron |
+| Chat LLM | [Ollama](https://ollama.ai) + NVIDIA Nemotron-3-Nano |
+| Embeddings | [Qwen3-Embedding-4B](https://huggingface.co/Qwen/Qwen3-Embedding-4B) via Ollama |
+| Reranking | [Qwen3-Reranker-0.6B](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B) via vLLM |
 | Vector Search | [Qdrant](https://qdrant.tech) |
-| Embeddings | [NVIDIA Llama-Nemotron-Embed-VL-1B-v2](https://huggingface.co/nvidia/llama-nemotron-embed-vl-1b-v2) |
-| Reranking | [NVIDIA Llama-Nemotron-Rerank-VL-1B-v2](https://huggingface.co/nvidia/llama-nemotron-rerank-vl-1b-v2) |
 | Persistence | [SQLite](https://sqlite.org) |
