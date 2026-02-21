@@ -59,9 +59,44 @@ try:
 except Exception:
     logger.warning("Qdrant not available -- vector search disabled")
 
+# Branded header HTML — shared across all pages via route
+JANAT_HEADER = """
+<div id="janat-header-bar" style="display:flex; align-items:center; justify-content:space-between;
+            padding:10px 20px; border-bottom:1px solid #1a1a1a; background:#000;">
+    <div style="display:flex; align-items:center; gap:24px;">
+        <a href="/" style="text-decoration:none;">
+            <span style="font-family:'Orbitron',sans-serif; font-size:1.4rem;
+                         font-weight:700; color:#00FFFF; letter-spacing:0.15em;">
+                JANATPMP
+            </span>
+        </a>
+        <nav style="display:flex; gap:16px; align-items:center;">
+            <a href="/" style="font-family:'Rajdhani',sans-serif; font-size:0.95rem;
+                        color:#b3b3b3; text-decoration:none; letter-spacing:0.05em;"
+               onmouseover="this.style.color='#00FFFF'" onmouseout="this.style.color='#b3b3b3'">
+                Projects
+            </a>
+            <a href="/chat" style="font-family:'Rajdhani',sans-serif; font-size:0.95rem;
+                        color:#b3b3b3; text-decoration:none; letter-spacing:0.05em;"
+               onmouseover="this.style.color='#00FFFF'" onmouseout="this.style.color='#b3b3b3'">
+                Chat
+            </a>
+        </nav>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-family:'Rajdhani',sans-serif; font-size:0.75rem;
+                     color:#808080; letter-spacing:0.05em;">
+            Powered by
+        </span>
+        <img src="/gradio_api/file=assets/janat_logo_bold_transparent.png"
+             alt="Janat" style="height:28px; width:auto; opacity:0.85;" />
+    </div>
+</div>
+"""
+
 # Build multipage application
 with gr.Blocks(title="JANATPMP") as demo:
-    gr.Navbar(main_page_name="JANATPMP")
+    gr.HTML(JANAT_HEADER, elem_id="janat-header")
     build_page()
 
     # Expose ALL operations as MCP tools
@@ -118,6 +153,7 @@ with gr.Blocks(title="JANATPMP") as demo:
 
 # --- Sovereign Chat route (outside main Blocks context) ---
 with demo.route("Chat", "/chat"):
+    gr.HTML(JANAT_HEADER, elem_id="janat-header")
     chat_page.build_chat_page()
 
 if __name__ == "__main__":

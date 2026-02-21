@@ -64,28 +64,6 @@ def build_page():
     conversations_state = gr.State(list_conversations(limit=30))
     selected_knowledge_conv_id = gr.State("")
 
-    # === BRANDED HEADER ===
-    gr.HTML("""
-    <div style="display:flex; align-items:center; justify-content:space-between;
-                padding:12px 20px 12px 20px; border-bottom:1px solid #1a1a1a;
-">
-        <div style="display:flex; align-items:center;">
-            <span style="font-family:'Orbitron',sans-serif; font-size:1.4rem;
-                         font-weight:700; color:#00FFFF; letter-spacing:0.15em;">
-                JANATPMP
-            </span>
-        </div>
-        <div style="display:flex; align-items:center; gap:8px;">
-            <span style="font-family:'Rajdhani',sans-serif; font-size:0.75rem;
-                         color:#808080; letter-spacing:0.05em;">
-                Powered by
-            </span>
-            <img src="/gradio_api/file=assets/janat_logo_bold_transparent.png"
-                 alt="Janat" style="height:28px; width:auto; opacity:0.85;" />
-        </div>
-    </div>
-    """, elem_id="janat-header")
-
     # === RIGHT SIDEBAR — Janat quick-chat (all tabs) ===
     with gr.Sidebar(position="right"):
         gr.Markdown("### Janat", elem_classes=["right-panel-header"])
