@@ -90,7 +90,7 @@ SETTINGS_REGISTRY = {
 
     # Ollama
     "ollama_num_ctx":       ("32768", False, "ollama", _validate_positive_int),
-    "ollama_keep_alive":    ("5m", False, "ollama", None),
+    "ollama_keep_alive":    ("-1", False, "ollama", None),
 
     # Export
     "claude_export_db_path":  ("/data/claude_export/claude_export.db", False, "export", None),

@@ -292,7 +292,7 @@ def get_next_sequence(conversation_id: str) -> int:
 def add_message(
     conversation_id: str,
     user_prompt: str,
-    model_reasoning: str = "",
+    model_reasoning: str = None,
     model_response: str = "",
     provider: str = "",
     model: str = "",

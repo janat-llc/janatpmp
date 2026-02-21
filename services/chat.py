@@ -578,7 +578,7 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
     messages = _build_api_messages(history, include_system=system_prompt)
     tools = _tools_openai()
     use_tools = bool(tools) and model not in _ollama_no_tools_models
-    ollama_opts = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
+    ollama_opts = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive, "think": True}
 
     def make_call():
         nonlocal use_tools
@@ -602,7 +602,23 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
 
     def parse(response):
         msg = response.choices[0].message
-        text_parts = [msg.content] if msg.content else []
+        # Ollama returns thinking via different field names depending on API version.
+        # Check: reasoning_content (OpenAI convention), thinking (Ollama native),
+        # and model_extra (Pydantic catch-all for unknown fields).
+        extras = getattr(msg, "model_extra", {}) or {}
+        reasoning = (
+            getattr(msg, "reasoning_content", None)
+            or extras.get("reasoning")
+            or extras.get("reasoning_content")
+            or extras.get("thinking")
+        )
+        if reasoning:
+            logger.debug("Thinking captured (%d chars) via Ollama think=True", len(reasoning))
+        text_parts = []
+        if reasoning:
+            text_parts.append(f"<think>{reasoning}</think>")
+        if msg.content:
+            text_parts.append(msg.content)
         return text_parts, msg.tool_calls or []
 
     def handle_tools(response, tool_calls, history):

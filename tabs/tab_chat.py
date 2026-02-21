@@ -112,7 +112,7 @@ def _handle_chat_tab(message, history, conv_id, provider, model,
         add_message(
             conversation_id=conv_id,
             user_prompt=message,
-            model_reasoning=reasoning,
+            model_reasoning=reasoning or None,
             model_response=clean_response or raw_response,
             provider=provider, model=model,
             tools_called=json.dumps(tools_used),

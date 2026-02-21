@@ -7,7 +7,7 @@ OLLAMA_EMBED_URL = "http://ollama:11434"
 VLLM_RERANK_URL = "http://janatpmp-vllm-rerank:8000"
 
 # --- Model identifiers ---
-EMBEDDING_MODEL = "hf.co/Qwen/Qwen3-Embedding-4B-GGUF:Q4_K_M"
+EMBEDDING_MODEL = "qwen3-embedding:4b-q4_K_M"
 RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"
 
 # --- Vector dimensions ---
