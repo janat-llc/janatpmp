@@ -197,16 +197,261 @@ def _evaluate_batch():
     logger.info("Slumber cycle: evaluated %d messages", evaluated)
 
 
+def _propagate_batch():
+    """Bridge quality_score → Qdrant salience.
+
+    Reads messages_metadata where quality_score is set but salience not yet synced.
+    Applies multiplier based on quality range, writes to Qdrant payload.
+    """
+    from db.operations import get_connection
+    from db.chat_operations import update_message_metadata
+
+    batch_size = _get_batch_size()
+
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT mm.message_id, mm.quality_score
+            FROM messages_metadata mm
+            WHERE mm.quality_score IS NOT NULL
+              AND mm.salience_synced = 0
+            ORDER BY mm.created_at ASC
+            LIMIT ?
+        """, (batch_size,)).fetchall()
+
+    if not rows:
+        return
+
+    try:
+        from services.vector_store import _get_client, COLLECTION_MESSAGES
+        client = _get_client()
+    except Exception as e:
+        logger.debug("Slumber propagate: Qdrant unavailable: %s", e)
+        return
+
+    propagated = 0
+    for row in rows:
+        msg_id = row["message_id"]
+        quality = row["quality_score"]
+
+        # Read current salience from Qdrant
+        try:
+            # Qdrant uses UUID format for message IDs
+            point_id = msg_id[:8] + "-" + msg_id[8:12] + "-" + msg_id[12:16] + "-" + msg_id[16:20] + "-" + msg_id[20:]
+            points = client.retrieve(COLLECTION_MESSAGES, ids=[point_id], with_payload=True)
+            if not points:
+                continue  # Not yet in Qdrant, skip
+            current_salience = points[0].payload.get("salience", 0.5)
+        except Exception:
+            continue
+
+        # Apply quality → salience mapping
+        if quality < 0.15:
+            new_salience = current_salience * 0.3        # Hard decay
+        elif quality < 0.4:
+            new_salience = current_salience * 0.7        # Soft decay
+        elif quality > 0.7:
+            new_salience = min(1.0, current_salience + 0.1)  # Boost
+        else:
+            # Neutral range (0.4-0.7): mark as synced but don't change
+            update_message_metadata(message_id=msg_id, salience_synced=1)
+            propagated += 1
+            continue
+
+        new_salience = round(max(0.0, min(1.0, new_salience)), 4)
+
+        try:
+            client.set_payload(
+                collection_name=COLLECTION_MESSAGES,
+                payload={"salience": new_salience},
+                points=[point_id],
+            )
+            update_message_metadata(message_id=msg_id, salience_synced=1)
+            propagated += 1
+        except Exception as e:
+            logger.debug("Slumber propagate: failed for %s: %s", msg_id[:12], e)
+
+    if propagated:
+        logger.info("Slumber propagate: synced %d messages", propagated)
+
+
+def _relate_batch():
+    """Create SIMILAR_TO edges in Neo4j via keyword overlap.
+
+    Finds high-quality messages with keywords and creates cross-conversation
+    SIMILAR_TO edges where keyword overlap >= 30%.
+    """
+    from db.operations import get_connection
+
+    batch_size = _get_batch_size()
+
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT mm.message_id, mm.keywords, m.conversation_id
+            FROM messages_metadata mm
+            JOIN messages m ON mm.message_id = m.id
+            WHERE mm.quality_score > 0.5
+              AND mm.keywords IS NOT NULL
+              AND mm.keywords != ''
+              AND mm.keywords != '[]'
+            ORDER BY mm.quality_score DESC
+            LIMIT ?
+        """, (batch_size,)).fetchall()
+
+    if len(rows) < 2:
+        return
+
+    try:
+        from graph.graph_service import create_edge
+    except Exception:
+        logger.debug("Slumber relate: Neo4j unavailable, skipping")
+        return
+
+    # Parse keywords for each message
+    messages = []
+    for row in rows:
+        try:
+            kw = json.loads(row["keywords"]) if row["keywords"] else []
+            if kw:
+                messages.append({
+                    "id": row["message_id"],
+                    "conv_id": row["conversation_id"],
+                    "keywords": set(kw),
+                })
+        except Exception:
+            pass
+
+    # Find cross-conversation pairs with >= 30% keyword overlap
+    related = 0
+    for i in range(len(messages)):
+        for j in range(i + 1, len(messages)):
+            a, b = messages[i], messages[j]
+            if a["conv_id"] == b["conv_id"]:
+                continue  # Same conversation — skip
+
+            overlap = a["keywords"] & b["keywords"]
+            union = a["keywords"] | b["keywords"]
+            if not union:
+                continue
+            ratio = len(overlap) / len(union)
+
+            if ratio >= 0.3:
+                try:
+                    create_edge(
+                        "Message", a["id"], "Message", b["id"], "SIMILAR_TO",
+                        {"similarity": round(ratio, 3), "shared_keywords": json.dumps(sorted(overlap))},
+                    )
+                    related += 1
+                except Exception as e:
+                    logger.debug("Slumber relate: edge failed: %s", e)
+
+    if related:
+        logger.info("Slumber relate: created %d SIMILAR_TO edges", related)
+
+
+def _prune_batch():
+    """Remove dead-weight vectors from Qdrant (SQLite retains everything).
+
+    Conditions (ALL must be true):
+    - quality_score < 0.1
+    - Qdrant salience < 0.1
+    - Never retrieved (last_retrieved is NULL)
+    - Older than slumber_prune_age_days
+    """
+    from db.operations import get_connection
+
+    # Get prune age from settings
+    prune_age_days = 7
+    try:
+        from services.settings import get_setting
+        val = get_setting("slumber_prune_age_days")
+        if val:
+            prune_age_days = int(val)
+    except Exception:
+        pass
+
+    batch_size = _get_batch_size()
+
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT mm.message_id
+            FROM messages_metadata mm
+            JOIN messages m ON mm.message_id = m.id
+            WHERE mm.quality_score IS NOT NULL
+              AND mm.quality_score < 0.1
+              AND mm.salience_synced = 1
+              AND m.created_at < datetime('now', ? || ' days')
+            LIMIT ?
+        """, (f"-{prune_age_days}", batch_size)).fetchall()
+
+    if not rows:
+        return
+
+    try:
+        from services.vector_store import _get_client, COLLECTION_MESSAGES
+        client = _get_client()
+    except Exception:
+        logger.debug("Slumber prune: Qdrant unavailable, skipping")
+        return
+
+    pruned = 0
+    for row in rows:
+        msg_id = row["message_id"]
+        point_id = msg_id[:8] + "-" + msg_id[8:12] + "-" + msg_id[12:16] + "-" + msg_id[16:20] + "-" + msg_id[20:]
+
+        try:
+            points = client.retrieve(COLLECTION_MESSAGES, ids=[point_id], with_payload=True)
+            if not points:
+                continue
+
+            payload = points[0].payload
+            salience = payload.get("salience", 0.5)
+            last_retrieved = payload.get("last_retrieved")
+
+            # All three Qdrant conditions must be true
+            if salience < 0.1 and not last_retrieved:
+                from qdrant_client.models import PointIdsList
+                client.delete(
+                    collection_name=COLLECTION_MESSAGES,
+                    points_selector=PointIdsList(points=[point_id]),
+                )
+                pruned += 1
+        except Exception as e:
+            logger.debug("Slumber prune: failed for %s: %s", msg_id[:12], e)
+
+    if pruned:
+        logger.info("Slumber prune: removed %d dead-weight vectors from Qdrant", pruned)
+
+
 def _slumber_cycle():
-    """Background thread that runs evaluation during idle periods."""
+    """Background thread: Evaluate → Propagate → Relate → Prune during idle."""
     while True:
         time.sleep(CYCLE_INTERVAL_SECONDS)
         if not _is_idle():
             continue
+
+        # Sub-cycle 1: Evaluate (score unscored messages)
         try:
             _evaluate_batch()
         except Exception as e:
-            logger.error("Slumber cycle error: %s", e)
+            logger.error("Slumber evaluate error: %s", e)
+
+        # Sub-cycle 2: Propagate (quality → Qdrant salience)
+        try:
+            _propagate_batch()
+        except Exception as e:
+            logger.debug("Slumber propagate error: %s", e)
+
+        # Sub-cycle 3: Relate (SIMILAR_TO edges via keyword overlap)
+        try:
+            _relate_batch()
+        except Exception as e:
+            logger.debug("Slumber relate error: %s", e)
+
+        # Sub-cycle 4: Prune (remove dead-weight from Qdrant)
+        try:
+            _prune_batch()
+        except Exception as e:
+            logger.debug("Slumber prune error: %s", e)
 
 
 def start_slumber():

@@ -171,6 +171,20 @@ def _handle_send(message, history, conv_id, provider, model,
             except Exception:
                 pass  # Graceful degradation — usage signal is non-critical
 
+            # Live memory: synchronous embed + fire-and-forget INFORMED_BY edges
+            try:
+                from atlas.on_write import on_message_write
+                on_message_write(
+                    message_id=msg_id,
+                    conversation_id=conv_id,
+                    user_prompt=message,
+                    model_response=clean_response or raw_response,
+                    provider=provider, model=model,
+                    rag_hits=rag_metrics.get("scores", []),
+                )
+            except Exception:
+                pass  # Graceful degradation — embed-on-write is non-critical
+
         # Accumulate cumulative tokens
         prev_cum = metrics.get("cumulative_tokens", dict(_EMPTY_TOKEN_COUNTS))
         new_cum = {
@@ -259,20 +273,24 @@ def build_chat_page():
                     f"Avg salience: **{avg_sal:.3f}**"
                 )
 
-                # Per-hit details (collapsed)
+                # RAG Provenance (collapsed)
                 scores = rag.get("scores", [])
                 if scores:
-                    with gr.Accordion("Hit Details", open=False):
+                    with gr.Accordion("RAG Provenance", open=False):
                         for i, s in enumerate(scores):
-                            src = s.get("source", "?")
-                            title = (s.get("title", "") or "untitled")[:30]
-                            gr.Markdown(
-                                f"**{i+1}.** {title}\n\n"
-                                f"  {src} — rerank: {s.get('rerank_score', 0):.3f}, "
-                                f"sal: {s.get('salience', 0):.3f}, "
-                                f"ann: {s.get('ann_score', 0):.3f}",
-                                key=f"hit-{i}",
+                            title = (s.get("title", "") or "untitled")[:40]
+                            conv_title = s.get("source_conversation_title", "")
+                            created = (s.get("created_at", "") or "")[:10]
+                            line = f"**{i+1}.** {title}"
+                            if conv_title:
+                                line += f"\n\n  From: *{conv_title[:50]}*"
+                            if created:
+                                line += f" ({created})"
+                            line += (
+                                f"\n\n  rerank: {s.get('rerank_score', 0):.3f}, "
+                                f"sal: {s.get('salience', 0):.3f}"
                             )
+                            gr.Markdown(line, key=f"hit-{i}")
 
                 # Latency
                 timings = metrics.get("timings", {})

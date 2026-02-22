@@ -15,6 +15,7 @@ services:
       - ollama
       - vllm-rerank
       - janatpmp-qdrant
+      - neo4j
     restart: unless-stopped
     networks:
       - janatpmp_network
@@ -81,12 +82,28 @@ services:
     networks:
       - janatpmp_network
 
+  neo4j:
+    image: neo4j:2026.01.4-community-ubi9
+    container_name: janatpmp-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    environment:
+      - NEO4J_AUTH=neo4j/janatpmp_graph
+    restart: unless-stopped
+    networks:
+      - janatpmp_network
+
 volumes:
   ollama_data:
     external: true
   huggingface_cache:
     external: true
   janatpmp_qdrant_data:
+    driver: local
+  neo4j_data:
     driver: local
 
 networks:

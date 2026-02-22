@@ -1,12 +1,13 @@
 # JANATPMP — Janat Project Management Platform
 
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
-![Gradio 6.5.1](https://img.shields.io/badge/Gradio-6.5.1-orange?logo=gradio&logoColor=white)
+![Gradio 6.6.0](https://img.shields.io/badge/Gradio-6.6.0-orange?logo=gradio&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-48%20Tools-blueviolet)
+![MCP](https://img.shields.io/badge/MCP-52%20Tools-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![Neo4j](https://img.shields.io/badge/Neo4j-2026.01.4-008CC1?logo=neo4j&logoColor=white)
 
-A **strategic command center** for solo architects and engineers working with AI partners. JANATPMP gives your AI assistants persistent memory — project state, task queues, documents, conversation history, and semantic search — all readable and writable via [MCP (Model Context Protocol)](https://modelcontextprotocol.io/). Conversations become durable, searchable knowledge. Context survives session boundaries.
+A **strategic command center** for solo architects and engineers working with AI partners. JANATPMP gives your AI assistants persistent memory — project state, task queues, documents, conversation history, semantic search, and a knowledge graph — all readable and writable via [MCP (Model Context Protocol)](https://modelcontextprotocol.io/). Every message fans out to three stores (SQLite, Qdrant, Neo4j) — the **Triad of Memory**. Conversations become durable, searchable, graph-navigable knowledge. Context survives session boundaries.
 
 Built by and for [The Janat Initiative](https://janatinitiative.org), powering consciousness architecture research across multiple domains.
 
@@ -19,10 +20,11 @@ Built by and for [The Janat Initiative](https://janatinitiative.org), powering c
 ```mermaid
 graph TB
     subgraph Docker Compose
-        Core[JANATPMP Core<br/>Gradio 6.5.1<br/>No GPU · Port 7860]
+        Core[JANATPMP Core<br/>Gradio 6.6.0<br/>No GPU · Port 7860]
         Ollama[Ollama<br/>Chat + Embedding<br/>GPU · Port 11435]
         vLLM[vLLM Reranker<br/>Qwen3-Reranker-0.6B<br/>GPU · Port 8002]
         Qdrant[Qdrant<br/>Vector Search<br/>Port 6343]
+        Neo4j[Neo4j<br/>Knowledge Graph<br/>Port 7474]
     end
 
     SQLite[(SQLite<br/>WAL + FTS5)]
@@ -30,6 +32,7 @@ graph TB
     Core --> Ollama
     Core --> vLLM
     Core --> Qdrant
+    Core --> Neo4j
 
     Claude[Claude Desktop<br/>via MCP] --> Core
     Browser[Web Browser<br/>Desktop / Mobile] --> Core
@@ -39,21 +42,25 @@ graph TB
 
 ```mermaid
 graph TB
-    MCP[MCP Tools<br/>48 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
+    MCP[MCP Tools<br/>52 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
     UI[Gradio UI] --> DB
     API[REST API] --> DB
     DB --> SQLite[(SQLite)]
-    DB --> Qdrant[(Qdrant)]
+    DB -->|on_write| Qdrant[(Qdrant)]
+    DB -->|CDC consumer| Neo4j[(Neo4j)]
+    DB -->|on_write| Neo4j
 ```
 
-One set of functions in `db/operations.py` and `db/chat_operations.py` serves all three surfaces — UI event listeners, REST API, and MCP tool generation — a single source of truth for every operation.
+Every mutation fans out to three stores via the **triple-write pipeline**: SQLite (source of truth), Qdrant (semantic retrieval via `atlas/on_write.py`), Neo4j (graph navigation via `graph/cdc_consumer.py`). One set of functions serves all surfaces — UI, REST API, and MCP.
 
 ---
 
 ## Features
 
-- **48 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, telemetry, settings, backups)
-- **Sovereign Chat** — dedicated chat page (`/chat`) with real-time metrics sidebar: RAG retrieval stats, latency breakdown, token counts, salience scores
+- **52 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, settings, backups)
+- **Triple-write pipeline** — every message fans out to SQLite, Qdrant, and Neo4j synchronously; immediately retrievable on the next turn
+- **Knowledge graph** — Neo4j with 7 entity types, CDC consumer for structural edges, INFORMED_BY provenance tracing, SIMILAR_TO cross-conversation linking
+- **Sovereign Chat** — dedicated chat page (`/chat`) with real-time metrics sidebar: RAG provenance, latency breakdown, token counts, salience scores
 - **Multi-provider chat** with triplet message persistence (Anthropic, Gemini, Ollama/local models)
 - **Thinking mode** — chain-of-thought captured separately via Ollama `think=True`, stored as `model_reasoning` in triplet schema for future fine-tuning
 - **Reasoning token decomposition** — proportional split of completion tokens into reasoning vs response KPIs, even when providers don't report them separately
@@ -61,7 +68,7 @@ One set of functions in `db/operations.py` and `db/chat_operations.py` serves al
 - **Usage-based salience** — keyword overlap heuristic estimates which RAG hits the model actually used, feeding salience boosts/decays back to Qdrant
 - **RAG pipeline** — Qwen3-Embedding-0.6B embeddings (1024-dim, Matryoshka) via Ollama, injected into chat context per-message
 - **Cognitive telemetry** — per-turn timing, frozen RAG snapshots, and token counts persisted to `messages_metadata` for longitudinal analysis
-- **Slumber Cycle** — background daemon evaluates reasoning quality and extracts keywords during idle periods, building the dataset for future fine-tuning
+- **Slumber Cycle** — 4-stage background daemon (Evaluate, Propagate, Relate, Prune) evaluates quality, bridges quality to Qdrant salience, creates cross-conversation graph edges, and removes dead-weight vectors
 - **Content ingestion** — parsers for Google AI Studio, quest files, markdown, and text with SHA-256 deduplication
 - **Dynamic domain management** — domains are first-class database entities, creatable via MCP without code changes
 - **Dynamic model discovery** — Ollama models fetched live via `/api/tags`, no hardcoded model lists
@@ -70,7 +77,7 @@ One set of functions in `db/operations.py` and `db/chat_operations.py` serves al
 - **Full-text search** via SQLite FTS5 across items, documents, and conversation messages
 - **Hybrid multipage UI** — monolith dashboard (`/`) with dual collapsible sidebars + Sovereign Chat (`/chat`) via `demo.route()`
 - **Auto-context injection** — every chat message receives a live snapshot of active projects and pending tasks
-- **Change Data Capture** outbox for future graph database sync
+- **Change Data Capture** outbox with background Neo4j sync consumer
 
 ---
 
@@ -78,14 +85,15 @@ One set of functions in `db/operations.py` and `db/chat_operations.py` serves al
 
 | Component | Technology |
 |-----------|-----------|
-| Framework | Gradio 6.5.1 (Blocks + multipage routing, MCP server mode) |
+| Framework | Gradio 6.6.0 (Blocks + multipage routing, MCP server mode) |
 | Language | Python 3.14 |
 | Database | SQLite (WAL mode, FTS5 full-text search) |
-| Vector DB | Qdrant — semantic search over documents and messages |
+| Vector DB | Qdrant — semantic search over documents and messages (1024-dim cosine) |
+| Graph DB | Neo4j 2026.01.4 — knowledge graph with CDC sync + INFORMED_BY provenance |
 | Embeddings | Qwen3-Embedding-0.6B via Ollama (1024-dim, Matryoshka) |
 | Reranking | Qwen3-Reranker-0.6B FP16 via vLLM sidecar (0-1 probability scores) |
 | Chat LLM | nemotron-3-nano Q4_K_M via Ollama (with thinking mode) |
-| Container | Docker Compose — 4 services: core (no GPU), Ollama (GPU), vLLM (GPU), Qdrant |
+| Container | Docker Compose — 5 services: core (no GPU), Ollama (GPU), vLLM (GPU), Qdrant, Neo4j |
 | Data Display | Pandas DataFrames |
 
 ### GPU Budget (RTX 5090, 32 GB)
@@ -134,6 +142,7 @@ Once running:
 | MCP endpoint | http://localhost:7860/gradio_api/mcp/sse |
 | API docs | http://localhost:7860/gradio_api/docs |
 | Qdrant dashboard | http://localhost:6343/dashboard |
+| Neo4j browser | http://localhost:7474 |
 
 The UI is accessible from any device on the same LAN (mobile, tablet, etc.).
 
@@ -169,19 +178,24 @@ JANATPMP/
 │   ├── schema.sql             # Database DDL
 │   ├── operations.py          # 26 CRUD + lifecycle functions
 │   ├── chat_operations.py     # Conversation + message + metadata CRUD
-│   └── migrations/            # Versioned schema migrations (0.3.0–0.5.0)
+│   └── migrations/            # Versioned schema migrations (0.3.0–0.6.0)
 ├── atlas/                     # ATLAS — HTTP client layer for model services
-│   ├── config.py              # Service URLs, model identifiers, dimensions, salience constants
+│   ├── config.py              # Service URLs, model identifiers, Neo4j + salience constants
 │   ├── embedding_service.py   # Qwen3-Embedding-0.6B via Ollama /v1/embeddings
 │   ├── reranking_service.py   # Qwen3-Reranker-0.6B via vLLM /v1/score
 │   ├── memory_service.py      # Salience write-back to Qdrant (retrieval + usage signals)
 │   ├── usage_signal.py        # Keyword overlap heuristic for usage-based salience (R12)
+│   ├── on_write.py            # Triple-write: sync embed + fire-and-forget graph edges (R13)
 │   └── pipeline.py            # Two-stage search orchestrator
+├── graph/                     # Knowledge graph layer — Neo4j (R13)
+│   ├── schema.py              # Idempotent Neo4j constraints + indexes
+│   ├── graph_service.py       # Neo4j CRUD + MCP tools (query, neighbors, stats)
+│   └── cdc_consumer.py        # Background CDC poller + backfill MCP tool
 ├── services/
 │   ├── log_config.py          # SQLite log handler + setup_logging()
 │   ├── chat.py                # Multi-provider chat with tool use + thinking mode
 │   ├── turn_timer.py          # Thread-local TurnTimer context manager (R12)
-│   ├── slumber.py             # Slumber Cycle — background quality evaluation (R12)
+│   ├── slumber.py             # Slumber Cycle — 4-stage background daemon (R12+R13)
 │   ├── settings.py            # Settings registry with validation
 │   ├── claude_export.py       # Claude Export ingestion service
 │   ├── claude_import.py       # Claude JSON → triplet messages
@@ -190,7 +204,7 @@ JANATPMP/
 │   ├── bulk_embed.py          # Batch embed via Ollama with checkpointing
 │   └── ingestion/             # Content ingestion parsers
 ├── Dockerfile                 # Python 3.14-slim (no PyTorch, no GPU)
-├── docker-compose.yml         # 4-container orchestration
+├── docker-compose.yml         # 5-container orchestration
 ├── Janat_Brand_Guide.md       # Design system (colors, fonts)
 └── CLAUDE.md                  # Development guidelines for AI assistants
 ```
@@ -199,7 +213,7 @@ JANATPMP/
 
 ## MCP Integration
 
-JANATPMP exposes **48 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
+JANATPMP exposes **52 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
 
 ```
 http://localhost:7860/gradio_api/mcp/sse
@@ -219,6 +233,7 @@ Full API documentation is available at `/gradio_api/docs` while the server is ru
 | Conversations | `create_conversation`, `list_conversations`, `search_conversations`, `add_message`, `get_messages`, ... | Chat history with triplet schema |
 | Telemetry | `add_message_metadata`, `get_message_metadata` | Per-turn timing, RAG snapshots, quality scores |
 | Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains`, `recreate_collections` | ATLAS two-stage search, bulk embedding, collection management |
+| Graph | `graph_query`, `graph_neighbors`, `graph_stats`, `backfill_graph` | Read-only Cypher queries, node traversal, graph statistics, CDC backfill |
 | System | `get_stats`, `get_schema_info`, `backup_database`, `restore_database`, `list_backups`, `reset_database` | Database administration |
 | Import | `import_conversations_json` | Claude conversation JSON import |
 
@@ -282,7 +297,7 @@ Both sidebars collapse independently on mobile, leaving center content full-widt
 
 ## Database Schema
 
-Ten core tables with FTS5 full-text search and a CDC outbox for future sync:
+Ten core tables with FTS5 full-text search and a CDC outbox synced to Neo4j:
 
 - **domains** — First-class organizational entity. 13 seeded domains (5 active, 8 inactive). Managed via MCP — no code deploys needed to add new domains.
 - **items** — Projects, features, books, chapters. Hierarchical via `parent_id`. Domain validated against `domains` table.
@@ -293,7 +308,7 @@ Ten core tables with FTS5 full-text search and a CDC outbox for future sync:
 - **messages** — Triplet schema: `user_prompt` + `model_reasoning` + `model_response`. Designed for fine-tuning data extraction. NULL reasoning = thinking not captured/not applicable.
 - **messages_metadata** — Cognitive telemetry companion to messages. Per-turn timing (total/RAG/inference ms), frozen RAG snapshots, keywords, quality scores (0.0-1.0, populated by Slumber Cycle).
 - **settings** — Key-value config with base64 obfuscation for secrets.
-- **cdc_outbox** — Change Data Capture for future graph database synchronization.
+- **cdc_outbox** — Change Data Capture with background Neo4j sync via CDC consumer daemon.
 
 ---
 
@@ -324,12 +339,11 @@ feature/phase{X}-{description}  # legacy naming
 
 ## Future
 
-JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. Planned integrations:
+JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is now operational — every message fans out to all three stores via the triple-write pipeline. Planned next steps:
 
-- **Neo4j** — Graph database for entity relationship traversal
-- **HuggingFace tokenizers** — Model-specific tokenization for exact token counts (fine-tuning data prep, context window management)
-
-Together with the existing SQLite and Qdrant, this forms the **Triad of Memory** (SQL + Vector + Graph). The CDC outbox table already provides forward-compatibility for this evolution.
+- **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY and SIMILAR_TO edges
+- **Temporal decay curves** — time-weighted salience that naturally deprioritizes stale knowledge
+- **HuggingFace tokenizers** — Model-specific tokenization for exact token counts (fine-tuning data prep)
 
 ---
 
@@ -339,9 +353,10 @@ Built by **Mat Gallagher** — [Janat, LLC](https://janat.org) / [The Janat Init
 
 | | |
 |---|---|
-| UI Framework | [Gradio](https://gradio.app) 6.5.1 |
+| UI Framework | [Gradio](https://gradio.app) 6.6.0 |
 | Chat LLM | [Ollama](https://ollama.ai) + NVIDIA Nemotron-3-Nano |
 | Embeddings | [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) via Ollama |
 | Reranking | [Qwen3-Reranker-0.6B](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B) via vLLM |
 | Vector Search | [Qdrant](https://qdrant.tech) |
+| Knowledge Graph | [Neo4j](https://neo4j.com) 2026.01.4 |
 | Persistence | [SQLite](https://sqlite.org) |

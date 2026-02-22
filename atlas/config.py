@@ -5,6 +5,15 @@
 OLLAMA_EMBED_URL = "http://ollama:11434"
 # Reranking runs through dedicated vLLM sidecar
 VLLM_RERANK_URL = "http://janatpmp-vllm-rerank:8000"
+# Neo4j graph database
+NEO4J_URI = "bolt://janatpmp-neo4j:7687"
+NEO4J_USER = "neo4j"
+NEO4J_PASSWORD = "janatpmp_graph"
+NEO4J_DATABASE = "neo4j"
+
+# --- CDC consumer ---
+CDC_POLL_INTERVAL = 5    # Seconds between CDC polling cycles
+CDC_BATCH_SIZE = 50      # Max rows per poll
 
 # --- Model identifiers ---
 EMBEDDING_MODEL = "qwen3-embedding:0.6b-compact"

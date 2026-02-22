@@ -417,6 +417,7 @@ def update_message_metadata(
     labels: str = "",
     quality_score: float = -1.0,
     rag_scores: str = "",
+    salience_synced: int = -1,
 ) -> str:
     """Update metadata fields for a message.
 
@@ -426,6 +427,7 @@ def update_message_metadata(
         labels: JSON array of labels (empty = no change)
         quality_score: Quality score 0.0-1.0 (negative = no change)
         rag_scores: Updated JSON array of per-hit scores (empty = no change)
+        salience_synced: Set to 1 after Slumber propagates quality to Qdrant salience (negative = no change)
 
     Returns:
         Success or error message
@@ -446,6 +448,9 @@ def update_message_metadata(
         if rag_scores:
             updates.append("rag_scores = ?")
             params.append(rag_scores)
+        if salience_synced >= 0:
+            updates.append("salience_synced = ?")
+            params.append(salience_synced)
         if not updates:
             return "No updates provided"
         params.append(message_id)

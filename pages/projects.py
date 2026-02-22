@@ -61,6 +61,7 @@ def build_page():
     _initial_conv_id, _initial_chat_history = _load_most_recent_chat()
     chat_history = gr.State(list(_initial_chat_history))
     active_conversation_id = gr.State(_initial_conv_id)
+    sidebar_conv_id = gr.State(_initial_conv_id or "")
     conversations_state = gr.State(list_conversations(limit=30))
     selected_knowledge_conv_id = gr.State("")
 
@@ -1025,8 +1026,8 @@ def build_page():
     # === CHAT WIRING ===
     chat_input.submit(
         _handle_chat,
-        inputs=[chat_input, chat_history],
-        outputs=[chatbot, chat_history, chat_input],
+        inputs=[chat_input, chat_history, sidebar_conv_id],
+        outputs=[chatbot, chat_history, chat_input, sidebar_conv_id],
         api_visibility="private",
     )
 

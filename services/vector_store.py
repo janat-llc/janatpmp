@@ -50,19 +50,29 @@ def _get_client() -> QdrantClient:
 
 
 def ensure_collections():
-    """Create collections if they don't exist. Safe to call multiple times."""
+    """Create collections if they don't exist. Auto-recreate on dimension mismatch."""
     client = _get_client()
     existing = [c.name for c in client.get_collections().collections]
 
     for name in [COLLECTION_DOCUMENTS, COLLECTION_MESSAGES]:
-        if name not in existing:
+        if name in existing:
+            info = client.get_collection(name)
+            actual_dim = info.config.params.vectors.size
+            if actual_dim != VECTOR_DIM:
+                logger.warning(
+                    "Collection %s has %d-dim but expected %d. Recreating (re-run bulk embed).",
+                    name, actual_dim, VECTOR_DIM,
+                )
+                client.delete_collection(name)
+                client.create_collection(
+                    collection_name=name,
+                    vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
+                )
+        else:
             logger.info("Creating Qdrant collection: %s", name)
             client.create_collection(
                 collection_name=name,
-                vectors_config=VectorParams(
-                    size=VECTOR_DIM,
-                    distance=Distance.COSINE,
-                ),
+                vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
             )
 
 

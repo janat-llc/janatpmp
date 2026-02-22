@@ -247,10 +247,14 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
             text = r.get("text", "")[:500]
             context_parts.append(f"[{source}] {title}: {text}")
             used_scores.append({
+                "id": r.get("id", ""),
                 "source": source, "title": title,
                 "rerank_score": rerank or 0.0,
                 "salience": r.get("salience", 0.0),
                 "ann_score": r.get("score", 0.0),
+                "source_conversation_id": r.get("conversation_id", ""),
+                "source_conversation_title": r.get("conv_title", ""),
+                "created_at": r.get("created_at", ""),
             })
 
         metrics["hits_used"] = len(used_scores)

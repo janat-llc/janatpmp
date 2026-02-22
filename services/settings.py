@@ -117,6 +117,7 @@ SETTINGS_REGISTRY = {
     "slumber_idle_threshold":  ("300", False, "system", _validate_positive_int),
     "slumber_batch_size":      ("20",  False, "system", _validate_positive_int),
     "slumber_evaluator":       ("heuristic", False, "system", None),
+    "slumber_prune_age_days":  ("7",   False, "system", _validate_positive_int),
 }
 
 # Backward-compat alias

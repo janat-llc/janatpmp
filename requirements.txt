@@ -5,3 +5,4 @@ google-genai
 openai
 qdrant-client==1.16.2
 httpx
+neo4j>=6.0

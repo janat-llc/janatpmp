@@ -12,10 +12,11 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 ## Tech Stack
 
 - **Python** 3.14+
-- **Gradio** 6.5.1 with MCP support (`gradio[mcp]==6.5.1`)
+- **Gradio** 6.6.0 with MCP support (`gradio[mcp]==6.6.0`)
 - **SQLite3** for persistence (WAL mode, FTS5 full-text search)
 - **Pandas** for data display
 - **Qdrant** vector database (semantic search, 1024-dim cosine collections)
+- **Neo4j** 2026.01.4 graph database (entity relationships, knowledge graph)
 - **Ollama** for chat LLM + embedding (Qwen3-Embedding-0.6B via `/v1/embeddings`)
 - **vLLM** sidecar for cross-encoder reranking (Qwen3-Reranker-0.6B via `/v1/score`)
 
@@ -50,18 +51,25 @@ JANATPMP/
 │   │   ├── 0.4.0_app_logs.sql
 │   │   ├── 0.4.1_messages_fts_update.sql
 │   │   ├── 0.4.2_domains_table.sql
-│   │   └── 0.5.0_messages_metadata.sql
+│   │   ├── 0.5.0_messages_metadata.sql
+│   │   └── 0.6.0_salience_synced.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups
 │   └── __init__.py
 ├── atlas/                    # ATLAS model infrastructure (R9, offloaded R10)
 │   ├── __init__.py
-│   ├── config.py             # Model names, dimensions, service URLs, salience constants
+│   ├── config.py             # Model names, dimensions, service URLs, Neo4j + salience constants
 │   ├── embedding_service.py  # Qwen3-Embedding-0.6B via Ollama HTTP (OpenAI client)
 │   ├── reranking_service.py  # Qwen3-Reranker-0.6B via vLLM HTTP (httpx client)
 │   ├── memory_service.py     # Salience write-back to Qdrant payloads
 │   ├── usage_signal.py       # Keyword overlap heuristic for usage-based salience (R12)
+│   ├── on_write.py           # On-write pipeline: sync embed + fire-and-forget graph edges (R13)
 │   └── pipeline.py           # Two-stage search: ANN → rerank → salience
+├── graph/                    # Knowledge graph layer — Neo4j (R13)
+│   ├── __init__.py
+│   ├── schema.py             # Idempotent Neo4j constraints + indexes
+│   ├── graph_service.py      # Neo4j CRUD + MCP tools (query, neighbors, stats)
+│   └── cdc_consumer.py       # Background CDC poller + backfill_graph MCP tool
 ├── services/
 │   ├── __init__.py
 │   ├── log_config.py         # SQLiteLogHandler + setup_logging() + get_logs()
@@ -92,7 +100,7 @@ JANATPMP/
 ├── requirements.txt          # Python dependencies (pinned)
 ├── pyproject.toml            # Project metadata
 ├── Dockerfile                # Container image (Python 3.14-slim, no GPU)
-├── docker-compose.yml        # Container orchestration (core, ollama, vllm-rerank, qdrant)
+├── docker-compose.yml        # Container orchestration (core, ollama, vllm-rerank, qdrant, neo4j)
 ├── Janat_Brand_Guide.md      # Brand colors, fonts, design system
 └── CLAUDE.md                 # This file
 ```
@@ -283,9 +291,9 @@ Settings use a `SETTINGS_REGISTRY` dict where each key maps to
 
 ### CDC Outbox Retention
 
-The `cdc_outbox` table captures all database mutations for future sync to Qdrant/Neo4j.
-`cleanup_cdc_outbox(days=90)` in `db/operations.py` deletes processed entries older than
-90 days. Called on startup after `init_database()`.
+The `cdc_outbox` table captures all database mutations and syncs them to Neo4j via the
+CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where both
+`processed_qdrant` and `processed_neo4j` are 1 and older than 90 days.
 
 ## Database Schema (db/schema.sql)
 
@@ -434,13 +442,21 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
 - **MCP:** Enabled via `GRADIO_MCP_SERVER=True` environment variable
 - **CMD:** `python app.py`
 - **Container names:** `janatpmp-core` (app), `janatpmp-ollama` (LLM + embed),
-  `janatpmp-vllm-rerank` (reranker), `janatpmp-qdrant` (vector DB)
+  `janatpmp-vllm-rerank` (reranker), `janatpmp-qdrant` (vector DB), `janatpmp-neo4j` (graph DB)
   - Core has NO GPU — all model inference offloaded to Ollama and vLLM sidecars
 - **Qdrant:** `janatpmp-qdrant` container on ports 6343:6333/6344:6334
   - Internal URL: `http://janatpmp-qdrant:6333` (Docker DNS)
   - External URL: `http://localhost:6343` (host access, dashboard at `/dashboard`)
   - Volume: `janatpmp_qdrant_data` (external)
-  - Collections: `janatpmp_documents` (2560-dim), `janatpmp_messages` (2560-dim)
+  - Collections: `janatpmp_documents` (1024-dim), `janatpmp_messages` (1024-dim)
+  - Auto-recreates collections on dimension mismatch at startup
+- **Neo4j:** `janatpmp-neo4j` container on ports 7474 (browser) / 7687 (Bolt)
+  - Internal URL: `bolt://janatpmp-neo4j:7687` (Docker DNS)
+  - External URL: `http://localhost:7474` (Neo4j Browser)
+  - Volume: `neo4j_data` (local)
+  - Auth: `neo4j/janatpmp_graph`
+  - Node labels: Item, Task, Document, Conversation, Message, Domain, MessageMetadata
+  - Edge types: IN_DOMAIN, TARGETS_ITEM, BELONGS_TO, FOLLOWS, DESCRIBES, INFORMED_BY, SIMILAR_TO
 - **Ollama:** `janatpmp-ollama` container on port 11435, shares `ollama_data` external volume
   - Internal URL: `http://ollama:11434/v1` (Docker DNS)
   - External URL: `http://localhost:11435` (host access for testing)
@@ -563,7 +579,8 @@ demo.launch(mcp_server=True)
 
 All 26 functions in `db/operations.py` (including 4 domain CRUD) plus 10 chat operations
 from `db/chat_operations.py` (including 2 metadata CRUD) plus 6 vector/embedding operations
-from `services/` plus 1 import operation are exposed via `gr.api()` (48 total MCP tools).
+from `services/` plus 1 import operation plus 4 graph operations from `graph/` are exposed
+via `gr.api()` (52 total MCP tools).
 They MUST have Google-style docstrings with Args/Returns for MCP tool generation.
 
 ### Common Mistakes to Avoid
@@ -800,18 +817,61 @@ same tokenizer = consistent chars-per-token ratio). Fallback: ~4 chars/token est
 - Runs inline after each turn. Graceful degradation if Qdrant down.
 - Config: `SALIENCE_USAGE_RATE=0.03`, `SALIENCE_DECAY_RATE=0.01` in `atlas/config.py`
 
-### Slumber Cycle
+### Slumber Cycle (4 Sub-cycles)
 
 - `services/slumber.py` — daemon thread activates after idle threshold (default 5 min)
-- Batch-evaluates messages without quality scores via heuristic scoring
-- Extracts TF-based keywords, updates `messages_metadata.keywords` and `quality_score`
 - `touch_activity()` called in all chat handlers to reset idle timer
-- Settings: `slumber_idle_threshold`, `slumber_batch_size`, `slumber_evaluator` (system category)
+- Settings: `slumber_idle_threshold`, `slumber_batch_size`, `slumber_evaluator`, `slumber_prune_age_days`
 - Started at app boot in `app.py` via `start_slumber()`
+- Four sub-cycles run in sequence during each idle period:
+
+| Sub-cycle | Function | Purpose |
+|-----------|----------|---------|
+| Evaluate | `_evaluate_batch()` | Score unscored messages via heuristic, extract TF keywords |
+| Propagate | `_propagate_batch()` | Bridge `quality_score` → Qdrant `salience` (decay garbage, boost quality) |
+| Relate | `_relate_batch()` | Create SIMILAR_TO edges in Neo4j via cross-conversation keyword overlap |
+| Prune | `_prune_batch()` | Remove dead-weight vectors from Qdrant (quality < 0.1, salience < 0.1, never retrieved, older than N days) |
+
+Propagate mapping: quality < 0.15 → ×0.3 hard decay; 0.15-0.4 → ×0.7 soft decay;
+0.4-0.7 → neutral; > 0.7 → +0.1 boost. Prune never deletes from SQLite — only Qdrant vectors.
+
+## Phase R13: Live Memory — Triple-Write Pipeline + Temporal Graph
+
+**The Triad of Memory is operational.** Every new message fans out to three stores:
+SQLite (source of truth), Qdrant (semantic retrieval), Neo4j (graph navigation).
+
+### Triple-Write Pipeline (`atlas/on_write.py`)
+
+Called after every `add_message()` across all three chat surfaces (Sovereign Chat,
+monolith Chat tab, sidebar quick-chat):
+
+1. **Embed (synchronous, ~100-300ms):** Combines user prompt + model response, embeds via
+   Ollama, upserts to Qdrant with temporal payload (conversation_id, conv_title, sequence,
+   created_at, provider, model, salience=0.5). Ensures immediate retrievability next turn.
+2. **Relate (fire-and-forget):** Creates INFORMED_BY edges in Neo4j linking the message to
+   its RAG sources. Only INFORMED_BY — structural edges (BELONGS_TO, FOLLOWS) handled by CDC.
+
+### Knowledge Graph (`graph/`)
+
+- **Neo4j 2026.01.4** with 7 uniqueness constraints and 3 range indexes
+- **CDC consumer** daemon polls `cdc_outbox WHERE processed_neo4j = 0`, syncs all 8 entity
+  types (item, task, document, conversation, message, domain, message_metadata, relationship)
+- **4 MCP tools:** `graph_query` (read-only Cypher), `graph_neighbors`, `graph_stats`, `backfill_graph`
+- Config in `atlas/config.py`: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, CDC_POLL_INTERVAL, CDC_BATCH_SIZE
+- **Edge separation:** CDC consumer creates structural edges (BELONGS_TO, FOLLOWS, IN_DOMAIN,
+  TARGETS_ITEM, DESCRIBES). on_write creates INFORMED_BY edges (requires rag_hits).
+  Slumber Relate creates SIMILAR_TO edges (keyword overlap).
+
+### RAG Provenance
+
+`_build_rag_context()` enriches `used_scores` with `source_conversation_id`,
+`source_conversation_title`, and `created_at` from Qdrant payloads. The Sovereign Chat
+left sidebar displays "RAG Provenance" — each hit shows its source conversation title,
+date, and relevance scores.
 
 ## Future Architecture (not in scope, for context only)
 
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
-architecture. Future integrations include Neo4j (graph database) joining Qdrant (vector search,
-now implemented) and SQLite forming a "Triad of Memory" (SQL + Vector + Graph). The CDC outbox
-table in the schema provides forward-compatibility for this evolution.
+architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is now operational — the
+triple-write pipeline keeps all three stores in sync. Future work: advanced graph traversal
+for multi-hop reasoning, temporal decay curves, and cross-session continuity.
