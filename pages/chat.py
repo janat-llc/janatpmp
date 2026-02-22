@@ -78,6 +78,17 @@ def _handle_send(message, history, conv_id, provider, model,
 
         reasoning, clean_response = parse_reasoning(raw_response)
 
+        # Estimate reasoning tokens if provider didn't report them
+        # (Ollama/Nemotron emits <think> blocks but doesn't count them separately)
+        if reasoning and token_counts.get("reasoning", 0) == 0:
+            est_reasoning = max(1, len(reasoning) // 4)  # ~4 chars per token
+            token_counts["reasoning"] = est_reasoning
+            token_counts["total"] = (
+                token_counts.get("prompt", 0)
+                + est_reasoning
+                + token_counts.get("response", 0)
+            )
+
         # Build separate display and API histories
         display_history = [dict(m) for m in updated]
         api_history = [dict(m) for m in updated]
