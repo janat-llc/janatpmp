@@ -422,12 +422,95 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
         if not context_parts:
             return "", metrics
 
-        context = "\n\n---\nRelevant context from knowledge base:\n" + "\n\n".join(context_parts) + "\n---\n"
+        raw_context = "\n\n---\nRelevant context from knowledge base:\n" + "\n\n".join(context_parts) + "\n---\n"
+
+        # Synthesize via Gemini Flash-Lite if configured — compresses raw
+        # chunks into a coherent context package that the chat model can
+        # actually use. Falls back to raw chunks if unavailable.
+        context = _synthesize_rag_context(user_message, raw_context, context_parts)
         metrics["context_text"] = context
+        metrics["raw_context_text"] = raw_context
+        metrics["synthesized"] = (context != raw_context)
         return context, metrics
     except Exception as e:
         logger.debug("RAG context unavailable: %s", e)
         return "", metrics  # Graceful degradation if Qdrant is down
+
+
+def _synthesize_rag_context(user_message: str, raw_context: str, context_parts: list[str]) -> str:
+    """Use Gemini Flash-Lite to synthesize raw RAG chunks into coherent context.
+
+    Takes scattered RAG results and produces a focused, coherent knowledge
+    summary that the chat model can actually use. This solves the problem of
+    small local models being unable to extract answers from raw chunked context.
+
+    Falls back to raw_context if:
+    - No synthesizer API key configured
+    - Gemini API call fails
+    - Synthesizer is disabled (empty model setting)
+
+    Args:
+        user_message: The user's question (provides synthesis focus).
+        raw_context: The raw chunk-based context string (fallback).
+        context_parts: Individual chunk strings for the synthesis prompt.
+
+    Returns:
+        Synthesized context string, or raw_context on fallback.
+    """
+    api_key = get_setting("rag_synthesizer_api_key")
+    model = get_setting("rag_synthesizer_model")
+    if not api_key or not api_key.strip() or not model or not model.strip():
+        return raw_context
+
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key.strip())
+
+        synthesis_prompt = (
+            "You are a knowledge synthesis engine. Your job is to read the retrieved "
+            "knowledge chunks below and produce a clear, coherent summary that directly "
+            "addresses the user's question. Include ALL relevant facts, names, dates, "
+            "numbers, and details from the chunks. Do not add information that isn't in "
+            "the chunks. If the chunks don't contain relevant information, say so.\n\n"
+            f"USER QUESTION: {user_message}\n\n"
+            "RETRIEVED KNOWLEDGE CHUNKS:\n"
+        )
+        for i, part in enumerate(context_parts):
+            synthesis_prompt += f"\n--- Chunk {i+1} ---\n{part}\n"
+
+        synthesis_prompt += (
+            "\n--- END OF CHUNKS ---\n\n"
+            "Now synthesize the above into a coherent knowledge briefing that "
+            "directly answers the user's question. Be thorough — include every "
+            "relevant detail from the chunks."
+        )
+
+        response = client.models.generate_content(
+            model=model,
+            contents=[types.Content(
+                role="user",
+                parts=[types.Part.from_text(synthesis_prompt)],
+            )],
+            config=types.GenerateContentConfig(
+                temperature=0.1,  # Low temperature for factual synthesis
+                max_output_tokens=4096,
+            ),
+        )
+
+        synthesis = response.text
+        if synthesis and len(synthesis.strip()) > 50:
+            logger.info("RAG synthesis: %d chunks → %d char summary via %s",
+                        len(context_parts), len(synthesis), model)
+            return f"\n\n---\nSynthesized knowledge (from {len(context_parts)} sources):\n{synthesis.strip()}\n---\n"
+        else:
+            logger.debug("RAG synthesis produced empty/short result, using raw context")
+            return raw_context
+
+    except Exception as e:
+        logger.warning("RAG synthesis failed, using raw context: %s", e)
+        return raw_context
 
 
 # --- Provider Presets ---
@@ -452,6 +535,7 @@ PROVIDER_PRESETS = {
             "gemini-2.0-flash",
             "gemini-2.5-pro-preview-06-05",
             "gemini-2.5-flash-preview-05-20",
+            "gemini-2.5-flash-lite",
         ],
         "default_model": "gemini-2.0-flash",
         "needs_api_key": True,

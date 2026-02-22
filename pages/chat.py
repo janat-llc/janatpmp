@@ -313,9 +313,13 @@ def build_chat_page():
                 avg_rerank = rag.get("avg_rerank_score", 0.0)
                 avg_sal = rag.get("avg_salience", 0.0)
 
+                synthesized = rag.get("synthesized", False)
+                synth_label = " (synthesized)" if synthesized else ""
+
                 gr.Markdown(
                     f"Hits: **{hits_used}** used / {hit_count} retrieved"
                     + (f" ({rejected_count} rejected)" if rejected_count else "")
+                    + synth_label
                     + f"\n\nCollections: {', '.join(collections) if collections else 'none'}"
                     + f"\n\nAvg rerank: **{avg_rerank:.3f}**"
                     + f"\n\nAvg salience: **{avg_sal:.3f}**"
@@ -323,7 +327,8 @@ def build_chat_page():
 
                 # Accordion 1: RAG Context Injected — the exact text fed to the model
                 context_text = rag.get("context_text", "")
-                with gr.Accordion("Context Injected", open=False):
+                accordion_label = "Synthesized Context" if synthesized else "Context Injected"
+                with gr.Accordion(accordion_label, open=False):
                     if context_text:
                         gr.Textbox(
                             value=context_text, lines=8, max_lines=25,
@@ -332,6 +337,17 @@ def build_chat_page():
                         )
                     else:
                         gr.Markdown("*No context injected this turn*")
+
+                # Show raw chunks if synthesis was used (for comparison)
+                if synthesized:
+                    raw_context = rag.get("raw_context_text", "")
+                    if raw_context:
+                        with gr.Accordion("Raw Chunks (pre-synthesis)", open=False):
+                            gr.Textbox(
+                                value=raw_context, lines=6, max_lines=20,
+                                interactive=False, show_label=False,
+                                key="rag-raw-context",
+                            )
 
                 # Accordion 2: RAG Provenance — used hits with text previews
                 scores = rag.get("scores", [])
@@ -501,8 +517,27 @@ def build_chat_page():
             )
             rag_max_chunks = gr.Slider(
                 label="Max Chunks", minimum=1, maximum=20,
-                step=1, value=int(get_setting("rag_max_chunks") or "3"),
+                step=1, value=int(get_setting("rag_max_chunks") or "10"),
                 interactive=True,
+            )
+
+            gr.Markdown("---")
+            gr.Markdown("### RAG Synthesizer")
+            gr.Markdown(
+                "*Uses Gemini Flash-Lite to compress raw RAG chunks into "
+                "coherent context before sending to the chat model. "
+                "Leave API key empty to use raw chunks.*"
+            )
+            rag_synth_model = gr.Dropdown(
+                choices=["gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash-preview-05-20"],
+                value=get_setting("rag_synthesizer_model") or "gemini-2.5-flash-lite",
+                label="Synthesizer Model", interactive=True, allow_custom_value=True,
+            )
+            rag_synth_api_key = gr.Textbox(
+                value=get_setting("rag_synthesizer_api_key"),
+                label="Gemini API Key (for synthesizer)",
+                type="password", interactive=True,
+                placeholder="Enter Google AI API key...",
             )
 
     # === PER-SESSION INIT (one-shot timer — loads fresh data from DB) ===
@@ -657,6 +692,16 @@ def build_chat_page():
     rag_max_chunks.change(
         lambda v: set_setting("rag_max_chunks", str(int(v))),
         inputs=[rag_max_chunks],
+        api_visibility="private",
+    )
+    rag_synth_model.change(
+        lambda v: set_setting("rag_synthesizer_model", v),
+        inputs=[rag_synth_model],
+        api_visibility="private",
+    )
+    rag_synth_api_key.change(
+        lambda v: set_setting("rag_synthesizer_api_key", v),
+        inputs=[rag_synth_api_key],
         api_visibility="private",
     )
 
