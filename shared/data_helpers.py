@@ -1,7 +1,7 @@
 """Shared data-loading helpers for JANATPMP UI."""
 import pandas as pd
 from db.operations import list_items, list_tasks, list_documents
-from db.chat_operations import list_conversations, get_messages
+from db.chat_operations import list_conversations, get_messages, get_message_metadata
 from shared.constants import PROJECT_TYPES, DEFAULT_CHAT_HISTORY
 from shared.formatting import entity_list_to_df
 
@@ -147,10 +147,22 @@ def _load_chat_session() -> dict:
             + (m.get("tokens_response", 0) or 0)
         )
 
+    # Load timing from the last message's metadata (for sidebar restore)
+    last_timings = {"rag": 0, "inference": 0, "total": 0}
+    if msgs:
+        last_meta = get_message_metadata(msgs[-1]["id"])
+        if last_meta:
+            last_timings = {
+                "rag": last_meta.get("latency_rag_ms", 0) or 0,
+                "inference": last_meta.get("latency_inference_ms", 0) or 0,
+                "total": last_meta.get("latency_total_ms", 0) or 0,
+            }
+
     return {
         "conv_id": conv_id,
         "display_history": display_history or list(DEFAULT_CHAT_HISTORY),
         "api_history": api_history or list(DEFAULT_CHAT_HISTORY),
         "token_totals": totals,
         "turn_count": len(msgs),
+        "last_timings": last_timings,
     }

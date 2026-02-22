@@ -112,6 +112,11 @@ SETTINGS_REGISTRY = {
     # System
     "log_level":            ("INFO", False, "system", _validate_log_level),
     "log_retention_days":   ("30", False, "system", _validate_positive_int),
+
+    # Slumber Cycle (cognitive telemetry)
+    "slumber_idle_threshold":  ("300", False, "system", _validate_positive_int),
+    "slumber_batch_size":      ("20",  False, "system", _validate_positive_int),
+    "slumber_evaluator":       ("heuristic", False, "system", None),
 }
 
 # Backward-compat alias

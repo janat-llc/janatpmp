@@ -336,6 +336,125 @@ def add_message(
         return row['id'] if row else ""
 
 
+def add_message_metadata(
+    message_id: str,
+    latency_total_ms: int = 0,
+    latency_rag_ms: int = 0,
+    latency_inference_ms: int = 0,
+    rag_hit_count: int = 0,
+    rag_hits_used: int = 0,
+    rag_collections: str = "[]",
+    rag_avg_rerank: float = 0.0,
+    rag_avg_salience: float = 0.0,
+    rag_scores: str = "[]",
+    keywords: str = "[]",
+    labels: str = "[]",
+    quality_score: float = None,
+) -> str:
+    """Add metadata for a message (timing, RAG snapshot, labels).
+
+    Args:
+        message_id: The message this metadata belongs to
+        latency_total_ms: Total wall-clock time in milliseconds
+        latency_rag_ms: RAG retrieval time in milliseconds
+        latency_inference_ms: Provider inference time in milliseconds
+        rag_hit_count: Total ANN candidates returned
+        rag_hits_used: Results that passed rerank/threshold
+        rag_collections: JSON array of collection names searched
+        rag_avg_rerank: Average rerank score of used hits
+        rag_avg_salience: Average salience of used hits
+        rag_scores: JSON array of per-hit score objects
+        keywords: JSON array of extracted keywords
+        labels: JSON array of user/system labels
+        quality_score: Quality score (0.0-1.0), set by Slumber Cycle
+
+    Returns:
+        The ID of the created metadata record
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO messages_metadata
+                (message_id, latency_total_ms, latency_rag_ms, latency_inference_ms,
+                 rag_hit_count, rag_hits_used, rag_collections,
+                 rag_avg_rerank, rag_avg_salience, rag_scores,
+                 keywords, labels, quality_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            message_id, latency_total_ms, latency_rag_ms, latency_inference_ms,
+            rag_hit_count, rag_hits_used, rag_collections,
+            rag_avg_rerank, rag_avg_salience, rag_scores,
+            keywords, labels, quality_score,
+        ))
+        conn.commit()
+        cursor.execute("SELECT id FROM messages_metadata WHERE rowid = ?", (cursor.lastrowid,))
+        row = cursor.fetchone()
+        return row['id'] if row else ""
+
+
+def get_message_metadata(message_id: str) -> dict:
+    """Get metadata for a message.
+
+    Args:
+        message_id: The message ID to look up metadata for
+
+    Returns:
+        Dict with metadata fields or empty dict if not found
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM messages_metadata WHERE message_id = ?",
+            (message_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+
+
+def update_message_metadata(
+    message_id: str,
+    keywords: str = "",
+    labels: str = "",
+    quality_score: float = -1.0,
+    rag_scores: str = "",
+) -> str:
+    """Update metadata fields for a message.
+
+    Args:
+        message_id: The message ID whose metadata to update
+        keywords: JSON array of keywords (empty = no change)
+        labels: JSON array of labels (empty = no change)
+        quality_score: Quality score 0.0-1.0 (negative = no change)
+        rag_scores: Updated JSON array of per-hit scores (empty = no change)
+
+    Returns:
+        Success or error message
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        updates = []
+        params = []
+        if keywords:
+            updates.append("keywords = ?")
+            params.append(keywords)
+        if labels:
+            updates.append("labels = ?")
+            params.append(labels)
+        if quality_score >= 0:
+            updates.append("quality_score = ?")
+            params.append(quality_score)
+        if rag_scores:
+            updates.append("rag_scores = ?")
+            params.append(rag_scores)
+        if not updates:
+            return "No updates provided"
+        params.append(message_id)
+        query = f"UPDATE messages_metadata SET {', '.join(updates)} WHERE message_id = ?"
+        cursor.execute(query, params)
+        conn.commit()
+        return f"Updated metadata for message {message_id}" if cursor.rowcount > 0 else f"Metadata for message {message_id} not found"
+
+
 def get_messages(conversation_id: str, limit: int = 100) -> list:
     """Get messages for a conversation ordered by sequence.
 

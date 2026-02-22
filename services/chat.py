@@ -721,9 +721,12 @@ def chat(message: str, history: list[dict],
         system_prompt_append: Per-conversation system prompt addition.
 
     Returns:
-        Dict with keys: history, rag_metrics, token_counts, provider, model.
+        Dict with keys: history, rag_metrics, token_counts, timings, provider, model.
     """
     from services.settings import get_setting
+    from services.turn_timer import TurnTimer
+
+    _EMPTY_TIMINGS = {"rag": 0, "inference": 0, "total": 0}
 
     provider = provider_override or get_setting("chat_provider")
     api_key = get_setting("chat_api_key")
@@ -741,49 +744,54 @@ def chat(message: str, history: list[dict],
             "history": error_history,
             "rag_metrics": dict(_EMPTY_RAG_METRICS),
             "token_counts": dict(_EMPTY_TOKEN_COUNTS),
+            "timings": dict(_EMPTY_TIMINGS),
             "provider": provider,
             "model": model,
         }
 
-    # RAG context injection (gracefully degrades if Qdrant unavailable)
-    rag_context, rag_metrics = _build_rag_context(message)
-    if rag_context:
-        system_prompt += rag_context
+    with TurnTimer() as timer:
+        # RAG context injection (gracefully degrades if Qdrant unavailable)
+        with timer.span("rag"):
+            rag_context, rag_metrics = _build_rag_context(message)
+        if rag_context:
+            system_prompt += rag_context
 
-    # Validate API key for providers that need it
-    preset = PROVIDER_PRESETS.get(provider, {})
-    if preset.get("needs_api_key") and (not api_key or not api_key.strip()):
-        return _error_result(history + [
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": f"No API key set. Add your {preset.get('name', provider)} API key in the Admin tab sidebar."},
-        ])
+        # Validate API key for providers that need it
+        preset = PROVIDER_PRESETS.get(provider, {})
+        if preset.get("needs_api_key") and (not api_key or not api_key.strip()):
+            return _error_result(history + [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": f"No API key set. Add your {preset.get('name', provider)} API key in the Admin tab sidebar."},
+            ])
 
-    # Add user message
-    history = history + [{"role": "user", "content": message}]
+        # Add user message
+        history = history + [{"role": "user", "content": message}]
 
-    try:
-        if provider == "anthropic":
-            history, token_counts = _chat_anthropic(api_key, model, history, system_prompt, temperature, top_p, max_tokens)
-        elif provider == "gemini":
-            history, token_counts = _chat_gemini(api_key, model, history, system_prompt, temperature, top_p, max_tokens)
-        elif provider == "ollama":
-            url = base_url or preset.get("base_url", "http://ollama:11434/v1")
-            num_ctx = int(get_setting("ollama_num_ctx"))
-            keep_alive = get_setting("ollama_keep_alive")
-            history, token_counts = _chat_ollama(url, model, history, system_prompt, temperature, top_p, max_tokens,
-                                                  num_ctx=num_ctx, keep_alive=keep_alive)
-        else:
-            history.append({"role": "assistant", "content": f"Unknown provider: {provider}"})
+        try:
+            with timer.span("inference"):
+                if provider == "anthropic":
+                    history, token_counts = _chat_anthropic(api_key, model, history, system_prompt, temperature, top_p, max_tokens)
+                elif provider == "gemini":
+                    history, token_counts = _chat_gemini(api_key, model, history, system_prompt, temperature, top_p, max_tokens)
+                elif provider == "ollama":
+                    url = base_url or preset.get("base_url", "http://ollama:11434/v1")
+                    num_ctx = int(get_setting("ollama_num_ctx"))
+                    keep_alive = get_setting("ollama_keep_alive")
+                    history, token_counts = _chat_ollama(url, model, history, system_prompt, temperature, top_p, max_tokens,
+                                                          num_ctx=num_ctx, keep_alive=keep_alive)
+                else:
+                    history.append({"role": "assistant", "content": f"Unknown provider: {provider}"})
+                    return _error_result(history)
+
+            return {
+                "history": history,
+                "rag_metrics": rag_metrics,
+                "token_counts": token_counts,
+                "timings": timer.results(),
+                "provider": provider,
+                "model": model,
+            }
+        except Exception as e:
+            logger.error("Chat failed: provider=%s, model=%s — %s", provider, model, e)
+            history.append({"role": "assistant", "content": f"Error: {str(e)}"})
             return _error_result(history)
-
-        return {
-            "history": history,
-            "rag_metrics": rag_metrics,
-            "token_counts": token_counts,
-            "provider": provider,
-            "model": model,
-        }
-    except Exception as e:
-        logger.error("Chat failed: provider=%s, model=%s — %s", provider, model, e)
-        history.append({"role": "assistant", "content": f"Error: {str(e)}"})
-        return _error_result(history)

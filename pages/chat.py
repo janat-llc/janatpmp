@@ -12,6 +12,7 @@ import json
 import gradio as gr
 from db.chat_operations import (
     create_conversation, parse_reasoning, add_message,
+    add_message_metadata, update_message_metadata,
 )
 from services.chat import chat, PROVIDER_PRESETS, fetch_ollama_models, _EMPTY_RAG_METRICS, _EMPTY_TOKEN_COUNTS
 from services.settings import get_setting, set_setting
@@ -36,6 +37,13 @@ def _handle_send(message, history, conv_id, provider, model,
     """
     if not message.strip():
         return history, history, "", conv_id, gr.skip()
+
+    # Reset Slumber Cycle idle timer
+    try:
+        from services.slumber import touch_activity
+        touch_activity()
+    except Exception:
+        pass
 
     # Auto-create conversation on first message
     if not conv_id:
@@ -95,7 +103,9 @@ def _handle_send(message, history, conv_id, provider, model,
                 if tool_name:
                     tools_used.append(tool_name)
 
-        add_message(
+        timings = result.get("timings", {"rag": 0, "inference": 0, "total": 0})
+
+        msg_id = add_message(
             conversation_id=conv_id,
             user_prompt=message,
             model_reasoning=reasoning or None,
@@ -106,6 +116,38 @@ def _handle_send(message, history, conv_id, provider, model,
             tokens_reasoning=token_counts.get("reasoning", 0),
             tokens_response=token_counts.get("response", 0),
         )
+
+        # Persist cognitive telemetry metadata
+        if msg_id:
+            add_message_metadata(
+                message_id=msg_id,
+                latency_total_ms=timings.get("total", 0),
+                latency_rag_ms=timings.get("rag", 0),
+                latency_inference_ms=timings.get("inference", 0),
+                rag_hit_count=rag_metrics.get("hit_count", 0),
+                rag_hits_used=rag_metrics.get("hits_used", 0),
+                rag_collections=json.dumps(rag_metrics.get("collections_searched", [])),
+                rag_avg_rerank=rag_metrics.get("avg_rerank_score", 0.0),
+                rag_avg_salience=rag_metrics.get("avg_salience", 0.0),
+                rag_scores=json.dumps(rag_metrics.get("scores", [])),
+            )
+
+            # Usage signal: estimate which RAG hits the model actually used
+            try:
+                from atlas.usage_signal import compute_usage_signal
+                from atlas.memory_service import write_usage_salience
+                scores = rag_metrics.get("scores", [])
+                if scores and (clean_response or raw_response):
+                    usage = compute_usage_signal(scores, clean_response or raw_response)
+                    if usage:
+                        # Update metadata with usage scores
+                        update_message_metadata(msg_id, rag_scores=json.dumps(usage))
+                        # Write usage-based salience back to Qdrant
+                        for collection in {u.get("source", "") for u in usage if u.get("source")}:
+                            col_hits = [u for u in usage if u.get("source") == collection]
+                            write_usage_salience(collection, col_hits)
+            except Exception:
+                pass  # Graceful degradation — usage signal is non-critical
 
         # Accumulate cumulative tokens
         prev_cum = metrics.get("cumulative_tokens", dict(_EMPTY_TOKEN_COUNTS))
@@ -118,6 +160,7 @@ def _handle_send(message, history, conv_id, provider, model,
         new_metrics = {
             "rag_metrics": rag_metrics,
             "token_counts": token_counts,
+            "timings": timings,
             "cumulative_tokens": new_cum,
             "turn_count": metrics.get("turn_count", 0) + 1,
         }
@@ -208,6 +251,16 @@ def build_chat_page():
                                 f"ann: {s.get('ann_score', 0):.3f}",
                                 key=f"hit-{i}",
                             )
+
+                # Latency
+                timings = metrics.get("timings", {})
+                if timings.get("total", 0) > 0:
+                    gr.Markdown("#### Latency")
+                    gr.Markdown(
+                        f"Total: **{timings.get('total', 0):,}** ms\n\n"
+                        f"RAG: **{timings.get('rag', 0):,}** ms\n\n"
+                        f"Inference: **{timings.get('inference', 0):,}** ms"
+                    )
 
                 # Token counts — this turn
                 gr.Markdown("#### Tokens (this turn)")
@@ -345,6 +398,7 @@ def build_chat_page():
         metrics = {
             "rag_metrics": dict(_EMPTY_RAG_METRICS),
             "token_counts": dict(_EMPTY_TOKEN_COUNTS),
+            "timings": session.get("last_timings", {"rag": 0, "inference": 0, "total": 0}),
             "cumulative_tokens": session["token_totals"],
             "turn_count": session["turn_count"],
         }

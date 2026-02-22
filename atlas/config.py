@@ -17,8 +17,10 @@ EMBEDDING_DIM = 1024  # Qwen3-Embedding-0.6B (Matryoshka: 128-2048, using 1024)
 MAX_TEXT_CHARS = 20_000  # Pre-filter before sending to embed API
 
 # --- Salience parameters ---
-SALIENCE_BOOST_RATE = 0.05  # How much a rerank score nudges salience per retrieval
-SALIENCE_DEFAULT = 0.5      # Starting salience for new entries
+SALIENCE_BOOST_RATE = 0.05   # How much a rerank score nudges salience per retrieval
+SALIENCE_DEFAULT = 0.5       # Starting salience for new entries
+SALIENCE_USAGE_RATE = 0.03   # Boost per usage signal (softer than retrieval boost)
+SALIENCE_DECAY_RATE = 0.01   # Decay for retrieved-but-unused chunks
 
 # --- Reranking parameters ---
 RERANK_CANDIDATES = 20  # ANN top-k before reranking

@@ -17,6 +17,11 @@ def _handle_chat(message, history):
     """
     if not message.strip():
         return history, history, ""
+    try:
+        from services.slumber import touch_activity
+        touch_activity()
+    except Exception:
+        pass
     from services.chat import chat
     result = chat(message, history)
     updated = result["history"]
@@ -51,6 +56,11 @@ def _handle_chat_tab(message, history, conv_id, provider, model,
     if not message.strip():
         return history, history, "", conv_id, gr.skip(), "*Ready*"
 
+    try:
+        from services.slumber import touch_activity
+        touch_activity()
+    except Exception:
+        pass
     from services.chat import chat
 
     # Auto-create conversation on first message
