@@ -78,14 +78,25 @@ def _handle_send(message, history, conv_id, provider, model,
 
         reasoning, clean_response = parse_reasoning(raw_response)
 
-        # Estimate reasoning tokens if provider didn't report them
-        # (Ollama/Nemotron emits <think> blocks but doesn't count them separately)
+        # Decompose reasoning tokens from completion_tokens when provider
+        # doesn't report them separately (Ollama lumps <think> + response).
+        # Proportional split by text length — same model, same tokenizer,
+        # so chars-per-token ratio is consistent across both segments.
         if reasoning and token_counts.get("reasoning", 0) == 0:
-            est_reasoning = max(1, len(reasoning) // 4)  # ~4 chars per token
-            token_counts["reasoning"] = est_reasoning
+            completion = token_counts.get("response", 0)
+            reasoning_len = len(reasoning)
+            response_len = len(clean_response or raw_response)
+            total_len = reasoning_len + response_len
+            if completion > 0 and total_len > 0:
+                est_reasoning = int(completion * reasoning_len / total_len)
+                token_counts["reasoning"] = est_reasoning
+                token_counts["response"] = completion - est_reasoning
+            else:
+                # Fallback: rough estimate when provider reports no tokens at all
+                token_counts["reasoning"] = max(1, reasoning_len // 4)
             token_counts["total"] = (
                 token_counts.get("prompt", 0)
-                + est_reasoning
+                + token_counts.get("reasoning", 0)
                 + token_counts.get("response", 0)
             )
 
