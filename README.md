@@ -3,7 +3,7 @@
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
 ![Gradio 6.5.1](https://img.shields.io/badge/Gradio-6.5.1-orange?logo=gradio&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-46%20Tools-blueviolet)
+![MCP](https://img.shields.io/badge/MCP-48%20Tools-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 
 A **strategic command center** for solo architects and engineers working with AI partners. JANATPMP gives your AI assistants persistent memory — project state, task queues, documents, conversation history, and semantic search — all readable and writable via [MCP (Model Context Protocol)](https://modelcontextprotocol.io/). Conversations become durable, searchable knowledge. Context survives session boundaries.
@@ -39,31 +39,36 @@ graph TB
 
 ```mermaid
 graph TB
-    MCP[MCP Tools<br/>46 operations] --> DB[db/operations.py]
+    MCP[MCP Tools<br/>48 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
     UI[Gradio UI] --> DB
     API[REST API] --> DB
     DB --> SQLite[(SQLite)]
     DB --> Qdrant[(Qdrant)]
 ```
 
-One set of functions in `db/operations.py` serves all three surfaces — UI event listeners, REST API, and MCP tool generation — a single source of truth for every operation.
+One set of functions in `db/operations.py` and `db/chat_operations.py` serves all three surfaces — UI event listeners, REST API, and MCP tool generation — a single source of truth for every operation.
 
 ---
 
 ## Features
 
-- **46 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, settings, backups)
+- **48 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, telemetry, settings, backups)
+- **Sovereign Chat** — dedicated chat page (`/chat`) with real-time metrics sidebar: RAG retrieval stats, latency breakdown, token counts, salience scores
 - **Multi-provider chat** with triplet message persistence (Anthropic, Gemini, Ollama/local models)
 - **Thinking mode** — chain-of-thought captured separately via Ollama `think=True`, stored as `model_reasoning` in triplet schema for future fine-tuning
+- **Reasoning token decomposition** — proportional split of completion tokens into reasoning vs response KPIs, even when providers don't report them separately
 - **ATLAS two-stage search** — ANN retrieval via Qdrant + cross-encoder reranking via vLLM sidecar with salience write-back
-- **RAG pipeline** — Qwen3-Embedding-4B embeddings (2560-dim, Matryoshka) via Ollama, injected into chat context per-message
+- **Usage-based salience** — keyword overlap heuristic estimates which RAG hits the model actually used, feeding salience boosts/decays back to Qdrant
+- **RAG pipeline** — Qwen3-Embedding-0.6B embeddings (1024-dim, Matryoshka) via Ollama, injected into chat context per-message
+- **Cognitive telemetry** — per-turn timing, frozen RAG snapshots, and token counts persisted to `messages_metadata` for longitudinal analysis
+- **Slumber Cycle** — background daemon evaluates reasoning quality and extracts keywords during idle periods, building the dataset for future fine-tuning
 - **Content ingestion** — parsers for Google AI Studio, quest files, markdown, and text with SHA-256 deduplication
 - **Dynamic domain management** — domains are first-class database entities, creatable via MCP without code changes
 - **Dynamic model discovery** — Ollama models fetched live via `/api/tags`, no hardcoded model lists
 - **Project / Task / Document management** with typed relationships and hierarchy
 - **Claude conversation import** — ingest Claude export JSON into a searchable triplet schema
 - **Full-text search** via SQLite FTS5 across items, documents, and conversation messages
-- **Single-page responsive UI** with dual collapsible sidebars (mobile-friendly via `gr.Sidebar`)
+- **Hybrid multipage UI** — monolith dashboard (`/`) with dual collapsible sidebars + Sovereign Chat (`/chat`) via `demo.route()`
 - **Auto-context injection** — every chat message receives a live snapshot of active projects and pending tasks
 - **Change Data Capture** outbox for future graph database sync
 
@@ -73,11 +78,11 @@ One set of functions in `db/operations.py` serves all three surfaces — UI even
 
 | Component | Technology |
 |-----------|-----------|
-| Framework | Gradio 6.5.1 (Blocks, MCP server mode) |
+| Framework | Gradio 6.5.1 (Blocks + multipage routing, MCP server mode) |
 | Language | Python 3.14 |
 | Database | SQLite (WAL mode, FTS5 full-text search) |
 | Vector DB | Qdrant — semantic search over documents and messages |
-| Embeddings | Qwen3-Embedding-4B Q4_K_M via Ollama (2560-dim, Matryoshka) |
+| Embeddings | Qwen3-Embedding-0.6B via Ollama (1024-dim, Matryoshka) |
 | Reranking | Qwen3-Reranker-0.6B FP16 via vLLM sidecar (0-1 probability scores) |
 | Chat LLM | nemotron-3-nano Q4_K_M via Ollama (with thinking mode) |
 | Container | Docker Compose — 4 services: core (no GPU), Ollama (GPU), vLLM (GPU), Qdrant |
@@ -88,9 +93,9 @@ One set of functions in `db/operations.py` serves all three surfaces — UI even
 | Service | Model | Est. VRAM |
 |---------|-------|-----------|
 | Ollama — chat | nemotron-3-nano Q4_K_M | ~24 GB |
-| Ollama — embed | Qwen3-Embedding-4B Q4_K_M | ~2.5 GB |
+| Ollama — embed | Qwen3-Embedding-0.6B | ~0.5 GB |
 | vLLM — rerank | Qwen3-Reranker-0.6B FP16 | ~1.7 GB |
-| **Total** | | **~28.2 GB** |
+| **Total** | | **~26.2 GB** |
 
 Core container uses zero GPU — all model inference is offloaded to Ollama and vLLM sidecars.
 
@@ -115,7 +120,7 @@ docker-compose up --build
 
 ```bash
 docker exec janatpmp-ollama ollama pull nemotron-3-nano:latest
-docker exec janatpmp-ollama ollama pull qwen3-embedding:4b-q4_K_M
+docker exec janatpmp-ollama ollama pull qwen3-embedding:0.6b-compact
 ```
 
 The vLLM reranker downloads its model automatically on first startup.
@@ -124,7 +129,8 @@ Once running:
 
 | Surface | URL |
 |---------|-----|
-| Web UI | http://localhost:7860 |
+| Dashboard | http://localhost:7860 |
+| Sovereign Chat | http://localhost:7860/chat |
 | MCP endpoint | http://localhost:7860/gradio_api/mcp/sse |
 | API docs | http://localhost:7860/gradio_api/docs |
 | Qdrant dashboard | http://localhost:6343/dashboard |
@@ -149,7 +155,8 @@ JANATPMP/
 ├── assets/
 │   └── janat_logo_bold_transparent.png  # Janat Mandala logo
 ├── pages/
-│   └── projects.py            # UI layout + event wiring
+│   ├── projects.py            # Dashboard UI layout + event wiring
+│   └── chat.py                # Sovereign Chat page with metrics sidebar (R11)
 ├── tabs/
 │   ├── tab_database.py        # Admin tab builder
 │   ├── tab_chat.py            # Chat handler functions
@@ -161,17 +168,20 @@ JANATPMP/
 ├── db/
 │   ├── schema.sql             # Database DDL
 │   ├── operations.py          # 26 CRUD + lifecycle functions
-│   ├── chat_operations.py     # Conversation + message CRUD
-│   └── migrations/            # Versioned schema migrations
+│   ├── chat_operations.py     # Conversation + message + metadata CRUD
+│   └── migrations/            # Versioned schema migrations (0.3.0–0.5.0)
 ├── atlas/                     # ATLAS — HTTP client layer for model services
-│   ├── config.py              # Service URLs, model identifiers, dimensions
-│   ├── embedding_service.py   # Qwen3-Embedding-4B via Ollama /v1/embeddings
+│   ├── config.py              # Service URLs, model identifiers, dimensions, salience constants
+│   ├── embedding_service.py   # Qwen3-Embedding-0.6B via Ollama /v1/embeddings
 │   ├── reranking_service.py   # Qwen3-Reranker-0.6B via vLLM /v1/score
-│   ├── memory_service.py      # Salience write-back to Qdrant
+│   ├── memory_service.py      # Salience write-back to Qdrant (retrieval + usage signals)
+│   ├── usage_signal.py        # Keyword overlap heuristic for usage-based salience (R12)
 │   └── pipeline.py            # Two-stage search orchestrator
 ├── services/
 │   ├── log_config.py          # SQLite log handler + setup_logging()
 │   ├── chat.py                # Multi-provider chat with tool use + thinking mode
+│   ├── turn_timer.py          # Thread-local TurnTimer context manager (R12)
+│   ├── slumber.py             # Slumber Cycle — background quality evaluation (R12)
 │   ├── settings.py            # Settings registry with validation
 │   ├── claude_export.py       # Claude Export ingestion service
 │   ├── claude_import.py       # Claude JSON → triplet messages
@@ -189,7 +199,7 @@ JANATPMP/
 
 ## MCP Integration
 
-JANATPMP exposes **46 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
+JANATPMP exposes **48 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
 
 ```
 http://localhost:7860/gradio_api/mcp/sse
@@ -207,6 +217,7 @@ Full API documentation is available at `/gradio_api/docs` while the server is ru
 | Domains | `get_domains`, `get_domain`, `create_domain`, `update_domain` | Organizational categories — database-managed, no code deploys needed |
 | Relationships | `create_relationship`, `get_relationships` | Typed connections (blocks, enables, informs, etc.) |
 | Conversations | `create_conversation`, `list_conversations`, `search_conversations`, `add_message`, `get_messages`, ... | Chat history with triplet schema |
+| Telemetry | `add_message_metadata`, `get_message_metadata` | Per-turn timing, RAG snapshots, quality scores |
 | Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains`, `recreate_collections` | ATLAS two-stage search, bulk embedding, collection management |
 | System | `get_stats`, `get_schema_info`, `backup_database`, `restore_database`, `list_backups`, `reset_database` | Database administration |
 | Import | `import_conversations_json` | Claude conversation JSON import |
@@ -217,20 +228,40 @@ All tools are auto-generated from Python docstrings — no separate API definiti
 
 ## UI Layout
 
+### Dashboard (`/`)
+
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  JANATPMP                                      Powered by [Janat]       │
+│  JANATPMP                          [Dashboard]  [Chat]                   │
 ├──────────────────────────────────────────────────────────────────────────┤
-│  [Projects]  [Work]  [Knowledge]  [Chat]  [Admin]    ← Top-level tabs  │
+│  [Projects]  [Work]  [Knowledge]  [Admin]           ← Top-level tabs    │
 ├───────────┬──────────────────────────────────┬────────────────────────────┤
 │  LEFT     │     CENTER CONTENT               │  RIGHT                    │
 │  SIDEBAR  │                                  │  SIDEBAR                  │
 │           │                                  │                           │
 │  Context  │  Content changes per tab.        │  Janat Chat (continuous)  │
-│  cards    │  Each tab can have sub-tabs      │  OR Chat Settings         │
-│  Filters  │  (Detail / List views, etc.)     │  (when Chat tab active)   │
+│  cards    │  Each tab can have sub-tabs      │                           │
+│  Filters  │  (Detail / List views, etc.)     │                           │
 │  + New    │                                  │                           │
 └───────────┴──────────────────────────────────┴────────────────────────────┘
+```
+
+### Sovereign Chat (`/chat`)
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  JANATPMP                          [Dashboard]  [Chat]                   │
+├──────────────┬───────────────────────────────────┬───────────────────────┤
+│  LEFT        │     CHATBOT                       │  RIGHT               │
+│  SIDEBAR     │                                   │  SIDEBAR             │
+│              │     Full-width chatbot             │                      │
+│  Chat        │     (Enter = send)                │  Session settings    │
+│  Metrics     │                                   │  Provider / Model    │
+│  · RAG hits  │     Reasoning in collapsible      │  Temperature / TopP  │
+│  · Latency   │     <details> accordions          │  Max tokens          │
+│  · Tokens    │                                   │  System instructions │
+│  · Salience  │                                   │                      │
+└──────────────┴───────────────────────────────────┴───────────────────────┘
 ```
 
 Both sidebars collapse independently on mobile, leaving center content full-width.
@@ -239,17 +270,19 @@ Both sidebars collapse independently on mobile, leaving center content full-widt
 
 ## Screenshots
 
+> Screenshots need updating — the current images predate R11's Sovereign Chat redesign.
+
 | View | Screenshot |
 |------|-----------|
-| Projects tab | ![Projects](screenshots/projects.png) |
-| Chat tab | ![Chat](screenshots/chat.png) |
-| Admin tab | ![Admin](screenshots/admin.png) |
+| Dashboard (Projects) | ![Projects](screenshots/projects.png) |
+| Sovereign Chat | ![Chat](screenshots/chat.png) |
+| Admin | ![Admin](screenshots/admin.png) |
 
 ---
 
 ## Database Schema
 
-Nine core tables with FTS5 full-text search and a CDC outbox for future sync:
+Ten core tables with FTS5 full-text search and a CDC outbox for future sync:
 
 - **domains** — First-class organizational entity. 13 seeded domains (5 active, 8 inactive). Managed via MCP — no code deploys needed to add new domains.
 - **items** — Projects, features, books, chapters. Hierarchical via `parent_id`. Domain validated against `domains` table.
@@ -258,6 +291,7 @@ Nine core tables with FTS5 full-text search and a CDC outbox for future sync:
 - **relationships** — Universal typed connector between any two entities (items, tasks, documents, conversations).
 - **conversations** — Chat sessions from any source (platform, Claude export, imported). Per-session model/provider config.
 - **messages** — Triplet schema: `user_prompt` + `model_reasoning` + `model_response`. Designed for fine-tuning data extraction. NULL reasoning = thinking not captured/not applicable.
+- **messages_metadata** — Cognitive telemetry companion to messages. Per-turn timing (total/RAG/inference ms), frozen RAG snapshots, keywords, quality scores (0.0-1.0, populated by Slumber Cycle).
 - **settings** — Key-value config with base64 obfuscation for secrets.
 - **cdc_outbox** — Change Data Capture for future graph database synchronization.
 
@@ -270,7 +304,8 @@ See [`CLAUDE.md`](CLAUDE.md) for comprehensive development guidelines, including
 ### Branch Naming
 
 ```
-feature/{name}
+feature/r{N}-{description}    # e.g. feature/r12-cognitive-telemetry
+feature/phase{X}-{description}  # legacy naming
 ```
 
 ### Workflow
@@ -282,7 +317,7 @@ feature/{name}
 ### Rules
 
 - Never commit directly to `main`
-- All `db/operations.py` functions must have full docstrings (Gradio uses them for MCP tool descriptions)
+- All `db/operations.py` and `db/chat_operations.py` functions must have full docstrings (Gradio uses them for MCP tool descriptions)
 - All UI event listeners must include `api_visibility="private"`
 
 ---
@@ -292,6 +327,7 @@ feature/{name}
 JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. Planned integrations:
 
 - **Neo4j** — Graph database for entity relationship traversal
+- **HuggingFace tokenizers** — Model-specific tokenization for exact token counts (fine-tuning data prep, context window management)
 
 Together with the existing SQLite and Qdrant, this forms the **Triad of Memory** (SQL + Vector + Graph). The CDC outbox table already provides forward-compatibility for this evolution.
 
@@ -305,7 +341,7 @@ Built by **Mat Gallagher** — [Janat, LLC](https://janat.org) / [The Janat Init
 |---|---|
 | UI Framework | [Gradio](https://gradio.app) 6.5.1 |
 | Chat LLM | [Ollama](https://ollama.ai) + NVIDIA Nemotron-3-Nano |
-| Embeddings | [Qwen3-Embedding-4B](https://huggingface.co/Qwen/Qwen3-Embedding-4B) via Ollama |
+| Embeddings | [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) via Ollama |
 | Reranking | [Qwen3-Reranker-0.6B](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B) via vLLM |
 | Vector Search | [Qdrant](https://qdrant.tech) |
 | Persistence | [SQLite](https://sqlite.org) |
