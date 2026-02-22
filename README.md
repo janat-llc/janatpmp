@@ -3,7 +3,7 @@
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
 ![Gradio 6.6.0](https://img.shields.io/badge/Gradio-6.6.0-orange?logo=gradio&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-52%20Tools-blueviolet)
+![MCP](https://img.shields.io/badge/MCP-55%20Tools-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![Neo4j](https://img.shields.io/badge/Neo4j-2026.01.4-008CC1?logo=neo4j&logoColor=white)
 
@@ -57,7 +57,7 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 
 ## Features
 
-- **52 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, settings, backups)
+- **55 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, settings, backups)
 - **Triple-write pipeline** — every message fans out to SQLite, Qdrant, and Neo4j synchronously; immediately retrievable on the next turn
 - **Knowledge graph** — Neo4j with 7 entity types, CDC consumer for structural edges, INFORMED_BY provenance tracing, SIMILAR_TO cross-conversation linking
 - **Sovereign Chat** — dedicated chat page (`/chat`) with real-time metrics sidebar: RAG provenance, latency breakdown, token counts, salience scores
@@ -66,10 +66,12 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Reasoning token decomposition** — proportional split of completion tokens into reasoning vs response KPIs, even when providers don't report them separately
 - **ATLAS two-stage search** — ANN retrieval via Qdrant + cross-encoder reranking via vLLM sidecar with salience write-back
 - **Usage-based salience** — keyword overlap heuristic estimates which RAG hits the model actually used, feeding salience boosts/decays back to Qdrant
-- **RAG pipeline** — Qwen3-Embedding-0.6B embeddings (1024-dim, Matryoshka) via Ollama, injected into chat context per-message
+- **RAG pipeline** — Qwen3-Embedding-4B embeddings (2560-dim, Matryoshka) via Ollama, injected into chat context per-message
 - **Cognitive telemetry** — per-turn timing, frozen RAG snapshots, and token counts persisted to `messages_metadata` for longitudinal analysis
 - **Slumber Cycle** — 4-stage background daemon (Evaluate, Propagate, Relate, Prune) evaluates quality, bridges quality to Qdrant salience, creates cross-conversation graph edges, and removes dead-weight vectors
-- **Content ingestion** — parsers for Google AI Studio, quest files, markdown, and text with SHA-256 deduplication
+- **Content ingestion** — parsers for Claude exports, Google AI Studio, markdown, and text with SHA-256 deduplication
+- **Portable project export/import** — versioned JSON export of domains, items, tasks, relationships for surviving platform resets
+- **Unified backup/restore** — SQLite + Qdrant snapshots + Neo4j graph export in timestamped directories
 - **Dynamic domain management** — domains are first-class database entities, creatable via MCP without code changes
 - **Dynamic model discovery** — Ollama models fetched live via `/api/tags`, no hardcoded model lists
 - **Project / Task / Document management** with typed relationships and hierarchy
@@ -88,11 +90,12 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 | Framework | Gradio 6.6.0 (Blocks + multipage routing, MCP server mode) |
 | Language | Python 3.14 |
 | Database | SQLite (WAL mode, FTS5 full-text search) |
-| Vector DB | Qdrant — semantic search over documents and messages (1024-dim cosine) |
+| Vector DB | Qdrant — semantic search over documents and messages (2560-dim cosine) |
 | Graph DB | Neo4j 2026.01.4 — knowledge graph with CDC sync + INFORMED_BY provenance |
-| Embeddings | Qwen3-Embedding-0.6B via Ollama (1024-dim, Matryoshka) |
+| Embeddings | Qwen3-Embedding-4B Q4_K_M via Ollama (2560-dim, Matryoshka) |
 | Reranking | Qwen3-Reranker-0.6B FP16 via vLLM sidecar (0-1 probability scores) |
-| Chat LLM | nemotron-3-nano Q4_K_M via Ollama (with thinking mode) |
+| Chat LLM | qwen3-vl:8b (Janus) via Ollama (with thinking mode, 128K context) |
+| RAG Synthesizer | qwen3:1.7b via Ollama (knowledge compression) |
 | Container | Docker Compose — 5 services: core (no GPU), Ollama (GPU), vLLM (GPU), Qdrant, Neo4j |
 | Data Display | Pandas DataFrames |
 
@@ -100,10 +103,11 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 
 | Service | Model | Est. VRAM |
 |---------|-------|-----------|
-| Ollama — chat | nemotron-3-nano Q4_K_M | ~24 GB |
-| Ollama — embed | Qwen3-Embedding-0.6B | ~0.5 GB |
+| Ollama — chat | qwen3-vl:8b (Janus) | ~6 GB |
+| Ollama — embed | Qwen3-Embedding-4B Q4_K_M | ~2.5 GB |
+| Ollama — synth | qwen3:1.7b | ~1.5 GB |
 | vLLM — rerank | Qwen3-Reranker-0.6B FP16 | ~1.7 GB |
-| **Total** | | **~26.2 GB** |
+| **Total** | | **~11.7 GB** |
 
 Core container uses zero GPU — all model inference is offloaded to Ollama and vLLM sidecars.
 
@@ -127,8 +131,9 @@ docker-compose up --build
 ### Pull Models (first run)
 
 ```bash
-docker exec janatpmp-ollama ollama pull nemotron-3-nano:latest
-docker exec janatpmp-ollama ollama pull qwen3-embedding:0.6b-compact
+docker exec janatpmp-ollama ollama pull qwen3-vl:8b
+docker exec janatpmp-ollama ollama pull qwen3-embedding:4b-q4_K_M
+docker exec janatpmp-ollama ollama pull qwen3:1.7b
 ```
 
 The vLLM reranker downloads its model automatically on first startup.
@@ -181,7 +186,7 @@ JANATPMP/
 │   └── migrations/            # Versioned schema migrations (0.3.0–0.6.0)
 ├── atlas/                     # ATLAS — HTTP client layer for model services
 │   ├── config.py              # Service URLs, model identifiers, Neo4j + salience constants
-│   ├── embedding_service.py   # Qwen3-Embedding-0.6B via Ollama /v1/embeddings
+│   ├── embedding_service.py   # Qwen3-Embedding-4B via Ollama /v1/embeddings
 │   ├── reranking_service.py   # Qwen3-Reranker-0.6B via vLLM /v1/score
 │   ├── memory_service.py      # Salience write-back to Qdrant (retrieval + usage signals)
 │   ├── usage_signal.py        # Keyword overlap heuristic for usage-based salience (R12)
@@ -213,7 +218,7 @@ JANATPMP/
 
 ## MCP Integration
 
-JANATPMP exposes **52 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
+JANATPMP exposes **55 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
 
 ```
 http://localhost:7860/gradio_api/mcp/sse
@@ -232,10 +237,10 @@ Full API documentation is available at `/gradio_api/docs` while the server is ru
 | Relationships | `create_relationship`, `get_relationships` | Typed connections (blocks, enables, informs, etc.) |
 | Conversations | `create_conversation`, `list_conversations`, `search_conversations`, `add_message`, `get_messages`, ... | Chat history with triplet schema |
 | Telemetry | `add_message_metadata`, `get_message_metadata` | Per-turn timing, RAG snapshots, quality scores |
-| Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains`, `recreate_collections` | ATLAS two-stage search, bulk embedding, collection management |
+| Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains`, `embed_all_items`, `embed_all_tasks`, `recreate_collections` | ATLAS two-stage search, bulk embedding, collection management |
 | Graph | `graph_query`, `graph_neighbors`, `graph_stats`, `backfill_graph` | Read-only Cypher queries, node traversal, graph statistics, CDC backfill |
-| System | `get_stats`, `get_schema_info`, `backup_database`, `restore_database`, `list_backups`, `reset_database` | Database administration |
-| Import | `import_conversations_json` | Claude conversation JSON import |
+| System | `get_stats`, `get_schema_info`, `backup_database`, `restore_database`, `list_backups`, `reset_database`, `export_platform_data`, `import_platform_data` | Database administration, portable export/import |
+| Import | `import_conversations_json`, `import_conversations_directory`, `ingest_google_ai_conversations`, `ingest_markdown_documents` | Claude, Google AI Studio, and markdown ingestion |
 
 All tools are auto-generated from Python docstrings — no separate API definition layer.
 
@@ -341,9 +346,10 @@ feature/phase{X}-{description}  # legacy naming
 
 JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is now operational — every message fans out to all three stores via the triple-write pipeline. Planned next steps:
 
+- **Janus continuous chat** — one persistent conversation stream from platform birth, separating live chat from historical knowledge
+- **Ollama Modelfiles pipeline** — specialized models (synthesizer, scorer, consolidator, classifier) sharing base weights for dynamic system prompt generation
 - **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY and SIMILAR_TO edges
 - **Temporal decay curves** — time-weighted salience that naturally deprioritizes stale knowledge
-- **HuggingFace tokenizers** — Model-specific tokenization for exact token counts (fine-tuning data prep)
 
 ---
 
@@ -354,8 +360,8 @@ Built by **Mat Gallagher** — [Janat, LLC](https://janat.org) / [The Janat Init
 | | |
 |---|---|
 | UI Framework | [Gradio](https://gradio.app) 6.6.0 |
-| Chat LLM | [Ollama](https://ollama.ai) + NVIDIA Nemotron-3-Nano |
-| Embeddings | [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) via Ollama |
+| Chat LLM | [Ollama](https://ollama.ai) + Qwen3-VL:8B (Janus) |
+| Embeddings | [Qwen3-Embedding-4B](https://huggingface.co/Qwen/Qwen3-Embedding-4B) via Ollama |
 | Reranking | [Qwen3-Reranker-0.6B](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B) via vLLM |
 | Vector Search | [Qdrant](https://qdrant.tech) |
 | Knowledge Graph | [Neo4j](https://neo4j.com) 2026.01.4 |

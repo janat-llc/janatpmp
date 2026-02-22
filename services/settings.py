@@ -82,8 +82,8 @@ def _validate_log_level(value: str) -> str | None:
 
 SETTINGS_REGISTRY = {
     # Chat
-    "chat_provider":        ("anthropic", False, "chat", _validate_provider),
-    "chat_model":           ("claude-sonnet-4-20250514", False, "chat", None),
+    "chat_provider":        ("ollama", False, "chat", _validate_provider),
+    "chat_model":           ("qwen3-vl:8b", False, "chat", None),
     "chat_api_key":         ("", True, "chat", None),
     "chat_base_url":        ("http://ollama:11434/v1", False, "chat", None),
     "chat_system_prompt":   ("", False, "chat", None),
@@ -92,7 +92,7 @@ SETTINGS_REGISTRY = {
     "chat_max_tokens":      ("8192", False, "chat", _validate_positive_int),
 
     # Ollama
-    "ollama_num_ctx":       ("32768", False, "ollama", _validate_positive_int),
+    "ollama_num_ctx":       ("131072", False, "ollama", _validate_positive_int),
     "ollama_keep_alive":    ("-1", False, "ollama", None),
 
     # Export
@@ -102,7 +102,6 @@ SETTINGS_REGISTRY = {
     # Ingestion
     "ingestion_google_ai_dir": ("/app/imports/google_ai", False, "ingestion", None),
     "ingestion_markdown_dir":  ("/app/imports/markdown", False, "ingestion", None),
-    "ingestion_quest_dir":     ("", False, "ingestion", None),
 
     # RAG
     "qdrant_url":           ("http://janatpmp-qdrant:6333", False, "rag", None),
@@ -150,9 +149,32 @@ def init_settings():
 
     Uses INSERT OR IGNORE for new keys. For keys with non-empty defaults,
     also backfills if the stored value is empty (handles new defaults added
-    after initial setup).
+    after initial setup). Also migrates stale defaults from previous versions.
     """
+    # Stale defaults from pre-R14: update ONLY if stored value matches old default
+    # (user never manually changed it). Safe: won't touch user-customized values.
+    _STALE_DEFAULTS = [
+        ("chat_provider", "anthropic"),
+        ("chat_model", "claude-sonnet-4-20250514"),
+        ("chat_model", "nemotron-3-nano:latest"),
+        ("ollama_num_ctx", "32768"),
+    ]
+
     with get_connection() as conn:
+        # Migrate stale defaults
+        for key, old_value in _STALE_DEFAULTS:
+            new_reg = SETTINGS_REGISTRY.get(key)
+            if not new_reg:
+                continue
+            new_value = new_reg[0]
+            conn.execute(
+                "UPDATE settings SET value = ? WHERE key = ? AND value = ?",
+                (new_value, key, old_value)
+            )
+
+        # Remove defunct settings
+        conn.execute("DELETE FROM settings WHERE key = 'ingestion_quest_dir'")
+
         for key, (default_value, is_secret, _cat, _val) in SETTINGS_REGISTRY.items():
             stored = default_value
             if is_secret and stored:

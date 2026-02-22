@@ -520,7 +520,7 @@ def _synth_ollama(model: str, prompt: str) -> str:
         ],
         temperature=0.1,
         max_tokens=4096,
-        extra_body={"options": {"num_ctx": 32768}},
+        extra_body={"options": {"num_ctx": int(get_setting("ollama_num_ctx"))}},
     )
     return response.choices[0].message.content or ""
 

@@ -15,9 +15,9 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 - **Gradio** 6.6.0 with MCP support (`gradio[mcp]==6.6.0`)
 - **SQLite3** for persistence (WAL mode, FTS5 full-text search)
 - **Pandas** for data display
-- **Qdrant** vector database (semantic search, 1024-dim cosine collections)
+- **Qdrant** vector database (semantic search, 2560-dim cosine collections)
 - **Neo4j** 2026.01.4 graph database (entity relationships, knowledge graph)
-- **Ollama** for chat LLM + embedding (Qwen3-Embedding-0.6B via `/v1/embeddings`)
+- **Ollama** for chat LLM + embedding (Qwen3-Embedding-4B via `/v1/embeddings`)
 - **vLLM** sidecar for cross-encoder reranking (Qwen3-Reranker-0.6B via `/v1/score`)
 
 ## Project Structure
@@ -43,7 +43,7 @@ JANATPMP/
 ├── db/
 │   ├── schema.sql            # Database schema DDL (NO seed data)
 │   ├── seed_data.sql         # Optional seed data (separate from schema)
-│   ├── operations.py         # All CRUD + lifecycle functions (26 operations)
+│   ├── operations.py         # All CRUD + lifecycle functions (28 operations)
 │   ├── chat_operations.py    # Conversation + message CRUD (Phase 4B)
 │   ├── test_operations.py    # Tests
 │   ├── migrations/           # Versioned schema migrations
@@ -54,12 +54,13 @@ JANATPMP/
 │   │   ├── 0.5.0_messages_metadata.sql
 │   │   └── 0.6.0_salience_synced.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
-│   ├── backups/              # Timestamped database backups
+│   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
+│   ├── exports/              # Portable project data exports (JSON)
 │   └── __init__.py
 ├── atlas/                    # ATLAS model infrastructure (R9, offloaded R10)
 │   ├── __init__.py
 │   ├── config.py             # Model names, dimensions, service URLs, Neo4j + salience constants
-│   ├── embedding_service.py  # Qwen3-Embedding-0.6B via Ollama HTTP (OpenAI client)
+│   ├── embedding_service.py  # Qwen3-Embedding-4B via Ollama HTTP (OpenAI client)
 │   ├── reranking_service.py  # Qwen3-Reranker-0.6B via vLLM HTTP (httpx client)
 │   ├── memory_service.py     # Salience write-back to Qdrant payloads
 │   ├── usage_signal.py       # Keyword overlap heuristic for usage-based salience (R12)
@@ -77,7 +78,7 @@ JANATPMP/
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py            # Background evaluation daemon — Slumber Cycle (R12)
 │   ├── claude_export.py      # Claude Export service: ingest/query external conversation DB
-│   ├── claude_import.py      # Claude conversations.json import → triplet messages (Phase 5)
+│   ├── claude_import.py      # Claude conversations.json import → triplet messages (directory scanner)
 │   ├── embedding.py          # Thin shim → atlas.embedding_service
 │   ├── vector_store.py       # Qdrant vector DB + two-stage search pipeline
 │   ├── bulk_embed.py         # Batch embed via Ollama with progress & checkpointing
@@ -195,13 +196,14 @@ data flow.
 ### Settings & Chat Architecture
 
 **Settings table** (`settings` in SQLite) — key-value store for persistent configuration:
-- `chat_provider` — "anthropic", "gemini", or "ollama"
-- `chat_model` — Model identifier string
+- `chat_provider` — "ollama" (default), "anthropic", or "gemini"
+- `chat_model` — Model identifier string (default: "qwen3-vl:8b")
 - `chat_api_key` — Base64-encoded API key (obfuscation, NOT encryption)
 - `chat_base_url` — Override URL for Ollama
 - `chat_system_prompt` — Custom system prompt (empty = use default)
-- `claude_export_db_path` — Path to claude_export.db
-- `claude_export_json_dir` — Path to JSON export directory
+- `ollama_num_ctx` — Context window size (default: 131072 — 128K tokens)
+- `claude_export_db_path` — Path to claude_export.db (Knowledge tab browser)
+- `claude_export_json_dir` — Path to Claude export directory (ingestion)
 
 **Settings flow:**
 - `services/settings.py` provides `get_setting()` / `set_setting()` with auto base64 for secrets
@@ -239,7 +241,7 @@ and exposed via MCP — Phase 3 only adds the UI layer.
 ### Data Flow
 
 ```
-db/operations.py → 26 functions → three surfaces:
+db/operations.py → 28 functions → three surfaces:
     1. UI: imported by pages/projects.py, called in event listeners
     2. API: exposed via gr.api() in app.py
     3. MCP: auto-generated from gr.api() + docstrings
@@ -288,6 +290,8 @@ Settings use a `SETTINGS_REGISTRY` dict where each key maps to
 - **Secrets:** Base64-encoded (obfuscation, not encryption). Auto-encoded/decoded by
   `get_setting()` / `set_setting()`.
 - `get_settings_by_category(category)` returns all settings for a given category.
+- `init_settings()` migrates stale defaults (e.g., old model names) on startup — only
+  updates values that still match the exact old default, preserving user customizations.
 
 ### CDC Outbox Retention
 
@@ -448,7 +452,7 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
   - Internal URL: `http://janatpmp-qdrant:6333` (Docker DNS)
   - External URL: `http://localhost:6343` (host access, dashboard at `/dashboard`)
   - Volume: `janatpmp_qdrant_data` (external)
-  - Collections: `janatpmp_documents` (1024-dim), `janatpmp_messages` (1024-dim)
+  - Collections: `janatpmp_documents` (2560-dim), `janatpmp_messages` (2560-dim)
   - Auto-recreates collections on dimension mismatch at startup
 - **Neo4j:** `janatpmp-neo4j` container on ports 7474 (browser) / 7687 (Bolt)
   - Internal URL: `bolt://janatpmp-neo4j:7687` (Docker DNS)
@@ -462,8 +466,9 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
   - External URL: `http://localhost:11435` (host access for testing)
   - GPU passthrough via NVIDIA Container Toolkit (~85% VRAM)
   - `OLLAMA_KEEP_ALIVE=-1` keeps models loaded permanently (no unload timeout)
-  - Chat model: nemotron-3-nano:latest Q4_K_M (~24 GB)
+  - Chat model: qwen3-vl:8b (default, Janus), nemotron-3-nano:latest Q4_K_M also available
   - Embedding model: Qwen3-Embedding-4B Q4_K_M GGUF (~2.5 GB) — used via `/v1/embeddings`
+  - RAG synthesizer: qwen3:1.7b — lightweight model for knowledge synthesis
   - Ollama model list is fetched dynamically via `/api/tags` — no hardcoded model names
 - **vLLM Reranker:** `janatpmp-vllm-rerank` container on port 8002
   - Internal URL: `http://janatpmp-vllm-rerank:8000` (Docker DNS)
@@ -577,11 +582,11 @@ with gr.Blocks() as demo:
 demo.launch(mcp_server=True)
 ```
 
-All 26 functions in `db/operations.py` (including 4 domain CRUD) plus 10 chat operations
-from `db/chat_operations.py` (including 2 metadata CRUD) plus 6 vector/embedding operations
-from `services/` plus 1 import operation plus 4 graph operations from `graph/` are exposed
-via `gr.api()` (52 total MCP tools).
-They MUST have Google-style docstrings with Args/Returns for MCP tool generation.
+55 functions are exposed via `gr.api()` as MCP tools: 28 from `db/operations.py`
+(including domain CRUD + export/import), 11 from `db/chat_operations.py`, 8 vector/embedding
+operations from `services/`, 2 import pipelines, 2 ingestion orchestrators, and 4 graph
+operations from `graph/`. All MUST have Google-style docstrings with Args/Returns for
+MCP tool generation.
 
 ### Common Mistakes to Avoid
 
@@ -701,8 +706,9 @@ if the reranker is unavailable, ANN results are returned with a warning.
 
 ### Claude Import (`services/claude_import.py`)
 
-- Imports Claude `conversations.json` into triplet message schema
-- Each conversation becomes a `conversations` record with `source='imported'`
+- `import_conversations_directory(directory)` — scans for `conversations*.json` files and imports all
+- `import_conversations_json(file_path)` — imports a single conversations.json file
+- Each conversation becomes a `conversations` record with `source='claude_export'`
 - Each message pair becomes a `messages` record with user_prompt + model_response
 - Deduplicates by `conversation_uri` (Claude UUID)
 
@@ -711,6 +717,9 @@ if the reranker is unavailable, ANN results are returned with a warning.
 - `embed_all_documents()` — batch-embeds documents into Qdrant (batch size 32, via Ollama)
 - `embed_all_messages()` — batch-embeds messages with user_prompt + model_response concatenated
 - `embed_all_domains()` — batch-embeds domain descriptions into `janatpmp_documents` collection
+- `embed_all_items()` — batch-embeds items (projects, features, etc.) into `janatpmp_documents`
+- `embed_all_tasks()` — batch-embeds tasks into `janatpmp_documents` collection
+- Items and tasks use `entity_type` payload field to distinguish from documents/domains
 - **Checkpointing** — skips already-embedded points via `point_exists()` (resume after restart)
 - **Progress logging** — logs every 100 items with count/total and elapsed time
 - **Returns** `elapsed_seconds` in result dict for performance tracking
@@ -724,7 +733,6 @@ Parsers for importing conversations and documents from multiple external sources
 | Parser | Format | Status |
 | ------ | ------ | ------ |
 | `google_ai_studio.py` | Google AI Studio `chunkedPrompt` JSON | Tested: 99/104 files, 1,304 turns |
-| `quest_parser.py` | Troubadourian quest graph topology JSON | Tested against synthetic data |
 | `markdown_ingest.py` | Markdown (.md) and plain text (.txt) files | Tested: title extraction + doc_type classification |
 | `dedup.py` | SHA-256 content-hash deduplication | Tested: exact-match detection working |
 
@@ -759,9 +767,10 @@ Core is now a thin HTTP client layer — no PyTorch, no CUDA, no in-process mode
 
 ### Model Stack
 
+- **Chat LLM:** qwen3-vl:8b via Ollama (default, "Janus"). nemotron-3-nano:latest also available.
 - **Embedder:** Qwen3-Embedding-4B Q4_K_M GGUF via Ollama (2560-dim Matryoshka)
 - **Reranker:** Qwen3-Reranker-0.6B FP16 via vLLM (0-1 probability scores)
-- **Chat LLM:** nemotron-3-nano:latest Q4_K_M via Ollama (dynamic model list from `/api/tags`)
+- **RAG Synthesizer:** qwen3:1.7b via Ollama (lightweight knowledge compression)
 - **Core container:** No GPU, no PyTorch — HTTP clients only (~500 MB image)
 
 ### Key Decisions
@@ -783,11 +792,12 @@ Core is now a thin HTTP client layer — no PyTorch, no CUDA, no in-process mode
 
 | Component | Estimated VRAM |
 | --------- | -------------- |
-| Ollama — chat (nemotron-3-nano Q4_K_M) | ~24 GB |
+| Ollama — chat (qwen3-vl:8b) | ~6 GB |
 | Ollama — embed (Qwen3-Embedding-4B Q4_K_M) | ~2.5 GB |
+| Ollama — synthesizer (qwen3:1.7b) | ~1.5 GB |
 | vLLM — rerank (Qwen3-Reranker-0.6B FP16) | ~1.7 GB |
-| **Total** | **~28.2 GB** |
-| **Headroom** | **~3.8 GB** |
+| **Total** | **~11.7 GB** |
+| **Headroom** | **~20.3 GB** |
 
 All GPU work is offloaded to sidecars. Core container uses zero VRAM.
 
@@ -869,9 +879,33 @@ monolith Chat tab, sidebar quick-chat):
 left sidebar displays "RAG Provenance" — each hit shows its source conversation title,
 date, and relevance scores.
 
+### Portable Project Export/Import (`db/operations.py`)
+
+- `export_platform_data()` — exports domains, items, tasks, relationships to versioned JSON
+  in `db/exports/`. Schema version `0.6.0`. Virtual columns excluded for portability.
+- `import_platform_data(path)` — imports from export JSON. Topologically sorts items by
+  `parent_id` for referential integrity. Uses `INSERT OR IGNORE` for re-imports.
+- Designed for surviving platform resets: export → reset → import → re-embed → verify.
+
+### Unified Backup/Restore (`db/operations.py`)
+
+- `backup_database()` — creates timestamped directory in `db/backups/` containing SQLite
+  copy, Qdrant collection snapshots, and Neo4j graph export. All stores in one archive.
+- `restore_database(backup_name)` — restores SQLite, recreates Qdrant collections from
+  snapshots, and re-imports Neo4j graph. Full Triad restoration.
+- `reset_database()` — wipes all three stores (SQLite, Qdrant, Neo4j). Auto-creates
+  backup first. Re-run ingestion + embedding after reset.
+
 ## Future Architecture (not in scope, for context only)
 
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is now operational — the
-triple-write pipeline keeps all three stores in sync. Future work: advanced graph traversal
-for multi-hop reasoning, temporal decay curves, and cross-session continuity.
+triple-write pipeline keeps all three stores in sync. Future work:
+
+- **Janus continuous chat** — one persistent stream from platform birth, no "New Chat".
+  Separate platform chat from historical conversations (library vs live stream).
+- **Ollama Modelfiles pipeline** — janat-synthesizer, janat-scorer, janat-consolidator,
+  janat-classifier sharing Qwen3:1.7B base weights. Janus (8B) receives dynamic system
+  prompts from the synthesizer each turn (no static system prompt).
+- **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY and SIMILAR_TO edges
+- **Temporal decay curves** — time-weighted salience that naturally deprioritizes stale knowledge
