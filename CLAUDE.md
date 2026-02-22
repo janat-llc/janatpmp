@@ -15,8 +15,8 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 - **Gradio** 6.5.1 with MCP support (`gradio[mcp]==6.5.1`)
 - **SQLite3** for persistence (WAL mode, FTS5 full-text search)
 - **Pandas** for data display
-- **Qdrant** vector database (semantic search, 2560-dim cosine collections)
-- **Ollama** for chat LLM + embedding (Qwen3-Embedding-4B via `/v1/embeddings`)
+- **Qdrant** vector database (semantic search, 1024-dim cosine collections)
+- **Ollama** for chat LLM + embedding (Qwen3-Embedding-0.6B via `/v1/embeddings`)
 - **vLLM** sidecar for cross-encoder reranking (Qwen3-Reranker-0.6B via `/v1/score`)
 
 ## Project Structure
@@ -27,7 +27,8 @@ JANATPMP/
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── pages/
 │   ├── __init__.py
-│   └── projects.py           # UI layout + event wiring (~1220 lines)
+│   ├── projects.py           # UI layout + event wiring (~1220 lines)
+│   └── chat.py               # Sovereign Chat page (R11) — full metrics sidebar
 ├── tabs/
 │   ├── __init__.py
 │   ├── tab_database.py       # Database/Admin tab builder (imported by projects.py)
@@ -48,21 +49,25 @@ JANATPMP/
 │   │   ├── 0.3.0_conversations.sql
 │   │   ├── 0.4.0_app_logs.sql
 │   │   ├── 0.4.1_messages_fts_update.sql
-│   │   └── 0.4.2_domains_table.sql
+│   │   ├── 0.4.2_domains_table.sql
+│   │   └── 0.5.0_messages_metadata.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups
 │   └── __init__.py
 ├── atlas/                    # ATLAS model infrastructure (R9, offloaded R10)
 │   ├── __init__.py
 │   ├── config.py             # Model names, dimensions, service URLs, salience constants
-│   ├── embedding_service.py  # Qwen3-Embedding-4B via Ollama HTTP (OpenAI client)
+│   ├── embedding_service.py  # Qwen3-Embedding-0.6B via Ollama HTTP (OpenAI client)
 │   ├── reranking_service.py  # Qwen3-Reranker-0.6B via vLLM HTTP (httpx client)
 │   ├── memory_service.py     # Salience write-back to Qdrant payloads
+│   ├── usage_signal.py       # Keyword overlap heuristic for usage-based salience (R12)
 │   └── pipeline.py           # Two-stage search: ANN → rerank → salience
 ├── services/
 │   ├── __init__.py
 │   ├── log_config.py         # SQLiteLogHandler + setup_logging() + get_logs()
 │   ├── chat.py               # Multi-provider chat with tool use (Anthropic/Gemini/Ollama)
+│   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
+│   ├── slumber.py            # Background evaluation daemon — Slumber Cycle (R12)
 │   ├── claude_export.py      # Claude Export service: ingest/query external conversation DB
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (Phase 5)
 │   ├── embedding.py          # Thin shim → atlas.embedding_service
@@ -94,10 +99,10 @@ JANATPMP/
 
 ## Architecture
 
-### Single-Page, Tab-Based Layout
+### Hybrid Multipage Layout (R11)
 
-The app is a single Gradio Blocks page with top-level tabs and dual collapsible sidebars.
-This approach was chosen over multi-page routing (`demo.route()`) because:
+The app uses a hybrid architecture: monolith at `/` (Projects, Work, Knowledge, Admin)
+plus Sovereign Chat at `/chat` via `demo.route()`. The monolith retains dual sidebars:
 
 - Sidebars persist across all tab switches (no re-render, no context loss)
 - Simpler state management (one Blocks context, shared gr.State)
@@ -308,6 +313,10 @@ The `cdc_outbox` table captures all database mutations for future sync to Qdrant
 - `app_logs` — Application log records (level, module, function, message, metadata JSON).
   Written by `SQLiteLogHandler`, queryable via Admin UI.
 - `settings` — Key-value application configuration. Base64 for secrets. Auto-updated timestamps.
+- `messages_metadata` — Cognitive telemetry companion to messages (R12). Per-turn timing
+  (total/rag/inference ms), frozen RAG snapshot (hit counts, rerank/salience averages,
+  per-hit score objects), keywords, labels, quality_score (0.0-1.0, set by Slumber Cycle).
+  FK to messages(id) with CASCADE delete. Unique index on message_id.
 - `cdc_outbox` — Change Data Capture for future Qdrant/Neo4j sync. Auto-cleaned on startup (90 days).
 - `schema_version` — Migration tracking.
 
@@ -317,6 +326,15 @@ The `cdc_outbox` table captures all database mutations for future sync to Qdrant
 - `0.4.0_app_logs.sql` — Application logs table with indexes
 - `0.4.1_messages_fts_update.sql` — Missing FTS UPDATE trigger on messages
 - `0.4.2_domains_table.sql` — Domains as first-class entity, items table CHECK removal, CDC domain support
+- `0.5.0_messages_metadata.sql` — Cognitive telemetry table, CDC outbox entity_type addition
+
+**Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
+the fresh-DB/existing-DB if/else branch (after both branches complete). Placing inside `else`
+means fresh databases never run the migration. The 0.5.0 migration established this pattern.
+
+**CDC outbox entity_type changes:** Adding new entity_types to `cdc_outbox` requires dropping
+ALL existing triggers, recreating the table with the updated CHECK constraint, then recreating
+ALL triggers. SQLite has no ALTER CHECK — full table recreation is the only path.
 
 **Domains** are managed in the `domains` table (not hardcoded). 13 seeded domains:
 5 active (janat, janatpmp, literature, websites, becoming) and 8 inactive (atlas, meax,
@@ -345,9 +363,10 @@ docker-compose logs -f
 ## Git Workflow
 
 ### Branch Naming
-`feature/phase{version}-{description}` — examples:
+`feature/phase{version}-{description}` or `feature/r{N}-{description}` — examples:
 - `feature/phase4b-chat-experience`
 - `feature/phase5-claude-export-ingestion`
+- `feature/r12-cognitive-telemetry`
 
 ### Starting Work
 1. Ensure you're on `main` and it's up to date
@@ -534,10 +553,10 @@ with gr.Blocks() as demo:
 demo.launch(mcp_server=True)
 ```
 
-All 26 functions in `db/operations.py` (including 4 domain CRUD) plus 8 chat operations
-from `db/chat_operations.py` plus 6 vector/embedding operations from `services/` plus 1
-import operation are exposed via `gr.api()` (46 total MCP tools). They MUST have
-Google-style docstrings with Args/Returns for MCP tool generation.
+All 26 functions in `db/operations.py` (including 4 domain CRUD) plus 10 chat operations
+from `db/chat_operations.py` (including 2 metadata CRUD) plus 6 vector/embedding operations
+from `services/` plus 1 import operation are exposed via `gr.api()` (48 total MCP tools).
+They MUST have Google-style docstrings with Args/Returns for MCP tool generation.
 
 ### Common Mistakes to Avoid
 
@@ -746,6 +765,41 @@ Core is now a thin HTTP client layer — no PyTorch, no CUDA, no in-process mode
 | **Headroom** | **~3.8 GB** |
 
 All GPU work is offloaded to sidecars. Core container uses zero VRAM.
+
+## Phase R12: Cognitive Telemetry
+
+Not standard O11y — a recording layer for self-observing memory and reasoning.
+
+### Recording Layer
+
+- `messages_metadata` table — per-turn timing, frozen RAG snapshots, keywords, quality scores
+- `services/turn_timer.py` — `TurnTimer` context manager with named spans (`rag`, `inference`)
+- Wired into `chat()` pipeline: RAG and inference calls wrapped in timer spans
+- `add_message_metadata()` / `get_message_metadata()` exposed as MCP tools
+
+### Reasoning Token Decomposition
+
+Ollama lumps `<think>` block tokens into `completion_tokens` without separating them.
+Anthropic standard API also lacks a dedicated reasoning token field. Pattern:
+proportionally split `completion_tokens` by reasoning vs response text length (same model =
+same tokenizer = consistent chars-per-token ratio). Fallback: ~4 chars/token estimate.
+
+### Usage Signal (Salience Layer 2)
+
+- `atlas/usage_signal.py` — keyword overlap heuristic estimates which RAG hits the model used
+- `atlas/memory_service.py:write_usage_salience()` — boosts salience for used chunks (>0.3),
+  decays for retrieved-but-ignored chunks (<0.1)
+- Runs inline after each turn. Graceful degradation if Qdrant down.
+- Config: `SALIENCE_USAGE_RATE=0.03`, `SALIENCE_DECAY_RATE=0.01` in `atlas/config.py`
+
+### Slumber Cycle
+
+- `services/slumber.py` — daemon thread activates after idle threshold (default 5 min)
+- Batch-evaluates messages without quality scores via heuristic scoring
+- Extracts TF-based keywords, updates `messages_metadata.keywords` and `quality_score`
+- `touch_activity()` called in all chat handlers to reset idle timer
+- Settings: `slumber_idle_threshold`, `slumber_batch_size`, `slumber_evaluator` (system category)
+- Started at app boot in `app.py` via `start_slumber()`
 
 ## Future Architecture (not in scope, for context only)
 
