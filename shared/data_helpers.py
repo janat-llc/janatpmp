@@ -7,9 +7,8 @@ from shared.formatting import entity_list_to_df
 
 
 def _load_projects(domain: str = "", status: str = "") -> list:
-    """Fetch project-scope items as list of dicts for card rendering."""
-    items = list_items(domain=domain, status=status, limit=100)
-    return [i for i in items if i.get("entity_type") in PROJECT_TYPES]
+    """Fetch top-level projects for sidebar card rendering."""
+    return list_items(domain=domain, status=status, entity_type="project", limit=100)
 
 
 def _children_df(parent_id: str) -> pd.DataFrame:

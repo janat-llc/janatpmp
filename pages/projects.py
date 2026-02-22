@@ -83,7 +83,7 @@ def build_page():
     with gr.Tabs(elem_id="main-tabs") as main_tabs:
         # --- Projects tab ---
         with gr.Tab("Projects") as projects_tab:
-            with gr.Tabs():
+            with gr.Tabs(selected="projects-list-view") as projects_sub_tabs:
                 with gr.Tab("Detail"):
                     detail_header = gr.Markdown(
                         "*Select a project from the sidebar, or create a new item.*"
@@ -137,7 +137,7 @@ def build_page():
                             create_btn = gr.Button("Create", variant="primary")
                             create_msg = gr.Textbox(show_label=False, interactive=False, scale=2)
 
-                with gr.Tab("List View"):
+                with gr.Tab("List View", id="projects-list-view"):
                     gr.Markdown("### All Items")
                     all_items_table = gr.DataFrame(
                         value=_all_items_df(),
@@ -451,7 +451,7 @@ def build_page():
                 else:
                     for p in projects:
                         btn = gr.Button(
-                            f"{p['title']}\n{fmt_enum(p.get('status', ''))}  ·  {fmt_enum(p.get('entity_type', '')).upper()}",
+                            f"{p['title']}\n{fmt_enum(p.get('status', ''))}  ·  {fmt_enum(p.get('domain', '')).upper()}",
                             key=f"proj-{p['id'][:8]}",
                             size="sm",
                         )

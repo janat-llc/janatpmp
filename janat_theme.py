@@ -124,11 +124,27 @@ JANAT_CSS = """
     /* Right panel header — right-justified to avoid toggle overlap */
     .right-panel-header { text-align: right !important; }
 
-    /* === Right sidebar — chatbot fills available height === */
+    /* === Right sidebar — strip nested container chrome, fill height === */
     .sidebar.right .sidebar-content {
         height: 100% !important;
         display: flex !important;
         flex-direction: column !important;
+        padding: 2px !important;
+        overflow: hidden !important;
+        box-sizing: border-box !important;
+    }
+    /* Flatten ALL nested wrappers Gradio generates inside sidebar */
+    .sidebar.right .sidebar-content .column,
+    .sidebar.right .sidebar-content .form,
+    .sidebar.right .sidebar-content .block,
+    .sidebar.right .sidebar-content .wrap,
+    .sidebar.right .sidebar-content .wrapper {
+        padding: 0 !important;
+        margin: 0 !important;
+        border: none !important;
+        box-shadow: none !important;
+        background: transparent !important;
+        overflow: hidden !important;
     }
     .sidebar.right .sidebar-content > .column {
         flex: 1 !important;
@@ -140,11 +156,26 @@ JANAT_CSS = """
         flex: 1 1 0 !important;
         min-height: 0 !important;
         overflow-y: auto !important;
+        overflow-x: hidden !important;
     }
 
-    /* Right sidebar chat density */
-    .sidebar.right .message-row { max-width: 100% !important; }
-    .sidebar.right .message { padding: 6px 8px !important; max-width: 100% !important; }
+    /* Force sidebar chatbot and ALL children to respect container width */
+    #sidebar-chatbot,
+    #sidebar-chatbot * {
+        max-width: 100% !important;
+        min-width: 0 !important;
+        box-sizing: border-box !important;
+    }
+
+    /* Right sidebar chat density — strip chatbot internal padding */
+    #sidebar-chatbot .chatbot-chat-wrap,
+    #sidebar-chatbot .messages-wrap,
+    #sidebar-chatbot .scroll-container,
+    #sidebar-chatbot > div {
+        padding: 2px !important;
+    }
+    .sidebar.right .message-row { max-width: 100% !important; padding: 0 !important; margin: 0 !important; }
+    .sidebar.right .message { padding: 4px 6px !important; max-width: 100% !important; word-break: break-word !important; }
     .sidebar.right .bubble-wrap { padding: 0 !important; }
 
     /* Push fixed sidebars below the navbar (Gradio doesn't do this automatically) */
