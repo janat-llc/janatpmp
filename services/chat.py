@@ -438,16 +438,17 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
 
 
 def _synthesize_rag_context(user_message: str, raw_context: str, context_parts: list[str]) -> str:
-    """Use Gemini Flash-Lite to synthesize raw RAG chunks into coherent context.
+    """Synthesize raw RAG chunks into coherent context via a dedicated model.
+
+    Supports two backends:
+    - "ollama": Local model (default, zero-cost, no rate limits)
+    - "gemini": Google Gemini API (needs API key, rate-limited on free tier)
 
     Takes scattered RAG results and produces a focused, coherent knowledge
     summary that the chat model can actually use. This solves the problem of
     small local models being unable to extract answers from raw chunked context.
 
-    Falls back to raw_context if:
-    - No synthesizer API key configured
-    - Gemini API call fails
-    - Synthesizer is disabled (empty model setting)
+    Falls back to raw_context if synthesis fails or is disabled.
 
     Args:
         user_message: The user's question (provides synthesis focus).
@@ -457,60 +458,90 @@ def _synthesize_rag_context(user_message: str, raw_context: str, context_parts: 
     Returns:
         Synthesized context string, or raw_context on fallback.
     """
-    api_key = get_setting("rag_synthesizer_api_key")
+    provider = get_setting("rag_synthesizer_provider") or "ollama"
     model = get_setting("rag_synthesizer_model")
-    if not api_key or not api_key.strip() or not model or not model.strip():
+    if not model or not model.strip():
         return raw_context
 
+    # Build the synthesis prompt (shared across backends)
+    synthesis_prompt = (
+        "You are a knowledge synthesis engine. Your job is to read the retrieved "
+        "knowledge chunks below and produce a clear, coherent summary that directly "
+        "addresses the user's question. Include ALL relevant facts, names, dates, "
+        "numbers, and details from the chunks. Do not add information that isn't in "
+        "the chunks. If the chunks don't contain relevant information, say so.\n\n"
+        f"USER QUESTION: {user_message}\n\n"
+        "RETRIEVED KNOWLEDGE CHUNKS:\n"
+    )
+    for i, part in enumerate(context_parts):
+        synthesis_prompt += f"\n--- Chunk {i+1} ---\n{part}\n"
+    synthesis_prompt += (
+        "\n--- END OF CHUNKS ---\n\n"
+        "Now synthesize the above into a coherent knowledge briefing that "
+        "directly answers the user's question. Be thorough — include every "
+        "relevant detail from the chunks."
+    )
+
     try:
-        from google import genai
-        from google.genai import types
+        if provider == "ollama":
+            synthesis = _synth_ollama(model, synthesis_prompt)
+        elif provider == "gemini":
+            api_key = get_setting("rag_synthesizer_api_key")
+            if not api_key or not api_key.strip():
+                return raw_context
+            synthesis = _synth_gemini(api_key, model, synthesis_prompt)
+        else:
+            logger.debug("Unknown synthesizer provider: %s", provider)
+            return raw_context
 
-        client = genai.Client(api_key=api_key.strip())
-
-        synthesis_prompt = (
-            "You are a knowledge synthesis engine. Your job is to read the retrieved "
-            "knowledge chunks below and produce a clear, coherent summary that directly "
-            "addresses the user's question. Include ALL relevant facts, names, dates, "
-            "numbers, and details from the chunks. Do not add information that isn't in "
-            "the chunks. If the chunks don't contain relevant information, say so.\n\n"
-            f"USER QUESTION: {user_message}\n\n"
-            "RETRIEVED KNOWLEDGE CHUNKS:\n"
-        )
-        for i, part in enumerate(context_parts):
-            synthesis_prompt += f"\n--- Chunk {i+1} ---\n{part}\n"
-
-        synthesis_prompt += (
-            "\n--- END OF CHUNKS ---\n\n"
-            "Now synthesize the above into a coherent knowledge briefing that "
-            "directly answers the user's question. Be thorough — include every "
-            "relevant detail from the chunks."
-        )
-
-        response = client.models.generate_content(
-            model=model,
-            contents=[types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=synthesis_prompt)],
-            )],
-            config=types.GenerateContentConfig(
-                temperature=0.1,  # Low temperature for factual synthesis
-                max_output_tokens=4096,
-            ),
-        )
-
-        synthesis = response.text
         if synthesis and len(synthesis.strip()) > 50:
-            logger.info("RAG synthesis: %d chunks → %d char summary via %s",
-                        len(context_parts), len(synthesis), model)
+            logger.info("RAG synthesis: %d chunks → %d char summary via %s/%s",
+                        len(context_parts), len(synthesis), provider, model)
             return f"\n\n---\nSynthesized knowledge (from {len(context_parts)} sources):\n{synthesis.strip()}\n---\n"
         else:
             logger.debug("RAG synthesis produced empty/short result, using raw context")
             return raw_context
 
     except Exception as e:
-        logger.warning("RAG synthesis failed, using raw context: %s", e)
+        logger.warning("RAG synthesis failed (%s/%s), using raw context: %s", provider, model, e)
         return raw_context
+
+
+def _synth_ollama(model: str, prompt: str) -> str:
+    """Run synthesis via Ollama's OpenAI-compatible API."""
+    from openai import OpenAI
+    base_url = get_setting("chat_base_url") or "http://ollama:11434/v1"
+    client = OpenAI(api_key="ollama", base_url=base_url)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": "You are a knowledge synthesis engine. Produce clear, factual summaries. No thinking tags."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.1,
+        max_tokens=4096,
+        extra_body={"options": {"num_ctx": 32768}},
+    )
+    return response.choices[0].message.content or ""
+
+
+def _synth_gemini(api_key: str, model: str, prompt: str) -> str:
+    """Run synthesis via Google Gemini API."""
+    from google import genai
+    from google.genai import types
+    client = genai.Client(api_key=api_key.strip())
+    response = client.models.generate_content(
+        model=model,
+        contents=[types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=prompt)],
+        )],
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            max_output_tokens=4096,
+        ),
+    )
+    return response.text or ""
 
 
 # --- Provider Presets ---

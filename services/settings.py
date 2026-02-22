@@ -108,7 +108,8 @@ SETTINGS_REGISTRY = {
     "qdrant_url":           ("http://janatpmp-qdrant:6333", False, "rag", None),
     "rag_score_threshold":  ("0.3", False, "rag", _validate_positive_float),
     "rag_max_chunks":       ("10", False, "rag", _validate_positive_int),
-    "rag_synthesizer_model": ("gemini-2.5-flash-lite", False, "rag", None),
+    "rag_synthesizer_provider": ("ollama", False, "rag", None),
+    "rag_synthesizer_model": ("qwen3:1.7b", False, "rag", None),
     "rag_synthesizer_api_key": ("", True, "rag", None),
 
     # System

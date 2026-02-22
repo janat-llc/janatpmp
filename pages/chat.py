@@ -524,18 +524,24 @@ def build_chat_page():
             gr.Markdown("---")
             gr.Markdown("### RAG Synthesizer")
             gr.Markdown(
-                "*Uses Gemini Flash-Lite to compress raw RAG chunks into "
-                "coherent context before sending to the chat model. "
-                "Leave API key empty to use raw chunks.*"
+                "*Compresses raw RAG chunks into coherent context before "
+                "sending to the chat model. Ollama = free local, Gemini = cloud.*"
             )
+            _synth_provider = get_setting("rag_synthesizer_provider") or "ollama"
+            rag_synth_provider = gr.Dropdown(
+                choices=["ollama", "gemini"],
+                value=_synth_provider,
+                label="Synthesizer Backend", interactive=True,
+            )
+            _synth_model = get_setting("rag_synthesizer_model") or "qwen3:1.7b"
             rag_synth_model = gr.Dropdown(
-                choices=["gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash-preview-05-20"],
-                value=get_setting("rag_synthesizer_model") or "gemini-2.5-flash-lite",
+                choices=["qwen3:1.7b", "qwen3:4b", "gemini-2.5-flash-lite", "gemini-2.0-flash"],
+                value=_synth_model,
                 label="Synthesizer Model", interactive=True, allow_custom_value=True,
             )
             rag_synth_api_key = gr.Textbox(
                 value=get_setting("rag_synthesizer_api_key"),
-                label="Gemini API Key (for synthesizer)",
+                label="Gemini API Key (only needed for Gemini backend)",
                 type="password", interactive=True,
                 placeholder="Enter Google AI API key...",
             )
@@ -692,6 +698,11 @@ def build_chat_page():
     rag_max_chunks.change(
         lambda v: set_setting("rag_max_chunks", str(int(v))),
         inputs=[rag_max_chunks],
+        api_visibility="private",
+    )
+    rag_synth_provider.change(
+        lambda v: set_setting("rag_synthesizer_provider", v),
+        inputs=[rag_synth_provider],
         api_visibility="private",
     )
     rag_synth_model.change(
