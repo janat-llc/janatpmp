@@ -87,7 +87,7 @@ JANATPMP/
 │   ├── janatpmp-mockup.png   # Visual reference for Projects page layout
 │   ├── INVENTORY_OLD_PARSERS.md    # Old pipeline code inventory (Phase 6A)
 │   └── INVENTORY_CONTENT_CORPUS.md # Content corpus catalog (Phase 6A)
-├── completed/                # Archived TODO files and dead prototype tabs
+├── completed/                # Local-only archive (gitignored) — TODO files, dead prototypes
 ├── screenshots/              # UI screenshots for reference
 ├── requirements.txt          # Python dependencies (pinned)
 ├── pyproject.toml            # Project metadata
@@ -378,7 +378,15 @@ docker-compose logs -f
 2. Commit with descriptive message: `git add -A && git commit -m "Phase {X}: {summary of changes}"`
 3. Merge to main: `git checkout main && git merge feature/phase{X}-{name}`
 4. Delete feature branch: `git branch -d feature/phase{X}-{name}`
-5. Move completed TODO to `completed/` directory
+5. Delete the TODO file (content lives in JANATPMP items, git history preserves the original)
+
+### TODO File Workflow
+
+- TODO files (`TODO*.md`) are **gitignored** — they never enter the public repo
+- Create TODO files locally for sprint planning, then delete after the sprint merges
+- Sprint content (goals, decisions, architecture notes) should be captured as JANATPMP
+  items/documents so the platform itself is the source of truth
+- Historical TODOs live in git history if ever needed for archaeology
 
 ### Commit Message Format
 `Phase {version}: {one-line summary}` — examples:
@@ -391,7 +399,7 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
 - Never commit directly to `main` — always use a feature branch
 - One phase = one branch = one merge
 - If a phase has sub-phases (4A, 4B), each gets its own branch
-- Completed TODO files move to `completed/` as part of the merge commit
+- TODO files are local-only planning artifacts — never committed to the repo
 
 ## Conventions
 

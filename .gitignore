@@ -64,3 +64,9 @@ imports/
 # Drive sync artifacts
 .tmp.driveupload/
 .tmp.drivedownload/
+
+# TODO files (content lives in JANATPMP items, not the repo)
+TODO*.md
+
+# Completed archive (historical TODOs + dead code)
+completed/
