@@ -491,7 +491,7 @@ def _synthesize_rag_context(user_message: str, raw_context: str, context_parts: 
             model=model,
             contents=[types.Content(
                 role="user",
-                parts=[types.Part.from_text(synthesis_prompt)],
+                parts=[types.Part.from_text(text=synthesis_prompt)],
             )],
             config=types.GenerateContentConfig(
                 temperature=0.1,  # Low temperature for factual synthesis
@@ -798,7 +798,7 @@ def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: s
     contents = []
     for msg in _build_api_messages(history):
         role = "model" if msg["role"] == "assistant" else msg["role"]
-        contents.append(types.Content(role=role, parts=[types.Part.from_text(msg["content"])]))
+        contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])]))
 
     config = types.GenerateContentConfig(
         system_instruction=system_prompt, tools=_tools_gemini(),
