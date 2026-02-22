@@ -31,6 +31,9 @@ SALIENCE_DEFAULT = 0.5       # Starting salience for new entries
 SALIENCE_USAGE_RATE = 0.03   # Boost per usage signal (softer than retrieval boost)
 SALIENCE_DECAY_RATE = 0.01   # Decay for retrieved-but-unused chunks
 
+# --- RAG retrieval ---
+RAG_MAX_CHUNKS_DEFAULT = 10  # Default max chunks injected (tunable via settings DB)
+
 # --- Reranking parameters ---
 RERANK_CANDIDATES = 20  # ANN top-k before reranking
 RERANK_RETURN = 5        # Top-n returned after reranking

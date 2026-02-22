@@ -9,12 +9,54 @@ Can run standalone: python pages/chat.py
 """
 
 import json
+import re
 import gradio as gr
 from db.chat_operations import (
     create_conversation, parse_reasoning, add_message,
     add_message_metadata, update_message_metadata,
 )
 from services.chat import chat, PROVIDER_PRESETS, fetch_ollama_models, _EMPTY_RAG_METRICS, _EMPTY_TOKEN_COUNTS
+
+
+def _sanitize_tool_call_xml(text: str) -> str:
+    """Convert <tool_call> XML to visible markdown.
+
+    Some models emit raw XML tool calls instead of using the function calling
+    API. Gradio's markdown renderer strips unknown XML tags, leaving an empty
+    chat bubble. This converts them to readable content.
+    """
+    if not text or "<tool_call>" not in text:
+        return text
+
+    calls = []
+    for match in re.finditer(
+        r'<function=(\w+)>(.*?)</function>',
+        text,
+        re.DOTALL,
+    ):
+        fn_name = match.group(1)
+        params_block = match.group(2).strip()
+        params = []
+        for pm in re.finditer(
+            r'<parameter=(\w+)>\s*(.*?)\s*</parameter>',
+            params_block,
+            re.DOTALL,
+        ):
+            params.append(f'{pm.group(1)}="{pm.group(2).strip()}"')
+        param_str = ", ".join(params) if params else ""
+        calls.append(f"`{fn_name}({param_str})`")
+
+    if calls:
+        call_list = ", ".join(calls)
+        return (
+            f"I wanted to call {call_list} to find that information, "
+            f"but tool execution was not available for this response. "
+            f"The knowledge you're asking about may not be in my current RAG context."
+        )
+
+    # Fallback: just wrap the raw XML in a code block so it's visible
+    return f"```xml\n{text.strip()}\n```"
+
 from services.settings import get_setting, set_setting
 from shared.constants import DEFAULT_CHAT_HISTORY
 from shared.data_helpers import _load_most_recent_chat, _load_chat_session
@@ -77,6 +119,10 @@ def _handle_send(message, history, conv_id, provider, model,
                 break
 
         reasoning, clean_response = parse_reasoning(raw_response)
+
+        # Sanitize <tool_call> XML that some models emit as plain text
+        # (Gradio markdown strips unknown XML tags → empty chat bubble)
+        clean_response = _sanitize_tool_call_xml(clean_response)
 
         # Decompose reasoning tokens from completion_tokens when provider
         # doesn't report them separately (Ollama lumps <think> + response).
@@ -258,39 +304,71 @@ def build_chat_page():
             gr.Markdown(f"**Turn {tc}**" if tc > 0 else "*No messages yet*")
 
             if tc > 0:
-                # RAG section
+                # RAG Retrieval — funnel summary
                 gr.Markdown("#### RAG Retrieval")
                 hits_used = rag.get("hits_used", 0)
                 hit_count = rag.get("hit_count", 0)
+                rejected_count = len(rag.get("rejected", []))
                 collections = rag.get("collections_searched", [])
                 avg_rerank = rag.get("avg_rerank_score", 0.0)
                 avg_sal = rag.get("avg_salience", 0.0)
 
                 gr.Markdown(
-                    f"Hits: **{hits_used}** / {hit_count} candidates\n\n"
-                    f"Collections: {', '.join(collections) if collections else 'none'}\n\n"
-                    f"Avg rerank: **{avg_rerank:.3f}**\n\n"
-                    f"Avg salience: **{avg_sal:.3f}**"
+                    f"Hits: **{hits_used}** used / {hit_count} retrieved"
+                    + (f" ({rejected_count} rejected)" if rejected_count else "")
+                    + f"\n\nCollections: {', '.join(collections) if collections else 'none'}"
+                    + f"\n\nAvg rerank: **{avg_rerank:.3f}**"
+                    + f"\n\nAvg salience: **{avg_sal:.3f}**"
                 )
 
-                # RAG Provenance (collapsed)
+                # Accordion 1: RAG Context Injected — the exact text fed to the model
+                context_text = rag.get("context_text", "")
+                with gr.Accordion("Context Injected", open=False):
+                    if context_text:
+                        gr.Textbox(
+                            value=context_text, lines=8, max_lines=25,
+                            interactive=False, show_label=False,
+                            key="rag-context-text",
+                        )
+                    else:
+                        gr.Markdown("*No context injected this turn*")
+
+                # Accordion 2: RAG Provenance — used hits with text previews
                 scores = rag.get("scores", [])
                 if scores:
-                    with gr.Accordion("RAG Provenance", open=False):
+                    with gr.Accordion(f"Provenance ({len(scores)} hits)", open=False):
                         for i, s in enumerate(scores):
-                            title = (s.get("title", "") or "untitled")[:40]
+                            source_badge = "MSG" if s.get("source") == "messages" else "DOC"
+                            title = (s.get("title", "") or "untitled")[:60]
                             conv_title = s.get("source_conversation_title", "")
                             created = (s.get("created_at", "") or "")[:10]
-                            line = f"**{i+1}.** {title}"
+                            preview = (s.get("text_preview", "") or "")[:150]
+                            rerank_s = s.get("rerank_score", 0)
+                            sal_s = s.get("salience", 0)
+                            ann_s = s.get("ann_score", 0)
+
+                            line = f"**{i+1}. [{source_badge}]** {title}"
                             if conv_title:
-                                line += f"\n\n  From: *{conv_title[:50]}*"
+                                line += f"\n\n*{conv_title[:50]}*"
                             if created:
                                 line += f" ({created})"
-                            line += (
-                                f"\n\n  rerank: {s.get('rerank_score', 0):.3f}, "
-                                f"sal: {s.get('salience', 0):.3f}"
-                            )
+                            line += f"\n\nrerank: {rerank_s:.3f} | sal: {sal_s:.3f} | ann: {ann_s:.3f}"
+                            if preview:
+                                line += f"\n\n> {preview}..."
                             gr.Markdown(line, key=f"hit-{i}")
+
+                # Accordion 3: Rejected Candidates — considered but below threshold
+                rejected = rag.get("rejected", [])
+                if rejected:
+                    with gr.Accordion(f"Rejected ({len(rejected)})", open=False):
+                        for i, s in enumerate(rejected):
+                            title = (s.get("title", "") or "untitled")[:40]
+                            reason = s.get("reject_reason", "below threshold")
+                            rerank_s = s.get("rerank_score", 0)
+                            gr.Markdown(
+                                f"~~{i+1}. {title}~~ — {reason}",
+                                key=f"rejected-{i}",
+                            )
 
                 # Latency
                 timings = metrics.get("timings", {})

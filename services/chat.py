@@ -199,13 +199,93 @@ def _build_system_prompt(has_tools: bool = True) -> str:
 _EMPTY_RAG_METRICS = {
     "hit_count": 0, "hits_used": 0, "collections_searched": [],
     "avg_rerank_score": 0.0, "avg_salience": 0.0, "scores": [],
+    "rejected": [], "context_text": "",
 }
 
 _EMPTY_TOKEN_COUNTS = {"prompt": 0, "reasoning": 0, "response": 0, "total": 0}
 
 
+_FTS_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can",
+    "do", "for", "from", "had", "has", "have", "he", "her", "his",
+    "how", "i", "if", "in", "into", "is", "it", "its", "me", "my",
+    "no", "not", "of", "on", "or", "our", "she", "so", "that", "the",
+    "their", "them", "then", "there", "these", "they", "this", "to",
+    "up", "us", "was", "we", "were", "what", "when", "which", "who",
+    "will", "with", "would", "you", "your",
+}
+
+
+def _fts_search_messages(query: str, limit: int = 10) -> list[dict]:
+    """Keyword search on messages via SQLite FTS5.
+
+    Complements vector search for cases where specific terms (like "Entry #008")
+    are buried deep in long messages and invisible to the embedding model.
+    Filters stop words, uses AND logic for remaining terms.
+
+    Returns results in the same dict format as Qdrant search_all() so they
+    can be merged into the same candidate pipeline.
+    """
+    from db.operations import get_connection
+    import re
+    results = []
+    try:
+        # Extract meaningful terms: strip punctuation, remove stop words.
+        # For numbers like #008, also generate zero-padded variants (#0008)
+        # since content may use different padding.
+        raw_terms = re.sub(r'[^\w\s]', '', query).split()
+        meaningful = [t for t in raw_terms if t.lower() not in _FTS_STOP_WORDS and len(t) > 1]
+        if not meaningful:
+            return []
+
+        # Expand number terms with padding variants
+        expanded = []
+        for t in meaningful:
+            if re.match(r'^\d+$', t):
+                # Pure number: add zero-padded variants (008 → 0008, 00008)
+                expanded.append(f'("{t}" OR "{t.zfill(4)}" OR "{t.zfill(5)}")')
+            else:
+                expanded.append(f'"{t}"')
+
+        # Use AND logic — all terms must appear. More precise than OR.
+        fts_query = " AND ".join(expanded)
+
+        with get_connection() as conn:
+            rows = conn.execute("""
+                SELECT m.id, m.user_prompt, m.model_response,
+                       m.conversation_id, c.title as conv_title,
+                       m.created_at
+                FROM messages m
+                JOIN messages_fts fts ON fts.rowid = m.rowid
+                JOIN conversations c ON c.id = m.conversation_id
+                WHERE messages_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+            """, (fts_query, limit)).fetchall()
+
+        for row in rows:
+            text = f"Q: {row['user_prompt']}\nA: {row['model_response']}"
+            results.append({
+                "id": row["id"],
+                "text": text,
+                "score": 0.0,
+                "source_collection": "messages",
+                "conversation_id": row["conversation_id"],
+                "conv_title": row["conv_title"] or "",
+                "created_at": row["created_at"] or "",
+                "_fts_match": True,
+            })
+    except Exception as e:
+        logger.debug("FTS search failed: %s", e)
+    return results
+
+
 def _build_rag_context(user_message: str) -> tuple[str, dict]:
-    """Search Qdrant for relevant context and format for injection.
+    """Hybrid search: Qdrant vectors + SQLite FTS keyword matching.
+
+    Two-source retrieval ensures both semantic similarity AND keyword matches
+    surface relevant content. Particularly important for specific terms like
+    "Entry #008" buried deep in long messages.
 
     Reads rag_score_threshold and rag_max_chunks from settings DB so they
     can be tuned at runtime via the Admin panel.
@@ -217,12 +297,34 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
         Tuple of (formatted context string, RAG metrics dict).
         Returns ("", empty_metrics) if no results or Qdrant unavailable.
     """
-    metrics = dict(_EMPTY_RAG_METRICS, scores=[])
+    metrics = dict(_EMPTY_RAG_METRICS, scores=[], rejected=[])
     try:
         from services.vector_store import search_all
         threshold = float(get_setting("rag_score_threshold") or RAG_SCORE_THRESHOLD)
-        max_chunks = int(get_setting("rag_max_chunks") or 3)
-        results = search_all(user_message, limit=max_chunks)
+        max_chunks = int(get_setting("rag_max_chunks") or 10)
+        # Fetch extra candidates — short stubs and low-quality hits will be
+        # filtered out below, so we need headroom to still fill max_chunks.
+        results = search_all(user_message, limit=max_chunks * 3)
+
+        # Hybrid: FTS keyword search catches specific terms (Entry #008,
+        # proper nouns) buried deep in long messages that vector search
+        # misses. FTS results go FIRST — they matched by exact keyword,
+        # which is a strong signal that vector similarity can't replicate.
+        fts_results = _fts_search_messages(user_message, limit=max_chunks)
+        seen_ids = set()
+        merged = []
+        for fts_r in fts_results:
+            fid = fts_r["id"]
+            if fid not in seen_ids:
+                merged.append(fts_r)
+                seen_ids.add(fid)
+        for r in results:
+            rid = r.get("id")
+            if rid not in seen_ids:
+                merged.append(r)
+                seen_ids.add(rid)
+        results = merged
+
         if not results:
             return "", metrics
 
@@ -231,34 +333,88 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
 
         context_parts = []
         used_scores = []
+        rejected_scores = []
         for r in results:
-            # Prefer rerank_score (cross-encoder relevance) over ANN score.
-            # Qwen3-Reranker scores are 0-1 probabilities (via vLLM).
-            # ANN scores are cosine similarity (0-1), only used as fallback.
-            rerank = r.get("rerank_score")
-            if rerank is not None:
-                if rerank < 0.3:
-                    continue  # Reranker says low relevance (0-1 scale)
-            else:
-                if r.get("score", 0) <= threshold:
-                    continue  # ANN fallback — below threshold
             source = r.get("source_collection", "unknown")
             title = r.get("title", r.get("conv_title", ""))
-            text = r.get("text", "")[:500]
-            context_parts.append(f"[{source}] {title}: {text}")
-            used_scores.append({
+            full_text = r.get("text", "") or ""
+
+            # Extract Q/A portions for messages stored as "Q: ...\nA: ..."
+            # The model response (A:) contains the actual knowledge; the
+            # user prompt (Q:) is contextual but shouldn't dominate.
+            q_part = ""
+            a_part = full_text
+            if full_text.startswith("Q: "):
+                a_idx = full_text.find("\nA: ")
+                if a_idx > 0:
+                    q_part = full_text[3:a_idx].strip()
+                    a_part = full_text[a_idx + 4:].strip()
+
+            # Preview shows the A (response) portion — that's the knowledge
+            text_preview = a_part[:200] if a_part else full_text[:200]
+
+            candidate_info = {
                 "id": r.get("id", ""),
                 "source": source, "title": title,
-                "rerank_score": rerank or 0.0,
+                "rerank_score": r.get("rerank_score") or 0.0,
                 "salience": r.get("salience", 0.0),
                 "ann_score": r.get("score", 0.0),
+                "text_preview": text_preview,
                 "source_conversation_id": r.get("conversation_id", ""),
                 "source_conversation_title": r.get("conv_title", ""),
                 "created_at": r.get("created_at", ""),
-            })
+                "fts_match": r.get("_fts_match", False),
+            }
+
+            # Filter 1: Minimum text length — reject short stubs (domain
+            # descriptions, placeholder docs) that match everything broadly
+            # and crowd out real content. Check the A portion for messages.
+            content_text = a_part if a_part != full_text else full_text
+            if len(content_text) < 50:
+                candidate_info["reject_reason"] = f"text too short ({len(content_text)} chars)"
+                rejected_scores.append(candidate_info)
+                continue
+
+            # Filter 2: Rerank/ANN score threshold.
+            # FTS keyword matches bypass score filters — they matched by
+            # exact terms, which is a strong relevance signal on its own.
+            # Prefer rerank_score (cross-encoder relevance) over ANN score.
+            # Qwen3-Reranker scores are 0-1 probabilities (via vLLM).
+            # ANN scores are cosine similarity (0-1), only used as fallback.
+            is_fts = r.get("_fts_match", False)
+            if not is_fts:
+                rerank = r.get("rerank_score")
+                if rerank is not None:
+                    if rerank < 0.3:
+                        candidate_info["reject_reason"] = f"rerank {rerank:.3f} < 0.3"
+                        rejected_scores.append(candidate_info)
+                        continue
+                else:
+                    ann_score = r.get("score", 0)
+                    if ann_score <= threshold:
+                        candidate_info["reject_reason"] = f"ann {ann_score:.3f} <= {threshold}"
+                        rejected_scores.append(candidate_info)
+                        continue
+
+            # Cap at max_chunks used results to control context size
+            if len(used_scores) >= max_chunks:
+                candidate_info["reject_reason"] = "over max_chunks limit"
+                rejected_scores.append(candidate_info)
+                continue
+
+            # Inject the A (response) portion with brief Q context,
+            # not the raw "Q: ... A: ..." which wastes context on the question
+            if q_part and a_part != full_text:
+                q_summary = q_part[:100] + ("..." if len(q_part) > 100 else "")
+                inject_text = f"(asked: {q_summary})\n{a_part[:2000]}"
+            else:
+                inject_text = full_text[:2000]
+            context_parts.append(f"[{source}] {title}: {inject_text}")
+            used_scores.append(candidate_info)
 
         metrics["hits_used"] = len(used_scores)
         metrics["scores"] = used_scores
+        metrics["rejected"] = rejected_scores
         if used_scores:
             metrics["avg_rerank_score"] = sum(s["rerank_score"] for s in used_scores) / len(used_scores)
             metrics["avg_salience"] = sum(s["salience"] for s in used_scores) / len(used_scores)
@@ -267,6 +423,7 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
             return "", metrics
 
         context = "\n\n---\nRelevant context from knowledge base:\n" + "\n\n".join(context_parts) + "\n---\n"
+        metrics["context_text"] = context
         return context, metrics
     except Exception as e:
         logger.debug("RAG context unavailable: %s", e)

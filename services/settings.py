@@ -107,7 +107,7 @@ SETTINGS_REGISTRY = {
     # RAG
     "qdrant_url":           ("http://janatpmp-qdrant:6333", False, "rag", None),
     "rag_score_threshold":  ("0.3", False, "rag", _validate_positive_float),
-    "rag_max_chunks":       ("3", False, "rag", _validate_positive_int),
+    "rag_max_chunks":       ("10", False, "rag", _validate_positive_int),
 
     # System
     "log_level":            ("INFO", False, "system", _validate_log_level),
