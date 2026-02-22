@@ -252,3 +252,186 @@ def embed_all_domains() -> dict:
                 embedded, skipped, len(errors), elapsed)
     return {"embedded": embedded, "skipped": skipped, "errors": errors,
             "elapsed_seconds": round(elapsed, 1)}
+
+
+def embed_all_items() -> dict:
+    """Embed all items (projects, features, etc.) into the Qdrant documents collection.
+
+    Combines entity_type, title, and description as embeddable text. Items are
+    stored in janatpmp_documents with entity_type='item' metadata, making them
+    discoverable via RAG search alongside documents, messages, and domains.
+
+    Supports checkpoint resume — skips items already in Qdrant.
+
+    Returns:
+        Dict with keys: embedded (int), skipped (int), errors (list[str]),
+        elapsed_seconds (float).
+    """
+    ensure_collections()
+    embedded = 0
+    skipped = 0
+    errors = []
+    start_time = time.time()
+
+    with get_connection() as conn:
+        cursor = conn.execute("""
+            SELECT id, entity_type, domain, title, description, status, priority
+            FROM items
+            WHERE title IS NOT NULL AND length(title) > 0
+        """)
+        rows = cursor.fetchall()
+
+    total = len(rows)
+    logger.info("Bulk embed items: %d candidates", total)
+
+    for batch_start in range(0, total, BATCH_SIZE):
+        batch = rows[batch_start:batch_start + BATCH_SIZE]
+        texts = []
+        valid_rows = []
+
+        for row in batch:
+            if point_exists(COLLECTION_DOCUMENTS, row["id"]):
+                skipped += 1
+                continue
+            text = f"{row['entity_type']}: {row['title']}"
+            desc = row["description"]
+            if desc:
+                text += f"\n{desc}"
+            if len(text) < 10:
+                skipped += 1
+                continue
+            if len(text) > MAX_TEXT_CHARS:
+                text = text[:MAX_TEXT_CHARS]
+            texts.append(text)
+            valid_rows.append((row, text))
+
+        if not texts:
+            continue
+
+        try:
+            vectors = embed_passages(texts)
+            points = [
+                PointStruct(
+                    id=row["id"],
+                    vector=vec,
+                    payload={
+                        "text": text,
+                        "entity_type": "item",
+                        "item_type": row["entity_type"] or "",
+                        "title": row["title"] or "",
+                        "domain": row["domain"] or "",
+                        "status": row["status"] or "",
+                        "priority": row["priority"],
+                    },
+                )
+                for (row, text), vec in zip(valid_rows, vectors)
+            ]
+            upsert_batch(COLLECTION_DOCUMENTS, points)
+            embedded += len(points)
+        except Exception as e:
+            logger.error("Batch embed items failed at offset %d: %s", batch_start, e)
+            errors.append(f"batch@{batch_start}: {str(e)}")
+
+        processed = embedded + skipped + len(errors)
+        if processed > 0 and processed % 100 < BATCH_SIZE:
+            elapsed = time.time() - start_time
+            logger.info("Items: %d/%d (%.1fs elapsed)", processed, total, elapsed)
+
+    elapsed = time.time() - start_time
+    logger.info("Bulk embed items: %d embedded, %d skipped, %d errors (%.1fs)",
+                embedded, skipped, len(errors), elapsed)
+    return {"embedded": embedded, "skipped": skipped, "errors": errors,
+            "elapsed_seconds": round(elapsed, 1)}
+
+
+def embed_all_tasks() -> dict:
+    """Embed all tasks into the Qdrant documents collection.
+
+    Combines title, description, and agent instructions as embeddable text.
+    Tasks are stored in janatpmp_documents with entity_type='task' metadata,
+    making them discoverable via RAG search.
+
+    Supports checkpoint resume — skips tasks already in Qdrant.
+
+    Returns:
+        Dict with keys: embedded (int), skipped (int), errors (list[str]),
+        elapsed_seconds (float).
+    """
+    ensure_collections()
+    embedded = 0
+    skipped = 0
+    errors = []
+    start_time = time.time()
+
+    with get_connection() as conn:
+        cursor = conn.execute("""
+            SELECT id, task_type, title, description, assigned_to, status,
+                   agent_instructions
+            FROM tasks
+            WHERE title IS NOT NULL AND length(title) > 0
+        """)
+        rows = cursor.fetchall()
+
+    total = len(rows)
+    logger.info("Bulk embed tasks: %d candidates", total)
+
+    for batch_start in range(0, total, BATCH_SIZE):
+        batch = rows[batch_start:batch_start + BATCH_SIZE]
+        texts = []
+        valid_rows = []
+
+        for row in batch:
+            if point_exists(COLLECTION_DOCUMENTS, row["id"]):
+                skipped += 1
+                continue
+            text = f"Task: {row['title']}"
+            desc = row["description"]
+            if desc:
+                text += f"\n{desc}"
+            instructions = row["agent_instructions"]
+            if instructions:
+                text += f"\n{instructions}"
+            if len(text) < 10:
+                skipped += 1
+                continue
+            if len(text) > MAX_TEXT_CHARS:
+                text = text[:MAX_TEXT_CHARS]
+            texts.append(text)
+            valid_rows.append((row, text))
+
+        if not texts:
+            continue
+
+        try:
+            vectors = embed_passages(texts)
+            points = [
+                PointStruct(
+                    id=row["id"],
+                    vector=vec,
+                    payload={
+                        "text": text,
+                        "entity_type": "task",
+                        "task_type": row["task_type"] or "",
+                        "title": row["title"] or "",
+                        "assigned_to": row["assigned_to"] or "",
+                        "status": row["status"] or "",
+                    },
+                )
+                for (row, text), vec in zip(valid_rows, vectors)
+            ]
+            upsert_batch(COLLECTION_DOCUMENTS, points)
+            embedded += len(points)
+        except Exception as e:
+            logger.error("Batch embed tasks failed at offset %d: %s", batch_start, e)
+            errors.append(f"batch@{batch_start}: {str(e)}")
+
+        processed = embedded + skipped + len(errors)
+        if processed > 0 and processed % 100 < BATCH_SIZE:
+            elapsed = time.time() - start_time
+            logger.info("Tasks: %d/%d (%.1fs elapsed)", processed, total, elapsed)
+
+    elapsed = time.time() - start_time
+    logger.info("Bulk embed tasks: %d embedded, %d skipped, %d errors (%.1fs)",
+                embedded, skipped, len(errors), elapsed)
+    return {"embedded": embedded, "skipped": skipped, "errors": errors,
+            "elapsed_seconds": round(elapsed, 1)}

@@ -76,6 +76,68 @@ def ensure_collections():
             )
 
 
+def snapshot_collections() -> dict:
+    """Create Qdrant snapshots for all collections.
+
+    Snapshots are stored on the Qdrant server's filesystem (persisted in the
+    Docker volume). Used for unified platform backup.
+
+    Returns:
+        Dict mapping collection names to snapshot filenames, plus point counts.
+    """
+    client = _get_client()
+    results = {}
+    for name in [COLLECTION_DOCUMENTS, COLLECTION_MESSAGES]:
+        try:
+            info = client.get_collection(name)
+            point_count = info.points_count
+            snapshot = client.create_snapshot(collection_name=name, wait=True)
+            results[name] = {
+                "snapshot": snapshot.name,
+                "points": point_count,
+            }
+            logger.info("Qdrant snapshot: %s → %s (%d points)",
+                        name, snapshot.name, point_count)
+        except Exception as e:
+            logger.warning("Qdrant snapshot failed for %s: %s", name, e)
+            results[name] = {"snapshot": None, "error": str(e)}
+    return results
+
+
+def restore_snapshots(snapshot_names: dict) -> str:
+    """Restore Qdrant collections from previously created snapshots.
+
+    Args:
+        snapshot_names: Dict mapping collection name to snapshot filename
+            (as returned by snapshot_collections()).
+
+    Returns:
+        Status message with per-collection results.
+    """
+    client = _get_client()
+    results = []
+    for name in [COLLECTION_DOCUMENTS, COLLECTION_MESSAGES]:
+        entry = snapshot_names.get(name, {})
+        snap_name = entry.get("snapshot") if isinstance(entry, dict) else entry
+        if not snap_name:
+            results.append(f"{name}: no snapshot (re-embed needed)")
+            continue
+        try:
+            # Qdrant stores snapshots at /qdrant/snapshots/{collection}/
+            location = f"file:///qdrant/snapshots/{name}/{snap_name}"
+            client.recover_snapshot(
+                collection_name=name,
+                location=location,
+                wait=True,
+            )
+            results.append(f"{name}: restored from {snap_name}")
+            logger.info("Qdrant restored: %s from %s", name, snap_name)
+        except Exception as e:
+            logger.warning("Qdrant restore failed for %s: %s", name, e)
+            results.append(f"{name}: restore failed ({e})")
+    return " | ".join(results)
+
+
 def recreate_collections() -> str:
     """Drop and recreate all Qdrant collections at correct dimensions.
 

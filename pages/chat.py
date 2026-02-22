@@ -1,9 +1,9 @@
 """Sovereign Chat page — standalone Gradio Blocks app for /chat route.
 
 Three-panel layout:
-- Left sidebar: RAG/Chat metrics dashboard (per-turn + cumulative)
-- Center: Chatbot + input + New Chat + status
-- Right sidebar: Per-turn parameters (top) + Global defaults (bottom)
+- Left sidebar: RAG observability (provenance, context, rejected candidates)
+- Center: Chat + Overview (charts) + Settings tabs
+- Right sidebar: Session controls + session metrics (turns, latency, tokens)
 
 Can run standalone: python pages/chat.py
 """
@@ -11,6 +11,7 @@ Can run standalone: python pages/chat.py
 import json
 import re
 import gradio as gr
+import pandas as pd
 from db.chat_operations import (
     create_conversation, parse_reasoning, add_message,
     add_message_metadata, update_message_metadata,
@@ -59,7 +60,7 @@ def _sanitize_tool_call_xml(text: str) -> str:
 
 from services.settings import get_setting, set_setting
 from shared.constants import DEFAULT_CHAT_HISTORY
-from shared.data_helpers import _load_most_recent_chat, _load_chat_session
+from shared.data_helpers import _load_most_recent_chat, _load_chat_session, _load_conversation_metrics
 from shared.chat_service import (
     set_active_conversation_id,
     get_chat_config,
@@ -386,34 +387,6 @@ def build_chat_page():
                                 key=f"rejected-{i}",
                             )
 
-                # Latency
-                timings = metrics.get("timings", {})
-                if timings.get("total", 0) > 0:
-                    gr.Markdown("#### Latency")
-                    gr.Markdown(
-                        f"Total: **{timings.get('total', 0):,}** ms\n\n"
-                        f"RAG: **{timings.get('rag', 0):,}** ms\n\n"
-                        f"Inference: **{timings.get('inference', 0):,}** ms"
-                    )
-
-                # Token counts — this turn
-                gr.Markdown("#### Tokens (this turn)")
-                gr.Markdown(
-                    f"Prompt: **{tok.get('prompt', 0):,}**\n\n"
-                    f"Reasoning: **{tok.get('reasoning', 0):,}**\n\n"
-                    f"Response: **{tok.get('response', 0):,}**\n\n"
-                    f"Total: **{tok.get('total', 0):,}**"
-                )
-
-                # Cumulative tokens
-                gr.Markdown("#### Tokens (session)")
-                gr.Markdown(
-                    f"Prompt: **{cum.get('prompt', 0):,}**\n\n"
-                    f"Reasoning: **{cum.get('reasoning', 0):,}**\n\n"
-                    f"Response: **{cum.get('response', 0):,}**\n\n"
-                    f"Total: **{cum.get('total', 0):,}**"
-                )
-
     # === RIGHT SIDEBAR — Session Parameters ===
     with gr.Sidebar(position="right"):
         gr.Markdown("### Session")
@@ -451,7 +424,50 @@ def build_chat_page():
             lines=3, interactive=True,
         )
 
-    # === CENTER PANEL — Tabs: Chat + Settings ===
+        gr.Markdown("---")
+
+        @gr.render(inputs=[turn_metrics])
+        def render_session_metrics(metrics):
+            tc = metrics.get("turn_count", 0)
+            if tc < 1:
+                gr.Markdown("*No metrics yet*", key="rsm-empty")
+                return
+
+            gr.Markdown(f"**Turn {tc}**", key="rsm-turn")
+
+            # Latency — compact single line
+            timings = metrics.get("timings", {})
+            total_ms = timings.get("total", 0)
+            if total_ms > 0:
+                rag_ms = timings.get("rag", 0)
+                inf_ms = timings.get("inference", 0)
+                gr.Markdown(
+                    f"Latency: **{total_ms:,}** ms "
+                    f"(RAG {rag_ms:,} + LLM {inf_ms:,})",
+                    key="rsm-latency",
+                )
+
+            # Turn tokens — compact single line
+            tok = metrics.get("token_counts", {})
+            p, r, o = tok.get("prompt", 0), tok.get("reasoning", 0), tok.get("response", 0)
+            gr.Markdown(
+                f"Tokens: P {p:,} / R {r:,} / O {o:,}",
+                key="rsm-tokens",
+            )
+
+            # Session cumulative — in accordion
+            cum = metrics.get("cumulative_tokens", {})
+            cum_total = cum.get("total", 0)
+            if cum_total > 0:
+                with gr.Accordion(f"Session: {cum_total:,} tokens", open=False):
+                    gr.Markdown(
+                        f"Prompt: {cum.get('prompt', 0):,}\n\n"
+                        f"Reasoning: {cum.get('reasoning', 0):,}\n\n"
+                        f"Response: {cum.get('response', 0):,}",
+                        key="rsm-cum-detail",
+                    )
+
+    # === CENTER PANEL — Tabs: Chat + Overview + Settings ===
     with gr.Tabs():
         # --- Chat Tab ---
         with gr.Tab("Chat"):
@@ -468,6 +484,195 @@ def build_chat_page():
                 interactive=True,
                 max_lines=5,
             )
+
+        # --- Overview Tab (Charts + Metrics Dashboard) ---
+        with gr.Tab("Overview"):
+            @gr.render(inputs=[turn_metrics, active_conv_id])
+            def render_overview(metrics, conv_id):
+                tc = metrics.get("turn_count", 0)
+                if not conv_id or tc < 1:
+                    gr.Markdown(
+                        "*Send a message to see metrics...*\n\n"
+                        "Charts will appear here after your first conversation turn, "
+                        "showing RAG pipeline health, latency breakdowns, and token usage.",
+                        key="overview-empty",
+                    )
+                    return
+
+                # Load historical per-turn data from DB
+                history = _load_conversation_metrics(conv_id)
+                if len(history) < 1:
+                    gr.Markdown("*No metric data available for this conversation.*", key="overview-nodata")
+                    return
+
+                df = pd.DataFrame(history)
+
+                # --- Row 1: RAG Pipeline Health ---
+                gr.Markdown("### RAG Pipeline", key="ov-rag-title")
+                with gr.Row():
+                    with gr.Column():
+                        # RAG Funnel — retrieved vs used per turn
+                        funnel_df = pd.melt(
+                            df[["turn", "rag_hit_count", "rag_hits_used"]].rename(
+                                columns={"rag_hit_count": "Retrieved", "rag_hits_used": "Used"}
+                            ),
+                            id_vars=["turn"], var_name="Stage", value_name="Count",
+                        )
+                        gr.BarPlot(
+                            value=funnel_df, x="turn", y="Count", color="Stage",
+                            title="RAG Funnel per Turn",
+                            x_title="Turn", y_title="Chunks",
+                            color_map={"Retrieved": "#4d4d4d", "Used": "#00FFFF"},
+                            key="ov-rag-funnel",
+                        )
+                        gr.Markdown(
+                            "*Retrieved = ANN candidates after reranking. "
+                            "Used = chunks that passed the score threshold and were "
+                            "injected into the prompt.*",
+                            key="ov-rag-funnel-tip",
+                        )
+                    with gr.Column():
+                        # Retrieval Quality Trend — avg rerank + salience over turns
+                        quality_df = pd.melt(
+                            df[["turn", "avg_rerank", "avg_salience"]].rename(
+                                columns={"avg_rerank": "Rerank", "avg_salience": "Salience"}
+                            ),
+                            id_vars=["turn"], var_name="Score", value_name="Value",
+                        )
+                        gr.LinePlot(
+                            value=quality_df, x="turn", y="Value", color="Score",
+                            title="Retrieval Quality Trend",
+                            x_title="Turn", y_title="Score (0-1)",
+                            color_map={"Rerank": "#00FFFF", "Salience": "#730073"},
+                            key="ov-quality-trend",
+                        )
+                        gr.Markdown(
+                            "*Rerank = cross-encoder relevance score. "
+                            "Salience = accumulated memory importance. "
+                            "Rising trends = memory is learning what matters.*",
+                            key="ov-quality-tip",
+                        )
+
+                # --- Row 2: Performance ---
+                gr.Markdown("### Performance", key="ov-perf-title")
+                with gr.Row():
+                    with gr.Column():
+                        # Latency breakdown — RAG vs Inference per turn
+                        latency_df = pd.melt(
+                            df[["turn", "latency_rag", "latency_inference"]].rename(
+                                columns={"latency_rag": "RAG", "latency_inference": "Inference"}
+                            ),
+                            id_vars=["turn"], var_name="Phase", value_name="ms",
+                        )
+                        gr.BarPlot(
+                            value=latency_df, x="turn", y="ms", color="Phase",
+                            title="Latency Breakdown",
+                            x_title="Turn", y_title="Milliseconds",
+                            color_map={"RAG": "#330033", "Inference": "#00FFFF"},
+                            key="ov-latency",
+                        )
+                        gr.Markdown(
+                            "*RAG = vector search + reranking + synthesis. "
+                            "Inference = LLM generation time. "
+                            "Spikes in RAG may indicate complex queries or slow reranker.*",
+                            key="ov-latency-tip",
+                        )
+                    with gr.Column():
+                        # Cumulative token usage — running totals
+                        cum_df = df[["turn", "tokens_prompt", "tokens_reasoning", "tokens_response"]].copy()
+                        cum_df["Prompt"] = cum_df["tokens_prompt"].cumsum()
+                        cum_df["Reasoning"] = cum_df["tokens_reasoning"].cumsum()
+                        cum_df["Response"] = cum_df["tokens_response"].cumsum()
+                        cum_melt = pd.melt(
+                            cum_df[["turn", "Prompt", "Reasoning", "Response"]],
+                            id_vars=["turn"], var_name="Type", value_name="Tokens",
+                        )
+                        gr.LinePlot(
+                            value=cum_melt, x="turn", y="Tokens", color="Type",
+                            title="Cumulative Token Usage",
+                            x_title="Turn", y_title="Running Total",
+                            color_map={"Prompt": "#808080", "Reasoning": "#730073", "Response": "#00FFFF"},
+                            key="ov-cum-tokens",
+                        )
+                        gr.Markdown(
+                            "*Prompt tokens grow as conversation history accumulates. "
+                            "Steep climb = approaching context window limits. "
+                            "Reasoning = how much the model 'thinks' before answering.*",
+                            key="ov-cum-tip",
+                        )
+
+                # --- Row 3: Token Economy + Quality ---
+                gr.Markdown("### Token Economy", key="ov-tokens-title")
+                with gr.Row():
+                    with gr.Column():
+                        # Token distribution per turn
+                        tok_df = pd.melt(
+                            df[["turn", "tokens_prompt", "tokens_reasoning", "tokens_response"]].rename(
+                                columns={
+                                    "tokens_prompt": "Prompt",
+                                    "tokens_reasoning": "Reasoning",
+                                    "tokens_response": "Response",
+                                }
+                            ),
+                            id_vars=["turn"], var_name="Type", value_name="Tokens",
+                        )
+                        gr.BarPlot(
+                            value=tok_df, x="turn", y="Tokens", color="Type",
+                            title="Token Distribution per Turn",
+                            x_title="Turn", y_title="Tokens",
+                            color_map={"Prompt": "#808080", "Reasoning": "#730073", "Response": "#00FFFF"},
+                            key="ov-tok-dist",
+                        )
+                        gr.Markdown(
+                            "*High reasoning ratio = the model is 'thinking hard'. "
+                            "Growing prompt tokens = conversation history expanding. "
+                            "P = prompt, R = reasoning/thinking, O = output/response.*",
+                            key="ov-tok-tip",
+                        )
+                    with gr.Column():
+                        # Quality score trend (from Slumber Cycle)
+                        has_quality = df["quality_score"].notna().any()
+                        if has_quality:
+                            q_df = df[df["quality_score"].notna()][["turn", "quality_score"]].copy()
+                            gr.LinePlot(
+                                value=q_df, x="turn", y="quality_score",
+                                title="Quality Score Trend",
+                                x_title="Turn", y_title="Score (0-1)",
+                                key="ov-quality-score",
+                            )
+                            gr.Markdown(
+                                "*Slumber Cycle's async quality evaluation. "
+                                "Scores reflect response relevance, coherence, "
+                                "and information density. Higher = better.*",
+                                key="ov-quality-score-tip",
+                            )
+                        else:
+                            gr.Markdown(
+                                "### Quality Scores\n\n"
+                                "*Quality scores are populated by the Slumber Cycle "
+                                "(background evaluation daemon). Scores will appear "
+                                "after the system has been idle for a few minutes.*",
+                                key="ov-quality-pending",
+                            )
+
+                # --- Session Summary ---
+                gr.Markdown("---", key="ov-divider")
+                cum = metrics.get("cumulative_tokens", {})
+                tok = metrics.get("token_counts", {})
+                timings = metrics.get("timings", {})
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown(
+                            f"**Session:** {tc} turns | "
+                            f"{cum.get('total', 0):,} total tokens",
+                            key="ov-session-summary",
+                        )
+                    with gr.Column():
+                        gr.Markdown(
+                            f"**Last turn:** {timings.get('total', 0):,} ms | "
+                            f"P {tok.get('prompt', 0):,} / R {tok.get('reasoning', 0):,} / O {tok.get('response', 0):,}",
+                            key="ov-last-turn-summary",
+                        )
 
         # --- Settings Tab (Platform / User level) ---
         with gr.Tab("Settings"):
@@ -550,7 +755,7 @@ def build_chat_page():
     session_load_timer = gr.Timer(value=0.5, active=True)
 
     def _init_session():
-        """Reload most recent conversation from DB per session (fires once)."""
+        """Reload most recent conversation + config from DB per session (fires once)."""
         session = _load_chat_session()
         if session["conv_id"]:
             set_active_conversation_id(session["conv_id"])
@@ -561,17 +766,30 @@ def build_chat_page():
             "cumulative_tokens": session["token_totals"],
             "turn_count": session["turn_count"],
         }
+        # Refresh provider/model from DB so changes take effect on page refresh
+        fresh_config = get_chat_config()
+        fresh_provider = fresh_config["provider"]
+        if fresh_provider == "ollama":
+            fresh_models = fetch_ollama_models() or ["qwen3-vl:8b"]
+        else:
+            fresh_models = PROVIDER_PRESETS.get(fresh_provider, {}).get("models", [])
+        fresh_model = fresh_config["model"]
         return (
             list(session["display_history"]),
             list(session["api_history"]),
             session["conv_id"],
             metrics,
             gr.Timer(active=False),
+            gr.Dropdown(choices=["anthropic", "gemini", "ollama"], value=fresh_provider),
+            gr.Dropdown(choices=fresh_models, value=fresh_model),
+            fresh_provider,
+            fresh_model,
         )
 
     session_load_timer.tick(
         _init_session,
-        outputs=[chatbot, chat_history, active_conv_id, turn_metrics, session_load_timer],
+        outputs=[chatbot, chat_history, active_conv_id, turn_metrics, session_load_timer,
+                 cfg_provider, cfg_model, provider_state, model_state],
         api_visibility="private",
     )
 

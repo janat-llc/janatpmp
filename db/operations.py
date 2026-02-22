@@ -968,71 +968,151 @@ BACKUPS_DIR = Path(__file__).parent / "backups"
 
 def backup_database() -> str:
     """
-    Create a timestamped backup of the current database.
-    Backups are stored in the db/backups/ directory.
+    Create a unified backup of all three data stores: SQLite, Qdrant, and Neo4j.
+    Backups are stored as timestamped directories in db/backups/.
+
+    Each backup directory contains:
+    - sqlite.db: Full SQLite database copy
+    - manifest.json: Backup metadata, Qdrant snapshot names, Neo4j export stats
+    - neo4j_graph.json: All Neo4j nodes and relationships
+
+    Qdrant snapshots are stored on the Qdrant server volume (referenced by name
+    in the manifest). If Qdrant or Neo4j are unavailable, the backup continues
+    with SQLite only and notes what was skipped.
 
     Returns:
-        The backup filename, or error message if backup failed
+        The backup directory name, or error message if SQLite backup failed
     """
     if not DB_PATH.exists():
         return "No database file to backup"
 
     BACKUPS_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    backup_name = f"janatpmp_backup_{timestamp}.db"
+    backup_name = f"janatpmp_backup_{timestamp}"
     backup_path = BACKUPS_DIR / backup_name
+    backup_path.mkdir(exist_ok=True)
 
+    manifest = {"timestamp": timestamp, "version": 2, "stores": {}}
+
+    # 1. SQLite — always backed up
     try:
-        shutil.copy2(str(DB_PATH), str(backup_path))
-        return backup_name
+        shutil.copy2(str(DB_PATH), str(backup_path / "sqlite.db"))
+        db_size = (backup_path / "sqlite.db").stat().st_size
+        manifest["stores"]["sqlite"] = {"status": "ok", "size": db_size}
     except Exception as e:
-        logger.warning("Backup failed: %s", e)
+        logger.warning("SQLite backup failed: %s", e)
+        shutil.rmtree(str(backup_path), ignore_errors=True)
         return f"Backup failed: {e}"
+
+    # 2. Qdrant — snapshot both collections
+    try:
+        from services.vector_store import snapshot_collections
+        qdrant_result = snapshot_collections()
+        manifest["stores"]["qdrant"] = {"status": "ok", "collections": qdrant_result}
+    except Exception as e:
+        logger.warning("Qdrant backup skipped: %s", e)
+        manifest["stores"]["qdrant"] = {"status": "skipped", "error": str(e)}
+
+    # 3. Neo4j — export graph to JSON
+    try:
+        from graph.graph_service import graph_export
+        graph_data = graph_export()
+        if "error" not in graph_data:
+            graph_path = backup_path / "neo4j_graph.json"
+            graph_path.write_text(json.dumps(graph_data), encoding="utf-8")
+            manifest["stores"]["neo4j"] = {
+                "status": "ok",
+                "nodes": len(graph_data["nodes"]),
+                "edges": len(graph_data["edges"]),
+            }
+        else:
+            manifest["stores"]["neo4j"] = {
+                "status": "skipped", "error": graph_data["error"],
+            }
+    except Exception as e:
+        logger.warning("Neo4j backup skipped: %s", e)
+        manifest["stores"]["neo4j"] = {"status": "skipped", "error": str(e)}
+
+    # Write manifest
+    (backup_path / "manifest.json").write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8",
+    )
+
+    logger.info("Unified backup created: %s", backup_name)
+    return backup_name
 
 
 def reset_database() -> str:
     """
-    Reset the database to a clean state. Drops all tables and recreates
-    the schema from db/schema.sql. All data will be lost.
-    Creates a timestamped backup before resetting.
+    Reset the entire platform to a clean first-boot state.
+
+    Wipes all three data stores:
+    - SQLite: drops all tables, recreates schema, re-seeds settings and domains
+    - Qdrant: drops and recreates vector collections (empty, correct dimensions)
+    - Neo4j: deletes all nodes and relationships (preserves schema constraints)
+
+    Creates a timestamped SQLite backup before resetting.
+    After reset, the platform is in the same state as a fresh installation.
+    Re-run content ingestion and bulk embedding to repopulate.
 
     Returns:
-        Status message with backup filename if created, or confirmation of reset
+        Status message with backup filename and per-store results
     """
-    backup_msg = ""
+    results = []
 
-    # Backup if database exists and has data
+    # 1. Backup SQLite if it exists and has data
     if DB_PATH.exists() and DB_PATH.stat().st_size > 0:
         backup_result = backup_database()
         if not backup_result.startswith("Backup failed"):
-            backup_msg = f" Backup saved as {backup_result}"
+            results.append(f"Backup: {backup_result}")
 
-    # Delete existing database AND journal files
+    # 2. Delete SQLite database + journal files
     for suffix in ['', '-wal', '-shm', '-journal']:
         p = Path(str(DB_PATH) + suffix)
         if p.exists():
             p.unlink()
 
-    # Recreate from schema
-    schema_sql = SCHEMA_PATH.read_text()
-    conn = sqlite3.connect(str(DB_PATH))
-    try:
-        conn.executescript(schema_sql)
-    finally:
-        conn.close()
+    # 3. Recreate SQLite from schema + run migrations + seed settings
+    init_database()
+    from services.settings import init_settings
+    init_settings()
+    results.append("SQLite: reset and re-seeded")
 
-    if backup_msg:
-        return f"Database reset.{backup_msg}"
-    return "Database reset to clean state."
+    # 4. Wipe Qdrant vector collections
+    try:
+        from services.vector_store import recreate_collections
+        qdrant_msg = recreate_collections()
+        results.append(f"Qdrant: {qdrant_msg}")
+    except Exception as e:
+        logger.warning("Qdrant reset failed (is Qdrant running?): %s", e)
+        results.append(f"Qdrant: skipped ({e})")
+
+    # 5. Clear Neo4j graph
+    try:
+        from graph.graph_service import graph_clear
+        neo4j_msg = graph_clear()
+        results.append(f"Neo4j: {neo4j_msg}")
+    except Exception as e:
+        logger.warning("Neo4j reset failed (is Neo4j running?): %s", e)
+        results.append(f"Neo4j: skipped ({e})")
+
+    return "Platform reset complete. " + " | ".join(results)
 
 
 def restore_database(backup_name: str = "") -> str:
     """
-    Restore database from a backup. If no backup_name is specified,
-    restores the most recent backup.
+    Restore platform from a unified backup (SQLite + Qdrant + Neo4j).
+    If no backup_name is specified, restores the most recent backup.
+
+    For unified backups (directories with manifest.json):
+    - SQLite is restored from sqlite.db
+    - Qdrant collections are recovered from snapshots (if available)
+    - Neo4j graph is reimported from neo4j_graph.json (if available)
+
+    Legacy single-file backups (.db files) restore SQLite only.
 
     Args:
-        backup_name: Name of backup file to restore (optional, defaults to most recent)
+        backup_name: Name of backup directory or file (optional, defaults to most recent)
 
     Returns:
         Status message confirming restore, or error if no backups found
@@ -1043,43 +1123,457 @@ def restore_database(backup_name: str = "") -> str:
     if backup_name:
         backup_path = BACKUPS_DIR / backup_name
     else:
-        # Find most recent backup
-        backups = sorted(BACKUPS_DIR.glob("janatpmp_backup_*.db"), reverse=True)
-        if not backups:
+        # Find most recent backup (directories first, then legacy files)
+        dirs = sorted(
+            [d for d in BACKUPS_DIR.iterdir()
+             if d.is_dir() and d.name.startswith("janatpmp_backup_")],
+            reverse=True,
+        )
+        files = sorted(BACKUPS_DIR.glob("janatpmp_backup_*.db"), reverse=True)
+        candidates = dirs + list(files)
+        if not candidates:
             return "No backups found"
-        backup_path = backups[0]
+        backup_path = candidates[0]
         backup_name = backup_path.name
 
     if not backup_path.exists():
         return f"Backup '{backup_name}' not found"
 
-    try:
-        shutil.copy2(str(backup_path), str(DB_PATH))
-        return f"Restored from {backup_name}"
-    except Exception as e:
-        logger.warning("Restore failed: %s", e)
-        return f"Restore failed: {e}"
+    results = []
+
+    # --- Legacy single-file backup ---
+    if backup_path.is_file() and backup_path.suffix == ".db":
+        try:
+            shutil.copy2(str(backup_path), str(DB_PATH))
+            results.append(f"SQLite: restored from {backup_name}")
+            results.append("Qdrant: not included (legacy backup, re-embed needed)")
+            results.append("Neo4j: not included (legacy backup, run backfill_graph)")
+            return " | ".join(results)
+        except Exception as e:
+            return f"Restore failed: {e}"
+
+    # --- Unified directory backup ---
+    manifest_path = backup_path / "manifest.json"
+    if not manifest_path.exists():
+        return f"Invalid backup: {backup_name} (no manifest.json)"
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    # 1. SQLite
+    sqlite_file = backup_path / "sqlite.db"
+    if sqlite_file.exists():
+        try:
+            # Delete journal files before restore
+            for suffix in ['-wal', '-shm', '-journal']:
+                p = Path(str(DB_PATH) + suffix)
+                if p.exists():
+                    p.unlink()
+            shutil.copy2(str(sqlite_file), str(DB_PATH))
+            results.append("SQLite: restored")
+        except Exception as e:
+            results.append(f"SQLite: failed ({e})")
+    else:
+        results.append("SQLite: missing from backup")
+
+    # 2. Qdrant
+    qdrant_info = manifest.get("stores", {}).get("qdrant", {})
+    if qdrant_info.get("status") == "ok":
+        try:
+            from services.vector_store import restore_snapshots
+            snap_names = qdrant_info.get("collections", {})
+            qdrant_msg = restore_snapshots(snap_names)
+            results.append(f"Qdrant: {qdrant_msg}")
+        except Exception as e:
+            results.append(f"Qdrant: restore failed ({e})")
+    else:
+        results.append("Qdrant: not in backup (re-embed needed)")
+
+    # 3. Neo4j
+    neo4j_info = manifest.get("stores", {}).get("neo4j", {})
+    neo4j_file = backup_path / "neo4j_graph.json"
+    if neo4j_info.get("status") == "ok" and neo4j_file.exists():
+        try:
+            from graph.graph_service import graph_import
+            graph_data = json.loads(neo4j_file.read_text(encoding="utf-8"))
+            neo4j_msg = graph_import(graph_data)
+            results.append(f"Neo4j: {neo4j_msg}")
+        except Exception as e:
+            results.append(f"Neo4j: restore failed ({e})")
+    else:
+        results.append("Neo4j: not in backup (run backfill_graph)")
+
+    return f"Restored from {backup_name}. " + " | ".join(results)
 
 
 def list_backups() -> list:
     """
-    List all available database backups.
+    List all available platform backups (unified and legacy).
 
     Returns:
-        List of dicts with backup name, size in bytes, and created timestamp
+        List of dicts with backup name, size in bytes, created timestamp,
+        format ('unified' or 'legacy'), and store status summary
     """
     if not BACKUPS_DIR.exists():
         return []
 
     backups = []
+
+    # Unified backups (directories)
+    for d in sorted(
+        [d for d in BACKUPS_DIR.iterdir()
+         if d.is_dir() and d.name.startswith("janatpmp_backup_")],
+        reverse=True,
+    ):
+        manifest_path = d / "manifest.json"
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            stores = manifest.get("stores", {})
+            # Sum up total size of directory contents
+            total_size = sum(f.stat().st_size for f in d.iterdir() if f.is_file())
+            store_summary = []
+            for store_name in ["sqlite", "qdrant", "neo4j"]:
+                info = stores.get(store_name, {})
+                status = info.get("status", "missing")
+                if store_name == "neo4j" and status == "ok":
+                    store_summary.append(
+                        f"Neo4j({info.get('nodes', 0)}n/{info.get('edges', 0)}e)"
+                    )
+                elif store_name == "qdrant" and status == "ok":
+                    cols = info.get("collections", {})
+                    total_pts = sum(
+                        c.get("points", 0) for c in cols.values()
+                        if isinstance(c, dict)
+                    )
+                    store_summary.append(f"Qdrant({total_pts}pts)")
+                elif status == "ok":
+                    store_summary.append(store_name.title())
+                else:
+                    store_summary.append(f"{store_name}:skip")
+            backups.append({
+                "name": d.name,
+                "size": total_size,
+                "created": datetime.fromtimestamp(d.stat().st_mtime).isoformat(),
+                "format": "unified",
+                "stores": " + ".join(store_summary),
+            })
+
+    # Legacy backups (single .db files)
     for f in sorted(BACKUPS_DIR.glob("janatpmp_backup_*.db"), reverse=True):
         stat = f.stat()
         backups.append({
             "name": f.name,
             "size": stat.st_size,
-            "created": datetime.fromtimestamp(stat.st_mtime).isoformat()
+            "created": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "format": "legacy",
+            "stores": "SQLite only",
         })
+
     return backups
+
+
+# =============================================================================
+# PORTABLE EXPORT / IMPORT
+# =============================================================================
+
+EXPORTS_DIR = Path(__file__).parent / "exports"
+
+# Columns that exist in SELECT * but cannot be INSERTed (virtual generated columns)
+_ITEMS_VIRTUAL_COLS = {"completion_pct", "word_count"}
+
+# Columns to INSERT for each table (explicit, excludes virtual columns)
+_ITEMS_INSERT_COLS = [
+    "id", "entity_type", "domain", "parent_id", "title", "description",
+    "status", "priority", "attributes", "metadata",
+    "created_at", "updated_at", "last_activity_at",
+    "start_date", "due_date", "completed_at",
+]
+_TASKS_INSERT_COLS = [
+    "id", "task_type", "assigned_to", "target_item_id", "title", "description",
+    "status", "priority", "agent_instructions", "expected_output_schema",
+    "output", "confidence_score", "retry_count", "max_retries", "next_retry_at",
+    "depends_on", "acceptance_criteria", "tokens_used", "cost_usd",
+    "created_at", "started_at", "completed_at", "updated_at",
+]
+_DOMAINS_INSERT_COLS = [
+    "id", "name", "display_name", "description", "color", "is_active",
+    "created_at", "updated_at",
+]
+_RELS_INSERT_COLS = [
+    "id", "source_type", "source_id", "target_type", "target_id",
+    "relationship_type", "strength", "metadata", "created_at",
+]
+
+# JSON-typed columns that need serialization on import
+_JSON_COLS = {
+    "attributes", "metadata", "depends_on", "output",
+    "expected_output_schema",
+}
+
+
+def _parse_json_col(val):
+    """Parse a JSON string column into a Python object, passthrough if already parsed."""
+    if val is None:
+        return None
+    if isinstance(val, (dict, list)):
+        return val
+    try:
+        return json.loads(val)
+    except (json.JSONDecodeError, TypeError):
+        return val
+
+
+def _serialize_json_col(val):
+    """Serialize a Python object back to a JSON string for SQLite storage."""
+    if val is None:
+        return None
+    if isinstance(val, str):
+        return val
+    return json.dumps(val, ensure_ascii=False)
+
+
+def export_platform_data() -> str:
+    """Export all project management data to a versioned portable JSON file.
+
+    Exports domains, items, tasks, and relationships to a JSON file in
+    db/exports/. This data can be re-imported after a platform reset to
+    restore project structure through the current pipeline.
+
+    Conversations, messages, and documents are NOT exported — they are
+    re-ingested from source files (Google AI, Claude Export, Markdown).
+
+    The export preserves original entity IDs so that relationships,
+    parent_id references, and target_item_id links remain valid on import.
+
+    Returns:
+        The export filename on success, or an error message.
+    """
+    EXPORTS_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"platform_export_{timestamp}.json"
+
+    try:
+        with get_connection() as conn:
+            # Domains
+            domains = []
+            for row in conn.execute("SELECT * FROM domains ORDER BY name"):
+                d = dict(row)
+                domains.append(d)
+
+            # Items (all columns, JSON parsed for readability)
+            items = []
+            for row in conn.execute("SELECT * FROM items ORDER BY created_at"):
+                d = dict(row)
+                for col in _JSON_COLS:
+                    if col in d:
+                        d[col] = _parse_json_col(d[col])
+                items.append(d)
+
+            # Tasks
+            tasks = []
+            for row in conn.execute("SELECT * FROM tasks ORDER BY created_at"):
+                d = dict(row)
+                for col in _JSON_COLS:
+                    if col in d:
+                        d[col] = _parse_json_col(d[col])
+                tasks.append(d)
+
+            # Relationships
+            relationships = []
+            for row in conn.execute("SELECT * FROM relationships ORDER BY created_at"):
+                d = dict(row)
+                for col in _JSON_COLS:
+                    if col in d:
+                        d[col] = _parse_json_col(d[col])
+                relationships.append(d)
+
+        data = {
+            "schema_version": "0.6.0",
+            "exported_at": datetime.now().isoformat(),
+            "platform": "JANATPMP",
+            "counts": {
+                "domains": len(domains),
+                "items": len(items),
+                "tasks": len(tasks),
+                "relationships": len(relationships),
+            },
+            "domains": domains,
+            "items": items,
+            "tasks": tasks,
+            "relationships": relationships,
+        }
+
+        export_path = EXPORTS_DIR / filename
+        export_path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8",
+        )
+        logger.info(
+            "Platform export: %d domains, %d items, %d tasks, %d rels → %s",
+            len(domains), len(items), len(tasks), len(relationships), filename,
+        )
+        return filename
+
+    except Exception as e:
+        logger.error("Platform export failed: %s", e)
+        return f"Export failed: {e}"
+
+
+def import_platform_data(path: str) -> str:
+    """Import project data from a portable JSON export file.
+
+    Reads a versioned JSON export and inserts domains, items, tasks, and
+    relationships, preserving original IDs. CDC triggers fire automatically
+    on each INSERT, so Neo4j gets populated via the CDC consumer.
+
+    Run embed_all_items() and embed_all_tasks() after import to populate
+    Qdrant vectors for project data.
+
+    Import order enforces referential integrity:
+    1. Domains (items reference domain names)
+    2. Items (topologically sorted by parent_id — parents before children)
+    3. Tasks (reference items via target_item_id)
+    4. Relationships (reference items and tasks by ID)
+
+    Uses INSERT OR IGNORE to skip duplicates when re-importing.
+
+    Args:
+        path: Absolute path to the JSON export file.
+
+    Returns:
+        Status message with counts of imported entities, or error message.
+    """
+    try:
+        file_path = Path(path)
+        if not file_path.exists():
+            return f"File not found: {path}"
+
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return f"Failed to read export file: {e}"
+
+    # Validate schema version
+    version = data.get("schema_version", "")
+    if version not in ("0.6.0",):
+        return f"Unsupported schema version: '{version}'. Expected: 0.6.0"
+
+    counts = {"domains": 0, "items": 0, "tasks": 0, "relationships": 0}
+
+    try:
+        with get_connection() as conn:
+            # 1. Domains — clear seeded defaults, insert exported ones
+            exported_domains = data.get("domains", [])
+            if exported_domains:
+                conn.execute("DELETE FROM domains")
+                placeholders = ", ".join(["?"] * len(_DOMAINS_INSERT_COLS))
+                col_names = ", ".join(_DOMAINS_INSERT_COLS)
+                for d in exported_domains:
+                    vals = [d.get(c) for c in _DOMAINS_INSERT_COLS]
+                    conn.execute(
+                        f"INSERT OR IGNORE INTO domains ({col_names}) VALUES ({placeholders})",
+                        vals,
+                    )
+                    counts["domains"] += 1
+
+            # 2. Items — topological sort by parent_id
+            all_items = data.get("items", [])
+            if all_items:
+                placeholders = ", ".join(["?"] * len(_ITEMS_INSERT_COLS))
+                col_names = ", ".join(_ITEMS_INSERT_COLS)
+                inserted_ids = set()
+                remaining = list(all_items)
+
+                for _pass in range(10):  # safety valve for deep hierarchies
+                    still_remaining = []
+                    for item in remaining:
+                        parent = item.get("parent_id")
+                        if not parent or parent in inserted_ids:
+                            vals = []
+                            for c in _ITEMS_INSERT_COLS:
+                                v = item.get(c)
+                                if c in _JSON_COLS:
+                                    v = _serialize_json_col(v)
+                                vals.append(v)
+                            conn.execute(
+                                f"INSERT OR IGNORE INTO items ({col_names}) VALUES ({placeholders})",
+                                vals,
+                            )
+                            inserted_ids.add(item["id"])
+                            counts["items"] += 1
+                        else:
+                            still_remaining.append(item)
+                    remaining = still_remaining
+                    if not remaining:
+                        break
+
+                # Orphans (parent from outside this export) — insert anyway
+                if remaining:
+                    logger.warning(
+                        "Import: %d orphaned items (parent_id not in export), inserting anyway",
+                        len(remaining),
+                    )
+                    for item in remaining:
+                        vals = []
+                        for c in _ITEMS_INSERT_COLS:
+                            v = item.get(c)
+                            if c in _JSON_COLS:
+                                v = _serialize_json_col(v)
+                            vals.append(v)
+                        try:
+                            conn.execute(
+                                f"INSERT OR IGNORE INTO items ({col_names}) VALUES ({placeholders})",
+                                vals,
+                            )
+                            counts["items"] += 1
+                        except Exception as e:
+                            logger.warning("Orphan item %s failed: %s", item.get("id", "?")[:12], e)
+
+            # 3. Tasks
+            exported_tasks = data.get("tasks", [])
+            if exported_tasks:
+                placeholders = ", ".join(["?"] * len(_TASKS_INSERT_COLS))
+                col_names = ", ".join(_TASKS_INSERT_COLS)
+                for task in exported_tasks:
+                    vals = []
+                    for c in _TASKS_INSERT_COLS:
+                        v = task.get(c)
+                        if c in _JSON_COLS:
+                            v = _serialize_json_col(v)
+                        vals.append(v)
+                    conn.execute(
+                        f"INSERT OR IGNORE INTO tasks ({col_names}) VALUES ({placeholders})",
+                        vals,
+                    )
+                    counts["tasks"] += 1
+
+            # 4. Relationships (last — references items/tasks by ID)
+            exported_rels = data.get("relationships", [])
+            if exported_rels:
+                placeholders = ", ".join(["?"] * len(_RELS_INSERT_COLS))
+                col_names = ", ".join(_RELS_INSERT_COLS)
+                for rel in exported_rels:
+                    vals = []
+                    for c in _RELS_INSERT_COLS:
+                        v = rel.get(c)
+                        if c in _JSON_COLS:
+                            v = _serialize_json_col(v)
+                        vals.append(v)
+                    conn.execute(
+                        f"INSERT OR IGNORE INTO relationships ({col_names}) VALUES ({placeholders})",
+                        vals,
+                    )
+                    counts["relationships"] += 1
+
+            conn.commit()
+
+        msg = (
+            f"Imported: {counts['domains']} domains, {counts['items']} items, "
+            f"{counts['tasks']} tasks, {counts['relationships']} relationships"
+        )
+        logger.info("Platform import: %s", msg)
+        return msg
+
+    except Exception as e:
+        logger.error("Platform import failed: %s", e)
+        return f"Import failed: {e}"
 
 
 # =============================================================================

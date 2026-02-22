@@ -124,16 +124,17 @@ JANAT_CSS = """
     /* Right panel header — right-justified to avoid toggle overlap */
     .right-panel-header { text-align: right !important; }
 
-    /* === Right sidebar — strip nested container chrome, fill height === */
+    /* === Right sidebar — fill height, scroll when needed === */
     .sidebar.right .sidebar-content {
         height: 100% !important;
         display: flex !important;
         flex-direction: column !important;
-        padding: 2px !important;
-        overflow: hidden !important;
+        padding: 4px 8px !important;
+        overflow-y: auto !important;
+        overflow-x: hidden !important;
         box-sizing: border-box !important;
     }
-    /* Flatten ALL nested wrappers Gradio generates inside sidebar */
+    /* Flatten nested wrappers — but allow visible overflow for controls */
     .sidebar.right .sidebar-content .column,
     .sidebar.right .sidebar-content .form,
     .sidebar.right .sidebar-content .block,
@@ -144,7 +145,6 @@ JANAT_CSS = """
         border: none !important;
         box-shadow: none !important;
         background: transparent !important;
-        overflow: hidden !important;
     }
     .sidebar.right .sidebar-content > .column {
         flex: 1 !important;
@@ -157,6 +157,20 @@ JANAT_CSS = """
         min-height: 0 !important;
         overflow-y: auto !important;
         overflow-x: hidden !important;
+    }
+    /* Dropdown text truncation — prevent long model names from overflowing */
+    .sidebar .dropdown-container .secondary-wrap,
+    .sidebar select,
+    .sidebar .dropdown-container input {
+        text-overflow: ellipsis !important;
+        overflow: hidden !important;
+        white-space: nowrap !important;
+    }
+    /* Sliders — ensure min/max labels aren't clipped */
+    .sidebar .range_slider_container,
+    .sidebar .slider-container {
+        padding: 0 2px !important;
+        overflow: visible !important;
     }
 
     /* Force sidebar chatbot and ALL children to respect container width */

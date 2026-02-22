@@ -428,7 +428,7 @@ def build_page():
                             )
 
         # --- Admin tab ---
-        admin_components = build_database_tab()
+        admin_components = build_database_tab(conversations_state=conversations_state)
 
     # === LEFT SIDEBAR (contextual — defined after center so it can reference components) ===
     with gr.Sidebar():

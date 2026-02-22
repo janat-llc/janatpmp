@@ -1,6 +1,6 @@
 """Shared data-loading helpers for JANATPMP UI."""
 import pandas as pd
-from db.operations import list_items, list_tasks, list_documents
+from db.operations import list_items, list_tasks, list_documents, get_connection
 from db.chat_operations import list_conversations, get_messages, get_message_metadata
 from shared.constants import PROJECT_TYPES, DEFAULT_CHAT_HISTORY
 from shared.formatting import entity_list_to_df
@@ -165,3 +165,38 @@ def _load_chat_session() -> dict:
         "turn_count": len(msgs),
         "last_timings": last_timings,
     }
+
+
+def _load_conversation_metrics(conv_id: str) -> list[dict]:
+    """Load per-turn metrics for a conversation (JOIN messages + metadata).
+
+    Returns a list of dicts ordered by turn number, each with:
+    turn, tokens_prompt, tokens_reasoning, tokens_response,
+    latency_total, latency_rag, latency_inference,
+    rag_hit_count, rag_hits_used, avg_rerank, avg_salience, quality_score.
+    """
+    if not conv_id:
+        return []
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                m.sequence AS turn,
+                COALESCE(m.tokens_prompt, 0) AS tokens_prompt,
+                COALESCE(m.tokens_reasoning, 0) AS tokens_reasoning,
+                COALESCE(m.tokens_response, 0) AS tokens_response,
+                COALESCE(mm.latency_total_ms, 0) AS latency_total,
+                COALESCE(mm.latency_rag_ms, 0) AS latency_rag,
+                COALESCE(mm.latency_inference_ms, 0) AS latency_inference,
+                COALESCE(mm.rag_hit_count, 0) AS rag_hit_count,
+                COALESCE(mm.rag_hits_used, 0) AS rag_hits_used,
+                COALESCE(mm.rag_avg_rerank, 0.0) AS avg_rerank,
+                COALESCE(mm.rag_avg_salience, 0.0) AS avg_salience,
+                mm.quality_score
+            FROM messages m
+            LEFT JOIN messages_metadata mm ON mm.message_id = m.id
+            WHERE m.conversation_id = ?
+            ORDER BY m.sequence
+        """, (conv_id,))
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]

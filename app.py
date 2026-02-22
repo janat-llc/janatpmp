@@ -28,6 +28,7 @@ from db.operations import (
     get_stats, get_schema_info,
     backup_database, reset_database, restore_database, list_backups,
     get_domains, get_domain, create_domain, update_domain,
+    export_platform_data, import_platform_data,
 )
 from db.chat_operations import (
     create_conversation, get_conversation, get_conversation_by_uri,
@@ -35,12 +36,19 @@ from db.chat_operations import (
     search_conversations, add_message, get_messages,
     add_message_metadata, get_message_metadata,
 )
-from services.claude_import import import_conversations_json
+from services.claude_import import import_conversations_json, import_conversations_directory
+from services.ingestion.orchestrator import (
+    ingest_google_ai_conversations,
+    ingest_markdown_documents,
+)
 from services.vector_store import (
     search as vector_search, search_all as vector_search_all,
     recreate_collections,
 )
-from services.bulk_embed import embed_all_documents, embed_all_messages, embed_all_domains
+from services.bulk_embed import (
+    embed_all_documents, embed_all_messages, embed_all_domains,
+    embed_all_items, embed_all_tasks,
+)
 from graph.graph_service import graph_query, graph_neighbors, graph_stats
 from graph.cdc_consumer import backfill_graph
 from pages.projects import build_page
@@ -105,6 +113,8 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.api(reset_database)
     gr.api(restore_database)
     gr.api(list_backups)
+    gr.api(export_platform_data)
+    gr.api(import_platform_data)
 
     # Domain operations (R8)
     gr.api(get_domains)
@@ -129,6 +139,7 @@ with gr.Blocks(title="JANATPMP") as demo:
 
     # Import pipeline (Phase 5)
     gr.api(import_conversations_json)
+    gr.api(import_conversations_directory)
 
     # RAG pipeline (R9: ATLAS two-stage search + embedding)
     gr.api(vector_search)
@@ -136,7 +147,13 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.api(embed_all_documents)
     gr.api(embed_all_messages)
     gr.api(embed_all_domains)
+    gr.api(embed_all_items)
+    gr.api(embed_all_tasks)
     gr.api(recreate_collections)
+
+    # Content ingestion (Phase 6A)
+    gr.api(ingest_google_ai_conversations)
+    gr.api(ingest_markdown_documents)
 
     # Knowledge graph (R13: Neo4j)
     gr.api(graph_query)

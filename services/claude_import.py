@@ -250,3 +250,48 @@ def import_conversations_json(file_path: str, skip_existing: bool = True) -> dic
         "errors": errors,
         "total_messages": total_messages,
     }
+
+
+def import_conversations_directory(directory: str, skip_existing: bool = True) -> dict:
+    """Scan a directory for conversations*.json files and import them all.
+
+    Args:
+        directory: Path to directory containing Claude export conversations JSON files.
+                   Matches any file named conversations*.json (e.g. conversations.json,
+                   conversations_part2.json).
+        skip_existing: If True, skip conversations whose UUID already exists.
+
+    Returns:
+        Dict with keys: files_found, imported, skipped, errors, total_messages.
+    """
+    dir_path = Path(directory)
+    if not dir_path.is_dir():
+        return {"files_found": 0, "imported": 0, "skipped": 0,
+                "errors": [f"Directory not found: {directory}"], "total_messages": 0}
+
+    files = sorted(dir_path.glob("conversations*.json"))
+    if not files:
+        return {"files_found": 0, "imported": 0, "skipped": 0,
+                "errors": ["No conversations*.json files found."], "total_messages": 0}
+
+    total_imported = 0
+    total_skipped = 0
+    total_messages = 0
+    all_errors = []
+
+    for f in files:
+        result = import_conversations_json(str(f), skip_existing)
+        total_imported += result["imported"]
+        total_skipped += result["skipped"]
+        total_messages += result["total_messages"]
+        all_errors.extend(result.get("errors", []))
+
+    logger.info("Claude directory import: %d files, %d imported, %d skipped, %d messages",
+                len(files), total_imported, total_skipped, total_messages)
+    return {
+        "files_found": len(files),
+        "imported": total_imported,
+        "skipped": total_skipped,
+        "errors": all_errors,
+        "total_messages": total_messages,
+    }

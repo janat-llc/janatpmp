@@ -164,6 +164,135 @@ def get_neighbors(
         return []
 
 
+def graph_clear() -> str:
+    """Delete all nodes and relationships from the Neo4j graph.
+
+    Used during platform reset to return the knowledge graph to a clean state.
+    Constraints and indexes are preserved (schema only, no data).
+
+    Returns:
+        Status message with count of deleted nodes, or error message.
+    """
+    try:
+        driver = _get_driver()
+        with driver.session(database=NEO4J_DATABASE) as session:
+            result = session.run("MATCH (n) RETURN count(n) AS cnt")
+            count = result.single()["cnt"]
+            if count == 0:
+                return "Neo4j graph already empty"
+            session.run("MATCH (n) DETACH DELETE n")
+            logger.info("Neo4j graph cleared: %d nodes deleted", count)
+            return f"Neo4j cleared: {count} nodes deleted"
+    except Exception as e:
+        logger.warning("Neo4j graph_clear failed: %s", e)
+        return f"Neo4j clear failed: {e}"
+
+
+def graph_export() -> dict:
+    """Export all Neo4j nodes and relationships as serializable dicts.
+
+    Used for unified platform backup. Pure Cypher — no APOC dependency.
+
+    Returns:
+        Dict with 'nodes' list and 'edges' list, or error dict.
+    """
+    data: dict[str, Any] = {"nodes": [], "edges": []}
+    try:
+        driver = _get_driver()
+        with driver.session(database=NEO4J_DATABASE) as session:
+            # Export all nodes
+            result = session.run(
+                "MATCH (n) RETURN labels(n) AS labels, properties(n) AS props"
+            )
+            for record in result:
+                props = dict(record["props"])
+                # Convert neo4j temporal types to ISO strings
+                for k, v in props.items():
+                    if hasattr(v, "iso_format"):
+                        props[k] = v.iso_format()
+                data["nodes"].append({
+                    "labels": list(record["labels"]),
+                    "properties": props,
+                })
+
+            # Export all relationships
+            result = session.run(
+                "MATCH (a)-[r]->(b) "
+                "RETURN a.id AS from_id, labels(a)[0] AS from_label, "
+                "type(r) AS rel_type, properties(r) AS rel_props, "
+                "b.id AS to_id, labels(b)[0] AS to_label"
+            )
+            for record in result:
+                rel_props = dict(record["rel_props"]) if record["rel_props"] else {}
+                for k, v in rel_props.items():
+                    if hasattr(v, "iso_format"):
+                        rel_props[k] = v.iso_format()
+                data["edges"].append({
+                    "from_id": record["from_id"],
+                    "from_label": record["from_label"],
+                    "rel_type": record["rel_type"],
+                    "rel_props": rel_props,
+                    "to_id": record["to_id"],
+                    "to_label": record["to_label"],
+                })
+
+        logger.info("Neo4j exported: %d nodes, %d edges",
+                     len(data["nodes"]), len(data["edges"]))
+        return data
+    except Exception as e:
+        logger.warning("Neo4j graph_export failed: %s", e)
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+
+def graph_import(data: dict) -> str:
+    """Import nodes and relationships from a previous graph_export().
+
+    Clears the graph first, then recreates all nodes and edges.
+    Schema constraints and indexes are preserved.
+
+    Args:
+        data: Dict with 'nodes' and 'edges' lists from graph_export().
+
+    Returns:
+        Status message with counts of imported nodes and edges.
+    """
+    try:
+        driver = _get_driver()
+        with driver.session(database=NEO4J_DATABASE) as session:
+            # Clear existing data
+            session.run("MATCH (n) DETACH DELETE n")
+
+            # Import nodes
+            for node in data.get("nodes", []):
+                labels = node["labels"]
+                props = node["properties"]
+                label_str = ":".join(labels) if labels else "Unknown"
+                session.run(
+                    f"CREATE (n:{label_str}) SET n = $props",
+                    props=props,
+                )
+
+            # Import edges
+            for edge in data.get("edges", []):
+                session.run(
+                    f"MATCH (a:{edge['from_label']} {{id: $from_id}}) "
+                    f"MATCH (b:{edge['to_label']} {{id: $to_id}}) "
+                    f"CREATE (a)-[r:{edge['rel_type']}]->(b) "
+                    "SET r = $props",
+                    from_id=edge["from_id"],
+                    to_id=edge["to_id"],
+                    props=edge.get("rel_props", {}),
+                )
+
+        n_nodes = len(data.get("nodes", []))
+        n_edges = len(data.get("edges", []))
+        logger.info("Neo4j imported: %d nodes, %d edges", n_nodes, n_edges)
+        return f"Neo4j restored: {n_nodes} nodes, {n_edges} edges"
+    except Exception as e:
+        logger.warning("Neo4j graph_import failed: %s", e)
+        return f"Neo4j import failed: {e}"
+
+
 def health_check() -> bool:
     """Verify Neo4j connectivity.
 

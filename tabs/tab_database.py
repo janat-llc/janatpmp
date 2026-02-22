@@ -47,15 +47,16 @@ def _backups_to_df() -> pd.DataFrame:
     """Get backups as display DataFrame.
 
     Returns:
-        DataFrame with columns: Name, Size (KB), Created.
+        DataFrame with columns: Name, Size (KB), Stores, Created.
     """
     backups = list_backups()
     if not backups:
-        return pd.DataFrame(columns=["Name", "Size (KB)", "Created"])
+        return pd.DataFrame(columns=["Name", "Size (KB)", "Stores", "Created"])
     return pd.DataFrame([{
         "Name": b['name'],
         "Size (KB)": round(b['size'] / 1024, 1),
-        "Created": b['created'][:19]
+        "Stores": b.get('stores', 'SQLite only'),
+        "Created": b['created'][:19],
     } for b in backups])
 
 
@@ -109,12 +110,16 @@ def _handle_reset():
         _load_stats(),
         _load_schema(),
         _backups_to_df(),
-        gr.Dropdown(choices=_backup_names())
+        gr.Dropdown(choices=_backup_names()),
     )
 
 
-def build_database_tab():
+def build_database_tab(conversations_state=None):
     """Build the Admin tab with system prompt, settings, DB lifecycle, logs.
+
+    Args:
+        conversations_state: Optional gr.State holding conversation list.
+            If provided, reset clears it to avoid stale sidebar data.
 
     Returns:
         Dict of key components for external reference (tab, stats, schema, etc.).
@@ -150,21 +155,6 @@ def build_database_tab():
         with gr.Accordion("Settings", open=False):
             from services.settings import get_setting as _get_setting
 
-            gr.Markdown("#### Claude Export")
-            setting_export_db = gr.Textbox(
-                label="Claude Export DB Path",
-                value=_get_setting("claude_export_db_path"),
-                placeholder="/data/claude_export/claude_export.db",
-                interactive=True,
-            )
-            setting_export_dir = gr.Textbox(
-                label="Claude Export JSON Directory",
-                value=_get_setting("claude_export_json_dir"),
-                placeholder="/data/claude_export",
-                interactive=True,
-            )
-
-            gr.Markdown("---")
             gr.Markdown("#### Ollama")
             gr.Markdown("Context window and model persistence settings for local inference.")
             with gr.Row():
@@ -185,17 +175,15 @@ def build_database_tab():
                 save_settings_btn = gr.Button("Save Settings", variant="primary")
                 settings_status = gr.Textbox(show_label=False, interactive=False, scale=2)
 
-            def _save_all_settings(db_path, json_dir, num_ctx, keep_alive):
+            def _save_all_settings(num_ctx, keep_alive):
                 from services.settings import set_setting
-                set_setting("claude_export_db_path", db_path.strip())
-                set_setting("claude_export_json_dir", json_dir.strip())
                 set_setting("ollama_num_ctx", str(int(num_ctx)))
                 set_setting("ollama_keep_alive", keep_alive.strip())
                 return "Settings saved."
 
             save_settings_btn.click(
                 _save_all_settings,
-                inputs=[setting_export_db, setting_export_dir, setting_num_ctx, setting_keep_alive],
+                inputs=[setting_num_ctx, setting_keep_alive],
                 outputs=[settings_status],
                 api_visibility="private",
             )
@@ -230,14 +218,44 @@ def build_database_tab():
 
                     gr.Markdown("---")
                     gr.Markdown("### Reset Database")
-                    gr.Markdown("Deletes all data and recreates schema. A backup is created automatically.")
+                    gr.Markdown(
+                        "Full platform reset — wipes **SQLite**, **Qdrant** vectors, and **Neo4j** graph. "
+                        "SQLite backup created automatically. Re-run ingestion + embedding after reset."
+                    )
                     reset_btn = gr.Button("Reset Database", variant="stop")
                     reset_status_msg = gr.Textbox(label="Reset Status", interactive=False)
+
+                    gr.Markdown("---")
+                    gr.Markdown("### Portable Export")
+                    gr.Markdown(
+                        "Export project data (domains, items, tasks, relationships) to a "
+                        "versioned JSON file. After a platform reset, import via Content Ingestion."
+                    )
+                    export_btn = gr.Button("Export Project Data", variant="primary")
+                    export_status_msg = gr.Textbox(label="Export Status", interactive=False)
+
+                    def _handle_export():
+                        from db.operations import export_platform_data
+                        return export_platform_data()
+
+                    export_btn.click(
+                        _handle_export,
+                        outputs=[export_status_msg],
+                        api_visibility="private",
+                    )
 
         # Content Ingestion
         with gr.Accordion("Content Ingestion", open=False):
             gr.Markdown("Import conversations and documents from external sources.")
             from services.settings import get_setting as _get_ingestion
+
+            gr.Markdown("#### Ingestion Directories")
+            ingestion_claude_dir = gr.Textbox(
+                label="Claude Export Directory",
+                value=_get_ingestion("claude_export_json_dir"),
+                placeholder="/app/imports/claude",
+                interactive=True,
+            )
             ingestion_google_dir = gr.Textbox(
                 label="Google AI Studio Directory",
                 value=_get_ingestion("ingestion_google_ai_dir"),
@@ -250,37 +268,72 @@ def build_database_tab():
                 placeholder="/app/imports/markdown",
                 interactive=True,
             )
-            ingestion_quest_dir = gr.Textbox(
-                label="Quest Files Directory",
-                value=_get_ingestion("ingestion_quest_dir"),
-                placeholder="/app/imports/quests",
-                interactive=True,
-            )
             with gr.Row():
                 save_ingestion_btn = gr.Button("Save Paths", variant="primary")
                 ingestion_save_status = gr.Textbox(show_label=False, interactive=False, scale=2)
 
-            def _save_ingestion_paths(google_dir, md_dir, quest_dir):
+            def _save_ingestion_paths(claude_dir, google_dir, md_dir):
                 from services.settings import set_setting
+                set_setting("claude_export_json_dir", claude_dir.strip())
                 set_setting("ingestion_google_ai_dir", google_dir.strip())
                 set_setting("ingestion_markdown_dir", md_dir.strip())
-                set_setting("ingestion_quest_dir", quest_dir.strip())
                 return "Ingestion paths saved."
 
             save_ingestion_btn.click(
                 _save_ingestion_paths,
-                inputs=[ingestion_google_dir, ingestion_markdown_dir, ingestion_quest_dir],
+                inputs=[ingestion_claude_dir, ingestion_google_dir, ingestion_markdown_dir],
                 outputs=[ingestion_save_status],
                 api_visibility="private",
             )
 
             gr.Markdown("---")
-            gr.Markdown("### Run Ingestion")
+            gr.Markdown("#### Platform Data Import")
+            gr.Markdown(
+                "Re-import items, tasks, and relationships from a portable export. "
+                "After import, run **Embed All Items** and **Embed All Tasks** in Vector Store."
+            )
+            import_path_input = gr.Textbox(
+                label="Export File Path",
+                placeholder="/app/db/exports/platform_export_20260222_153000.json",
+                interactive=True,
+            )
             with gr.Row():
+                import_btn = gr.Button("Import Platform Data", variant="primary")
+                import_status = gr.Textbox(show_label=False, interactive=False, scale=2)
+
+            def _handle_import(path):
+                if not path.strip():
+                    return "Provide an export file path."
+                from db.operations import import_platform_data
+                return import_platform_data(path.strip())
+
+            import_btn.click(
+                _handle_import,
+                inputs=[import_path_input],
+                outputs=[import_status],
+                api_visibility="private",
+            )
+
+            gr.Markdown("---")
+            gr.Markdown("### Run Ingestion")
+            gr.Markdown(
+                "Claude import scans for `conversations*.json` files in the directory. "
+                "Google AI imports chunkedPrompt JSON. Markdown imports .md and .txt files."
+            )
+            with gr.Row():
+                ingest_claude_btn = gr.Button("Ingest Claude", variant="primary")
                 ingest_google_btn = gr.Button("Ingest Google AI", variant="primary")
                 ingest_markdown_btn = gr.Button("Ingest Markdown/Text", variant="primary")
-                ingest_quest_btn = gr.Button("Ingest Quests", variant="primary")
             ingestion_result = gr.JSON(label="Ingestion Results", value={})
+
+            def _ingest_claude(directory):
+                if not directory.strip():
+                    return {"error": "Claude export directory is empty. Set it above and save."}
+                try:
+                    from services.claude_import import import_conversations_directory
+                    return import_conversations_directory(directory.strip())
+                except Exception as e:
+                    return {"error": str(e)}
 
             def _ingest_google(directory):
                 if not directory.strip():
@@ -300,15 +353,10 @@ def build_database_tab():
                 except Exception as e:
                     return {"error": str(e)}
 
-            def _ingest_quest(directory):
-                if not directory.strip():
-                    return {"error": "Quest directory path is empty. Set it above and save."}
-                try:
-                    from services.ingestion.orchestrator import ingest_quest_documents
-                    return ingest_quest_documents(directory.strip())
-                except Exception as e:
-                    return {"error": str(e)}
-
+            ingest_claude_btn.click(
+                _ingest_claude, inputs=[ingestion_claude_dir],
+                outputs=[ingestion_result], api_visibility="private",
+            )
             ingest_google_btn.click(
                 _ingest_google, inputs=[ingestion_google_dir],
                 outputs=[ingestion_result], api_visibility="private",
@@ -317,17 +365,16 @@ def build_database_tab():
                 _ingest_markdown, inputs=[ingestion_markdown_dir],
                 outputs=[ingestion_result], api_visibility="private",
             )
-            ingest_quest_btn.click(
-                _ingest_quest, inputs=[ingestion_quest_dir],
-                outputs=[ingestion_result], api_visibility="private",
-            )
 
         # Vector Store (Qdrant)
         with gr.Accordion("Vector Store (Qdrant)", open=False):
-            gr.Markdown("Embed documents and messages into Qdrant for semantic search and RAG.")
+            gr.Markdown("Embed entities into Qdrant for semantic search and RAG.")
             with gr.Row():
                 embed_docs_btn = gr.Button("Embed All Documents", variant="primary")
                 embed_msgs_btn = gr.Button("Embed All Messages", variant="primary")
+            with gr.Row():
+                embed_items_btn = gr.Button("Embed All Items", variant="primary")
+                embed_tasks_btn = gr.Button("Embed All Tasks", variant="primary")
             embed_status = gr.JSON(label="Embedding Status", value={})
 
             def _embed_docs():
@@ -344,8 +391,24 @@ def build_database_tab():
                 except Exception as e:
                     return {"error": str(e)}
 
+            def _embed_items():
+                try:
+                    from services.bulk_embed import embed_all_items
+                    return embed_all_items()
+                except Exception as e:
+                    return {"error": str(e)}
+
+            def _embed_tasks():
+                try:
+                    from services.bulk_embed import embed_all_tasks
+                    return embed_all_tasks()
+                except Exception as e:
+                    return {"error": str(e)}
+
             embed_docs_btn.click(_embed_docs, outputs=[embed_status], api_visibility="private")
             embed_msgs_btn.click(_embed_msgs, outputs=[embed_status], api_visibility="private")
+            embed_items_btn.click(_embed_items, outputs=[embed_status], api_visibility="private")
+            embed_tasks_btn.click(_embed_tasks, outputs=[embed_status], api_visibility="private")
 
         # Application Logs
         with gr.Accordion("Application Logs", open=False):
@@ -411,12 +474,18 @@ def build_database_tab():
             outputs=[db_status_msg, stats_display, schema_display, backups_table],
             api_visibility="private"
         )
-        reset_btn.click(
+        reset_click = reset_btn.click(
             _handle_reset,
             inputs=[],
             outputs=[reset_status_msg, stats_display, schema_display, backups_table, restore_dropdown],
             api_visibility="private"
         )
+        if conversations_state is not None:
+            reset_click.then(
+                lambda: [],
+                outputs=[conversations_state],
+                api_visibility="private",
+            )
 
     return {
         'tab': admin_tab,

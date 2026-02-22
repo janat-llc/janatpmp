@@ -16,11 +16,11 @@ CDC_POLL_INTERVAL = 5    # Seconds between CDC polling cycles
 CDC_BATCH_SIZE = 50      # Max rows per poll
 
 # --- Model identifiers ---
-EMBEDDING_MODEL = "qwen3-embedding:0.6b-compact"
+EMBEDDING_MODEL = "qwen3-embedding:4b-q4_K_M"
 RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"
 
 # --- Vector dimensions ---
-EMBEDDING_DIM = 1024  # Qwen3-Embedding-0.6B (Matryoshka: 128-2048, using 1024)
+EMBEDDING_DIM = 2560  # Qwen3-Embedding-4B (Matryoshka: up to 2560)
 
 # --- Text limits ---
 MAX_TEXT_CHARS = 20_000  # Pre-filter before sending to embed API

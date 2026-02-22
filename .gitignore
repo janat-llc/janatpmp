@@ -36,6 +36,7 @@ env/
 # Database
 db/janatpmp.db
 db/backups/
+db/exports/
 janatpmp.db
 
 # OS
