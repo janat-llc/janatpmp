@@ -35,17 +35,19 @@ _SOURCE_MAP = {
 }
 
 
-def ingest_google_ai_conversations(directory: str) -> dict:
+def ingest_google_ai_conversations(directory: str, auto_embed: bool = True) -> dict:
     """Parse Google AI Studio JSON exports and insert as conversations.
 
     Args:
         directory: Path to directory containing Google AI Studio JSON files.
+        auto_embed: If True, auto-embed new messages into Qdrant after import.
 
     Returns:
         Dict with keys: imported, skipped, errors, total_messages, total_files.
     """
     from db.chat_operations import create_conversation, add_message, list_conversations
     from .google_ai_studio import parse_google_ai_studio_directory
+    from .dedup import compute_conversation_hash
 
     parsed = parse_google_ai_studio_directory(directory)
     total_files = len(list(Path(directory).glob("*.json")))
@@ -60,12 +62,20 @@ def ingest_google_ai_conversations(directory: str) -> dict:
     skipped = 0
     errors: list[str] = []
     total_messages = 0
+    content_hashes_seen: set[str] = set()
 
     for conv in parsed:
         title = conv["title"]
         if title in existing_titles:
             skipped += 1
             continue
+
+        # Content-hash dedup: catch renamed files with identical content
+        content_hash = compute_conversation_hash(conv["turns"])
+        if content_hash in content_hashes_seen:
+            skipped += 1
+            continue
+        content_hashes_seen.add(content_hash)
 
         try:
             conv_id = create_conversation(
@@ -98,6 +108,15 @@ def ingest_google_ai_conversations(directory: str) -> dict:
         f"{len(errors)} errors, {total_messages} messages"
     )
 
+    # Auto-embed new messages into Qdrant (checkpoint-based, skips existing)
+    if auto_embed and imported > 0:
+        try:
+            from services.bulk_embed import embed_all_messages
+            embed_result = embed_all_messages()
+            logger.info("Auto-embed after Google AI ingestion: %s", embed_result)
+        except Exception as e:
+            logger.warning("Auto-embed after Google AI ingestion failed: %s", e)
+
     return {
         "imported": imported,
         "skipped": skipped,
@@ -107,17 +126,19 @@ def ingest_google_ai_conversations(directory: str) -> dict:
     }
 
 
-def ingest_markdown_documents(directory: str) -> dict:
+def ingest_markdown_documents(directory: str, auto_embed: bool = True) -> dict:
     """Parse markdown/text files and insert as documents.
 
     Args:
         directory: Path to directory containing .md and .txt files.
+        auto_embed: If True, auto-embed new documents into Qdrant after import.
 
     Returns:
         Dict with keys: imported, skipped, errors, total_files.
     """
     from db.operations import create_document, list_documents
     from .markdown_ingest import ingest_directory
+    from .dedup import compute_content_hash
 
     parsed = ingest_directory(directory)
     total_files = len(parsed)
@@ -129,12 +150,20 @@ def ingest_markdown_documents(directory: str) -> dict:
     imported = 0
     skipped = 0
     errors: list[str] = []
+    content_hashes_seen: set[str] = set()
 
     for doc in parsed:
         title = doc["title"]
         if title in existing_titles:
             skipped += 1
             continue
+
+        # Content-hash dedup: catch renamed files with identical content
+        content_hash = compute_content_hash(doc["content"])
+        if content_hash in content_hashes_seen:
+            skipped += 1
+            continue
+        content_hashes_seen.add(content_hash)
 
         try:
             doc_type = _DOC_TYPE_MAP.get(doc["doc_type"], "file")
@@ -155,6 +184,15 @@ def ingest_markdown_documents(directory: str) -> dict:
         f"Markdown ingestion: {imported} imported, {skipped} skipped, "
         f"{len(errors)} errors"
     )
+
+    # Auto-embed new documents into Qdrant (checkpoint-based, skips existing)
+    if auto_embed and imported > 0:
+        try:
+            from services.bulk_embed import embed_all_documents
+            embed_result = embed_all_documents()
+            logger.info("Auto-embed after markdown ingestion: %s", embed_result)
+        except Exception as e:
+            logger.warning("Auto-embed after markdown ingestion failed: %s", e)
 
     return {
         "imported": imported,

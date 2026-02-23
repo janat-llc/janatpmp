@@ -88,6 +88,9 @@ def _handle_chat(message, history, sidebar_conv_id=""):
             rag_avg_rerank=rag_metrics.get("avg_rerank_score", 0.0),
             rag_avg_salience=rag_metrics.get("avg_salience", 0.0),
             rag_scores=json.dumps(rag_metrics.get("scores", [])),
+            system_prompt_length=result.get("system_prompt_length", 0),
+            rag_context_text=rag_metrics.get("context_text", ""),
+            rag_synthesized=1 if rag_metrics.get("synthesized") else 0,
         )
 
         # Live memory: embed + INFORMED_BY edges
@@ -212,6 +215,9 @@ def _handle_chat_tab(message, history, conv_id, provider, model,
                 rag_avg_rerank=rag_metrics.get("avg_rerank_score", 0.0),
                 rag_avg_salience=rag_metrics.get("avg_salience", 0.0),
                 rag_scores=json.dumps(rag_metrics.get("scores", [])),
+                system_prompt_length=result.get("system_prompt_length", 0),
+                rag_context_text=rag_metrics.get("context_text", ""),
+                rag_synthesized=1 if rag_metrics.get("synthesized") else 0,
             )
 
             # Usage signal

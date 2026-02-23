@@ -139,6 +139,17 @@ def init_database():
                 migration_sql = migration_path.read_text(encoding="utf-8")
                 conn.executescript(migration_sql)
 
+        # Migration 0.7.0: pipeline observability columns on messages_metadata
+        # Runs after both fresh-DB and existing-DB branches (guarded by schema_version)
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='0.7.0'"
+        )
+        if cursor.fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "0.7.0_pipeline_observability.sql"
+            if migration_path.exists():
+                migration_sql = migration_path.read_text(encoding="utf-8")
+                conn.executescript(migration_sql)
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

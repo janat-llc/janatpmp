@@ -62,6 +62,26 @@ def _validate_positive_float(value: str) -> str | None:
     return None
 
 
+def _validate_float_0_1(value: str) -> str | None:
+    """Validate that value is a float between 0.0 and 1.0.
+
+    Args:
+        value: String to validate.
+
+    Returns:
+        Error message string if invalid, None if valid.
+    """
+    if not value:
+        return None
+    try:
+        f = float(value)
+        if f < 0 or f > 1:
+            return f"Must be between 0.0 and 1.0, got '{value}'"
+    except ValueError:
+        return f"Must be a number, got '{value}'"
+    return None
+
+
 def _validate_log_level(value: str) -> str | None:
     """Validate Python logging level name.
 
@@ -110,6 +130,7 @@ SETTINGS_REGISTRY = {
     # RAG
     "qdrant_url":           ("http://janatpmp-qdrant:6333", False, "rag", None),
     "rag_score_threshold":  ("0.3", False, "rag", _validate_positive_float),
+    "rag_rerank_threshold": ("0.3", False, "rag", _validate_float_0_1),
     "rag_max_chunks":       ("10", False, "rag", _validate_positive_int),
     "rag_synthesizer_provider": ("ollama", False, "rag", None),
     "rag_synthesizer_model": ("qwen3:1.7b", False, "rag", None),

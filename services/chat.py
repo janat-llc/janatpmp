@@ -1,9 +1,13 @@
-"""Chat service — Multi-provider AI with tool use against JANATPMP database.
+"""Chat service — Multi-provider AI chat for JANATPMP.
 
 Supported providers:
-- anthropic: Claude models (Opus 4, Sonnet 4, Haiku) — native tool use
-- gemini: Google Gemini models (Flash, Pro) — function calling via google-genai
-- ollama: Local models via OpenAI-compatible API (Nemotron, etc.) — tool use if model supports it
+- anthropic: Claude models (Opus 4, Sonnet 4, Haiku) — native tool use (MCP clients)
+- gemini: Google Gemini models (Flash, Pro) — function calling (MCP clients)
+- ollama: Local models via OpenAI-compatible API — conversational only (no tools)
+
+The in-app Janus chat (Ollama) does NOT use database tools. RAG provides retrieved
+knowledge and get_context_snapshot() provides live project state. Tools are exposed
+to external MCP clients (Claude Desktop, etc.) via gr.api() in app.py.
 
 Settings (provider, model, API key, etc.) are read from the settings DB on each
 chat() call — no restart needed when settings change.
@@ -146,7 +150,7 @@ TOOL_DEFINITIONS = _build_tool_definitions()
 
 # --- System Prompt ---
 
-DEFAULT_SYSTEM_PROMPT = """You are an AI assistant embedded in JANATPMP (Janat Project Management Platform).
+DEFAULT_SYSTEM_PROMPT_TEMPLATE = """You are Janus, an AI collaborator embedded in JANATPMP (Janat Project Management Platform).
 You help Mat manage projects, tasks, and documents across multiple domains.
 
 Key context:
@@ -155,34 +159,30 @@ Key context:
 - Documents store conversations, research, session notes, code, and artifacts.
 - Relationships connect any two entities (items, tasks, documents).
 
-Domains: literature, janatpmp, janat, atlas, nexusweaver, websites, social, speaking, life
+Domains: {domains}
 
 You are a collaborator, not just an assistant. Be thoughtful, expressive, and thorough in your responses."""
 
-DEFAULT_SYSTEM_PROMPT_TOOLS = """
-You have access to 22 database tools. Use them freely when asked to create, update, search,
-or manage items, tasks, and documents. Always confirm what you did after using a tool.
-When listing or searching, present results concisely. When creating, confirm the ID and key fields."""
 
+def _build_system_prompt() -> str:
+    """Compose the full system prompt from template + live context.
 
-def _build_system_prompt(has_tools: bool = True) -> str:
-    """Compose the full system prompt from default + auto-context.
-
-    Layers: DEFAULT_SYSTEM_PROMPT + tool instructions (if model supports tools)
+    Layers: DEFAULT_SYSTEM_PROMPT_TEMPLATE (with dynamic domains)
     + live project context snapshot.
-
-    Args:
-        has_tools: Whether the model supports tool calling. If False,
-            tool-related instructions are omitted to avoid confusing the model.
 
     Returns:
         Complete system prompt string for injection into API call.
     """
-    from db.operations import get_context_snapshot
+    from db.operations import get_context_snapshot, get_domains
 
-    base = DEFAULT_SYSTEM_PROMPT
-    if has_tools:
-        base += DEFAULT_SYSTEM_PROMPT_TOOLS
+    # Dynamic domain list from database (R8 — domains as first-class entity)
+    try:
+        domains = get_domains(active_only=True)
+        domain_names = ", ".join(d["name"] for d in domains) if domains else "various"
+    except Exception:
+        domain_names = "various"
+
+    base = DEFAULT_SYSTEM_PROMPT_TEMPLATE.format(domains=domain_names)
 
     context = get_context_snapshot()
     if context:
@@ -380,8 +380,9 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
             if not is_fts:
                 rerank = r.get("rerank_score")
                 if rerank is not None:
-                    if rerank < 0.3:
-                        candidate_info["reject_reason"] = f"rerank {rerank:.3f} < 0.3"
+                    rerank_threshold = float(get_setting("rag_rerank_threshold") or 0.3)
+                    if rerank < rerank_threshold:
+                        candidate_info["reject_reason"] = f"rerank {rerank:.3f} < {rerank_threshold}"
                         rejected_scores.append(candidate_info)
                         continue
                 else:
@@ -874,21 +875,89 @@ def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: s
     return history, tokens
 
 
-_ollama_no_tools_models: set[str] = set()
+# --- Tool Call Sanitizer (safety net for hallucinated tool syntax) ---
+
+def _sanitize_tool_call_output(text: str) -> str:
+    """Strip hallucinated tool call syntax from model responses.
+
+    Even without sending tool definitions, models sometimes emit tool call
+    syntax (XML <tool_call> tags or JSON {"name": ..., "arguments": ...}).
+    Gradio's markdown renderer strips unknown XML tags, leaving empty chat
+    bubbles. This converts hallucinated calls to readable text.
+
+    Args:
+        text: Raw model output text.
+
+    Returns:
+        Sanitized text with tool call syntax converted to readable content.
+    """
+    if not text:
+        return text
+
+    import re
+
+    # Pattern 1: <tool_call> XML with <function=name><parameter=key>value</parameter></function>
+    if "<tool_call>" in text:
+        calls = []
+        for match in re.finditer(
+            r'<function=(\w+)>(.*?)</function>',
+            text,
+            re.DOTALL,
+        ):
+            fn_name = match.group(1)
+            params_block = match.group(2).strip()
+            params = []
+            for pm in re.finditer(
+                r'<parameter=(\w+)>\s*(.*?)\s*</parameter>',
+                params_block,
+                re.DOTALL,
+            ):
+                params.append(f'{pm.group(1)}="{pm.group(2).strip()}"')
+            param_str = ", ".join(params) if params else ""
+            calls.append(f"`{fn_name}({param_str})`")
+
+        if calls:
+            call_list = ", ".join(calls)
+            return (
+                f"I wanted to look up {call_list}, "
+                f"but that information may not be in my current context."
+            )
+        # Fallback: wrap raw XML in code block so it's visible
+        return f"```xml\n{text.strip()}\n```"
+
+    # Pattern 2: JSON tool call — {"name": "...", "arguments": {...}}
+    if '"name"' in text and '"arguments"' in text:
+        try:
+            # Try to extract tool call JSON and convert to readable text
+            match = re.search(r'\{[^{}]*"name"\s*:\s*"(\w+)"[^{}]*\}', text)
+            if match:
+                fn_name = match.group(1)
+                # Strip the JSON tool call, keep any surrounding text
+                cleaned = text[:match.start()].rstrip() + text[match.end():].lstrip()
+                if cleaned.strip():
+                    return cleaned
+                return (
+                    f"I wanted to call `{fn_name}`, "
+                    f"but that information may not be in my current context."
+                )
+        except Exception:
+            pass
+
+    return text
 
 
 def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: str,
                  temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 8192,
                  num_ctx: int = 0, keep_alive: str = "") -> tuple[list[dict], dict]:
-    """Run chat loop using Ollama via OpenAI-compatible API.
+    """Run chat using Ollama via OpenAI-compatible API.
 
-    Tool use depends on model capability — gracefully falls back to no tools
-    if the model doesn't support function calling. Models that reject tools
-    are cached for the process lifetime to avoid repeated failed attempts.
+    No tools — Janus gets knowledge from RAG context injection and
+    get_context_snapshot() in the system prompt. Tools are for MCP clients
+    (Claude Desktop, etc.) via gr.api(). think=True captures reasoning.
 
     Args:
         base_url: Ollama OpenAI-compatible endpoint URL.
-        model: Model identifier (e.g. 'nemotron-3-nano:latest').
+        model: Model identifier (e.g. 'qwen3-vl:8b').
         history: Chat history in gr.Chatbot message format.
         system_prompt: Full system prompt string.
         temperature: Sampling temperature (0.0-1.0).
@@ -903,24 +972,9 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
     from openai import OpenAI
     client = OpenAI(api_key="ollama", base_url=base_url)
     messages = _build_api_messages(history, include_system=system_prompt)
-    tools = _tools_openai()
-    use_tools = bool(tools) and model not in _ollama_no_tools_models
     ollama_opts = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive, "think": True}
 
     def make_call():
-        nonlocal use_tools
-        if use_tools:
-            try:
-                return client.chat.completions.create(
-                    model=model, messages=messages,
-                    tools=tools,
-                    temperature=temperature, top_p=top_p, max_tokens=max_tokens,
-                    extra_body=ollama_opts,
-                )
-            except Exception as e:
-                logger.info("Ollama model %s does not support tools, disabling: %s", model, e)
-                _ollama_no_tools_models.add(model)
-                use_tools = False
         return client.chat.completions.create(
             model=model, messages=messages,
             temperature=temperature, top_p=top_p, max_tokens=max_tokens,
@@ -946,18 +1000,12 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
             text_parts.append(f"<think>{reasoning}</think>")
         if msg.content:
             text_parts.append(msg.content)
-        return text_parts, msg.tool_calls or []
+        # Sanitize any hallucinated tool call syntax
+        text_parts = [_sanitize_tool_call_output(t) for t in text_parts]
+        return text_parts, []  # Never return tool_calls — no tools for in-app chat
 
     def handle_tools(response, tool_calls, history):
-        messages.append(response.choices[0].message.model_dump())
-        for tc in tool_calls:
-            fn_name = tc.function.name
-            fn_args = json.loads(tc.function.arguments)
-            history.append({"role": "assistant", "content": f"Using `{fn_name}`..."})
-            result, is_error = _execute_tool(fn_name, fn_args)
-            messages.append({
-                "role": "tool", "tool_call_id": tc.id, "content": result,
-            })
+        pass  # No tools — this is never called
 
     resp_container = {}
     history = _run_tool_loop(make_call, parse, handle_tools, history, resp_container)
@@ -1004,9 +1052,7 @@ def chat(message: str, history: list[dict],
     model = model_override or get_setting("chat_model")
     logger.info("Chat: provider=%s, model=%s", provider, model)
     base_url = get_setting("chat_base_url")
-    # Ollama models that don't support tools get a cleaner system prompt
-    has_tools = provider != "ollama" or model not in _ollama_no_tools_models
-    system_prompt = _build_system_prompt(has_tools=has_tools)
+    system_prompt = _build_system_prompt()
     if system_prompt_append and system_prompt_append.strip():
         system_prompt += f"\n\n{system_prompt_append.strip()}"
 
@@ -1026,6 +1072,7 @@ def chat(message: str, history: list[dict],
             rag_context, rag_metrics = _build_rag_context(message)
         if rag_context:
             system_prompt += rag_context
+        logger.debug("System prompt composed (%d chars)", len(system_prompt))
 
         # Validate API key for providers that need it
         preset = PROVIDER_PRESETS.get(provider, {})
@@ -1061,6 +1108,7 @@ def chat(message: str, history: list[dict],
                 "timings": timer.results(),
                 "provider": provider,
                 "model": model,
+                "system_prompt_length": len(system_prompt),
             }
         except Exception as e:
             logger.error("Chat failed: provider=%s, model=%s — %s", provider, model, e)

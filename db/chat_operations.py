@@ -350,8 +350,11 @@ def add_message_metadata(
     keywords: str = "[]",
     labels: str = "[]",
     quality_score: float = None,
+    system_prompt_length: int = 0,
+    rag_context_text: str = "",
+    rag_synthesized: int = 0,
 ) -> str:
-    """Add metadata for a message (timing, RAG snapshot, labels).
+    """Add metadata for a message (timing, RAG snapshot, labels, pipeline observability).
 
     Args:
         message_id: The message this metadata belongs to
@@ -367,6 +370,9 @@ def add_message_metadata(
         keywords: JSON array of extracted keywords
         labels: JSON array of user/system labels
         quality_score: Quality score (0.0-1.0), set by Slumber Cycle
+        system_prompt_length: Length of composed system prompt in chars
+        rag_context_text: RAG context text injected into system prompt
+        rag_synthesized: 1 if RAG context was synthesized, 0 if raw chunks
 
     Returns:
         The ID of the created metadata record
@@ -378,13 +384,15 @@ def add_message_metadata(
                 (message_id, latency_total_ms, latency_rag_ms, latency_inference_ms,
                  rag_hit_count, rag_hits_used, rag_collections,
                  rag_avg_rerank, rag_avg_salience, rag_scores,
-                 keywords, labels, quality_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 keywords, labels, quality_score,
+                 system_prompt_length, rag_context_text, rag_synthesized)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             message_id, latency_total_ms, latency_rag_ms, latency_inference_ms,
             rag_hit_count, rag_hits_used, rag_collections,
             rag_avg_rerank, rag_avg_salience, rag_scores,
             keywords, labels, quality_score,
+            system_prompt_length, rag_context_text, rag_synthesized,
         ))
         conn.commit()
         cursor.execute("SELECT id FROM messages_metadata WHERE rowid = ?", (cursor.lastrowid,))

@@ -241,6 +241,29 @@ def point_exists(collection: str, point_id: str) -> bool:
         return False
 
 
+def existing_point_ids(collection: str, ids: list[str]) -> set[str]:
+    """Batch check which points already exist in a Qdrant collection.
+
+    Replaces per-record point_exists() calls with a single batch retrieve,
+    reducing HTTP round-trips from N to 1 per batch.
+
+    Args:
+        collection: Qdrant collection name.
+        ids: List of point IDs to check.
+
+    Returns:
+        Set of point IDs that already exist in the collection.
+    """
+    if not ids:
+        return set()
+    client = _get_client()
+    try:
+        results = client.retrieve(collection, ids=ids, with_payload=False)
+        return {str(p.id) for p in results}
+    except Exception:
+        return set()
+
+
 def search(query: str, collection: str = COLLECTION_DOCUMENTS,
            limit: int = 5, rerank: bool = True) -> list[dict]:
     """Semantic search across a collection with optional reranking.

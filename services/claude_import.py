@@ -288,6 +288,16 @@ def import_conversations_directory(directory: str, skip_existing: bool = True) -
 
     logger.info("Claude directory import: %d files, %d imported, %d skipped, %d messages",
                 len(files), total_imported, total_skipped, total_messages)
+
+    # Auto-embed new messages into Qdrant (checkpoint-based, skips existing)
+    if total_imported > 0:
+        try:
+            from services.bulk_embed import embed_all_messages
+            embed_result = embed_all_messages()
+            logger.info("Auto-embed after Claude import: %s", embed_result)
+        except Exception as e:
+            logger.warning("Auto-embed after Claude import failed: %s", e)
+
     return {
         "files_found": len(files),
         "imported": total_imported,

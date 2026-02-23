@@ -10,7 +10,7 @@ from qdrant_client.models import PointStruct
 from db.operations import get_connection
 from services.embedding import embed_passages
 from services.vector_store import (
-    ensure_collections, point_exists, upsert_batch,
+    ensure_collections, point_exists, existing_point_ids, upsert_batch,
     COLLECTION_DOCUMENTS, COLLECTION_MESSAGES,
 )
 
@@ -53,11 +53,13 @@ def embed_all_documents() -> dict:
 
     for batch_start in range(0, total, BATCH_SIZE):
         batch = rows[batch_start:batch_start + BATCH_SIZE]
+        batch_ids = [row["id"] for row in batch]
+        already_embedded = existing_point_ids(COLLECTION_DOCUMENTS, batch_ids)
         texts = []
         valid_rows = []
 
         for row in batch:
-            if point_exists(COLLECTION_DOCUMENTS, row["id"]):
+            if row["id"] in already_embedded:
                 skipped += 1
                 continue
             content = row["content"]
@@ -124,6 +126,7 @@ def embed_all_messages() -> dict:
         cursor = conn.execute("""
             SELECT m.id, m.conversation_id, m.sequence,
                    m.user_prompt, m.model_response,
+                   m.created_at, m.provider, m.model,
                    c.title as conv_title
             FROM messages m
             JOIN conversations c ON c.id = m.conversation_id
@@ -136,6 +139,8 @@ def embed_all_messages() -> dict:
 
     for batch_start in range(0, total, BATCH_SIZE):
         batch = rows[batch_start:batch_start + BATCH_SIZE]
+        batch_ids = [row["id"] for row in batch]
+        already_embedded = existing_point_ids(COLLECTION_MESSAGES, batch_ids)
         texts = []
         valid_rows = []
 
@@ -144,7 +149,7 @@ def embed_all_messages() -> dict:
             if len(text.strip()) < 20:
                 skipped += 1
                 continue
-            if point_exists(COLLECTION_MESSAGES, row["id"]):
+            if row["id"] in already_embedded:
                 skipped += 1
                 continue
             if len(text) > MAX_TEXT_CHARS:
@@ -166,6 +171,11 @@ def embed_all_messages() -> dict:
                         "conversation_id": row["conversation_id"],
                         "conv_title": row["conv_title"] or "",
                         "sequence": row["sequence"],
+                        "created_at": row.get("created_at", "") or "",
+                        "provider": row.get("provider", "") or "",
+                        "model": row.get("model", "") or "",
+                        "salience": 0.5,
+                        "entity_type": "message",
                     },
                 )
                 for (row, text), vec in zip(valid_rows, vectors)
@@ -215,10 +225,12 @@ def embed_all_domains() -> dict:
     total = len(rows)
     logger.info("Bulk embed domains: %d candidates", total)
 
+    all_ids = [row["id"] for row in rows]
+    already_embedded = existing_point_ids(COLLECTION_DOCUMENTS, all_ids)
     texts = []
     valid_rows = []
     for row in rows:
-        if point_exists(COLLECTION_DOCUMENTS, row["id"]):
+        if row["id"] in already_embedded:
             skipped += 1
             continue
         texts.append(row["description"])
@@ -286,11 +298,13 @@ def embed_all_items() -> dict:
 
     for batch_start in range(0, total, BATCH_SIZE):
         batch = rows[batch_start:batch_start + BATCH_SIZE]
+        batch_ids = [row["id"] for row in batch]
+        already_embedded = existing_point_ids(COLLECTION_DOCUMENTS, batch_ids)
         texts = []
         valid_rows = []
 
         for row in batch:
-            if point_exists(COLLECTION_DOCUMENTS, row["id"]):
+            if row["id"] in already_embedded:
                 skipped += 1
                 continue
             text = f"{row['entity_type']}: {row['title']}"
@@ -377,11 +391,13 @@ def embed_all_tasks() -> dict:
 
     for batch_start in range(0, total, BATCH_SIZE):
         batch = rows[batch_start:batch_start + BATCH_SIZE]
+        batch_ids = [row["id"] for row in batch]
+        already_embedded = existing_point_ids(COLLECTION_DOCUMENTS, batch_ids)
         texts = []
         valid_rows = []
 
         for row in batch:
-            if point_exists(COLLECTION_DOCUMENTS, row["id"]):
+            if row["id"] in already_embedded:
                 skipped += 1
                 continue
             text = f"Task: {row['title']}"

@@ -9,7 +9,6 @@ Can run standalone: python pages/chat.py
 """
 
 import json
-import re
 import gradio as gr
 import pandas as pd
 from db.chat_operations import (
@@ -17,48 +16,7 @@ from db.chat_operations import (
     add_message_metadata, update_message_metadata,
     get_or_create_janus_conversation, archive_janus_conversation,
 )
-from services.chat import chat, PROVIDER_PRESETS, fetch_ollama_models, _EMPTY_RAG_METRICS, _EMPTY_TOKEN_COUNTS
-
-
-def _sanitize_tool_call_xml(text: str) -> str:
-    """Convert <tool_call> XML to visible markdown.
-
-    Some models emit raw XML tool calls instead of using the function calling
-    API. Gradio's markdown renderer strips unknown XML tags, leaving an empty
-    chat bubble. This converts them to readable content.
-    """
-    if not text or "<tool_call>" not in text:
-        return text
-
-    calls = []
-    for match in re.finditer(
-        r'<function=(\w+)>(.*?)</function>',
-        text,
-        re.DOTALL,
-    ):
-        fn_name = match.group(1)
-        params_block = match.group(2).strip()
-        params = []
-        for pm in re.finditer(
-            r'<parameter=(\w+)>\s*(.*?)\s*</parameter>',
-            params_block,
-            re.DOTALL,
-        ):
-            params.append(f'{pm.group(1)}="{pm.group(2).strip()}"')
-        param_str = ", ".join(params) if params else ""
-        calls.append(f"`{fn_name}({param_str})`")
-
-    if calls:
-        call_list = ", ".join(calls)
-        return (
-            f"I wanted to call {call_list} to find that information, "
-            f"but tool execution was not available for this response. "
-            f"The knowledge you're asking about may not be in my current RAG context."
-        )
-
-    # Fallback: just wrap the raw XML in a code block so it's visible
-    return f"```xml\n{text.strip()}\n```"
-
+from services.chat import chat, PROVIDER_PRESETS, fetch_ollama_models, _EMPTY_RAG_METRICS, _EMPTY_TOKEN_COUNTS, _sanitize_tool_call_output
 from services.settings import get_setting, set_setting
 from shared.constants import DEFAULT_CHAT_HISTORY
 from shared.data_helpers import _load_most_recent_chat, _load_chat_session, _load_conversation_metrics, _windowed_api_history
@@ -123,9 +81,9 @@ def _handle_send(message, history, conv_id, provider, model,
 
         reasoning, clean_response = parse_reasoning(raw_response)
 
-        # Sanitize <tool_call> XML that some models emit as plain text
-        # (Gradio markdown strips unknown XML tags → empty chat bubble)
-        clean_response = _sanitize_tool_call_xml(clean_response)
+        # Sanitize hallucinated tool call syntax (XML or JSON) —
+        # safety net in case models emit tool calls despite not receiving tools
+        clean_response = _sanitize_tool_call_output(clean_response)
 
         # Decompose reasoning tokens from completion_tokens when provider
         # doesn't report them separately (Ollama lumps <think> + response).
@@ -201,6 +159,9 @@ def _handle_send(message, history, conv_id, provider, model,
                 rag_avg_rerank=rag_metrics.get("avg_rerank_score", 0.0),
                 rag_avg_salience=rag_metrics.get("avg_salience", 0.0),
                 rag_scores=json.dumps(rag_metrics.get("scores", [])),
+                system_prompt_length=result.get("system_prompt_length", 0),
+                rag_context_text=rag_metrics.get("context_text", ""),
+                rag_synthesized=1 if rag_metrics.get("synthesized") else 0,
             )
 
             # Usage signal: estimate which RAG hits the model actually used
@@ -248,6 +209,7 @@ def _handle_send(message, history, conv_id, provider, model,
             "timings": timings,
             "cumulative_tokens": new_cum,
             "turn_count": metrics.get("turn_count", 0) + 1,
+            "system_prompt_length": result.get("system_prompt_length", 0),
         }
 
         return display_history, api_history, "", conv_id, new_metrics
@@ -306,6 +268,11 @@ def build_chat_page():
             gr.Markdown(f"**Turn {tc}**" if tc > 0 else "*No messages yet*")
 
             if tc > 0:
+                # Pipeline overview
+                sp_len = metrics.get("system_prompt_length", 0)
+                if sp_len:
+                    gr.Markdown(f"System prompt: **{sp_len:,}** chars")
+
                 # RAG Retrieval — funnel summary
                 gr.Markdown("#### RAG Retrieval")
                 hits_used = rag.get("hits_used", 0)
@@ -708,9 +675,16 @@ def build_chat_page():
             gr.Markdown("---")
             gr.Markdown("### RAG Configuration")
             rag_threshold = gr.Slider(
-                label="Score Threshold", minimum=0.0, maximum=1.0,
+                label="ANN Score Threshold", minimum=0.0, maximum=1.0,
                 step=0.05, value=float(get_setting("rag_score_threshold") or "0.3"),
                 interactive=True,
+                info="Fallback threshold when reranker unavailable",
+            )
+            rag_rerank_threshold = gr.Slider(
+                label="Rerank Threshold", minimum=0.0, maximum=1.0,
+                step=0.05, value=float(get_setting("rag_rerank_threshold") or "0.3"),
+                interactive=True,
+                info="Cross-encoder relevance cutoff (0-1)",
             )
             rag_max_chunks = gr.Slider(
                 label="Max Chunks", minimum=1, maximum=20,
@@ -943,6 +917,11 @@ def build_chat_page():
     rag_threshold.change(
         lambda v: set_setting("rag_score_threshold", str(v)),
         inputs=[rag_threshold],
+        api_visibility="private",
+    )
+    rag_rerank_threshold.change(
+        lambda v: set_setting("rag_rerank_threshold", str(v)),
+        inputs=[rag_rerank_threshold],
         api_visibility="private",
     )
     rag_max_chunks.change(

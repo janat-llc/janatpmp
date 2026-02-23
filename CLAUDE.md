@@ -52,7 +52,8 @@ JANATPMP/
 │   │   ├── 0.4.1_messages_fts_update.sql
 │   │   ├── 0.4.2_domains_table.sql
 │   │   ├── 0.5.0_messages_metadata.sql
-│   │   └── 0.6.0_salience_synced.sql
+│   │   ├── 0.6.0_salience_synced.sql
+│   │   └── 0.7.0_pipeline_observability.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
 │   ├── exports/              # Portable project data exports (JSON)
@@ -74,7 +75,7 @@ JANATPMP/
 ├── services/
 │   ├── __init__.py
 │   ├── log_config.py         # SQLiteLogHandler + setup_logging() + get_logs()
-│   ├── chat.py               # Multi-provider chat with tool use (Anthropic/Gemini/Ollama)
+│   ├── chat.py               # Multi-provider chat (Anthropic/Gemini/Ollama) — no tools for in-app Ollama
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py            # Background evaluation daemon — Slumber Cycle (R12)
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (directory scanner)
@@ -937,11 +938,56 @@ RAG Synthesizer, Credentials (API key, base URL), Ollama (num_ctx, keep_alive).
 Content Ingestion, Vector Store (embedding), Application Logs. Left sidebar shows Database
 Overview with reactive row counts.
 
-### Emergent Persona
+### Janus Persona
 
-No static system prompt for Janus identity. `chat_system_prompt` setting exists in DB but
-is dead code — not read by `_build_system_prompt()`. Persona emerges from continuous
-conversation history and RAG salience over the platform's lifetime.
+R15 introduced explicit Janus identity via `DEFAULT_SYSTEM_PROMPT_TEMPLATE` ("You are Janus,
+an AI collaborator...") with dynamic domain injection from the `domains` table. The template
+uses `{domains}` placeholder filled at prompt build time by `_build_system_prompt()`.
+Full Modelfile-driven dynamic persona (per-turn synthesizer prompts) is future work.
+
+## Phase R15: Fix the Foundation — Chat Pipeline, RAG Quality, Ingestion
+
+R15 stabilizes the broken foundation before building intelligence layers.
+
+### No Tools for In-App Chat
+
+The in-app Ollama chat model (Janus) no longer receives tool definitions. Qwen3-VL:8b
+was outputting tool call JSON inside `<think>` blocks when both `tools` and `think=True`
+were sent simultaneously. The fix: remove tools entirely from `_chat_ollama()`.
+
+- **RAG provides retrieved knowledge**, `get_context_snapshot()` provides live project state
+- Tools are for **MCP clients** (Claude Desktop, etc.) via `gr.api()` in `app.py`
+- Saves ~3,500 tokens of context window per turn
+- `_sanitize_tool_call_output()` in `services/chat.py` catches any hallucinated tool syntax
+- Anthropic/Gemini providers keep their tool support for MCP compatibility
+
+### Pipeline Observability (Migration 0.7.0)
+
+Per-turn pipeline metadata stored in `messages_metadata`:
+
+- `system_prompt_length` — composed system prompt size (chars)
+- `rag_context_text` — raw RAG context injected into prompt
+- `rag_synthesized` — whether RAG synthesis was applied (0/1)
+
+Surfaced in Sovereign Chat left sidebar "Pipeline" section.
+
+### RAG Quality Tuning
+
+- **Configurable rerank threshold** — `rag_rerank_threshold` setting (0.0-1.0, default 0.3)
+  replaces hardcoded cutoff. Surfaced as slider in Chat Settings right sidebar.
+- **Consistent bulk embed payloads** — `embed_all_messages()` now includes `created_at`,
+  `provider`, `model`, `salience`, `entity_type` to match `atlas/on_write.py`.
+
+### Ingestion Hardening
+
+- **Content-hash dedup** — `compute_conversation_hash()` and `compute_content_hash()` from
+  `services/ingestion/dedup.py` wired as secondary dedup after title-based checks in
+  Google AI and markdown orchestrators.
+- **Auto-embed after ingestion** — all three pipelines (Google AI, markdown, Claude import)
+  auto-trigger `embed_all_messages()` or `embed_all_documents()` after successful import.
+  Checkpoint-based resume ensures only new records are embedded.
+- **Batch point_exists** — `existing_point_ids()` in `services/vector_store.py` replaces
+  per-record `point_exists()` calls with a single batch retrieve per batch of 32.
 
 ## Future Architecture (not in scope, for context only)
 
@@ -950,8 +996,8 @@ architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is now operation
 triple-write pipeline keeps all three stores in sync. **Janus continuous chat** is live
 (R14) — one persistent conversation stream with sliding window context. Future work:
 
-- **System prompt audit trail** — store composed system prompts per-turn in messages_metadata,
-  surface in a "Prompt Inspector" panel, consolidate in Slumber Cycles
+- **System prompt audit trail** — R15 stores system prompt length + RAG context per-turn;
+  future: full prompt text storage, "Prompt Inspector" panel, Slumber Cycle consolidation
 - **Ollama Modelfiles pipeline** — janat-synthesizer, janat-scorer, janat-consolidator,
   janat-classifier sharing Qwen3:1.7B base weights. Janus (8B) receives dynamic system
   prompts from the synthesizer each turn.
