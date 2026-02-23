@@ -95,9 +95,12 @@ SETTINGS_REGISTRY = {
     "ollama_num_ctx":       ("131072", False, "ollama", _validate_positive_int),
     "ollama_keep_alive":    ("-1", False, "ollama", None),
 
+    # Janus (continuous chat)
+    "janus_conversation_id":  ("", False, "chat", None),
+    "janus_context_messages": ("50", False, "chat", _validate_positive_int),
+
     # Export
-    "claude_export_db_path":  ("/data/claude_export/claude_export.db", False, "export", None),
-    "claude_export_json_dir": ("/data/claude_export", False, "export", None),
+    "claude_export_json_dir": ("/app/imports/claude", False, "export", None),
 
     # Ingestion
     "ingestion_google_ai_dir": ("/app/imports/google_ai", False, "ingestion", None),
@@ -158,6 +161,7 @@ def init_settings():
         ("chat_model", "claude-sonnet-4-20250514"),
         ("chat_model", "nemotron-3-nano:latest"),
         ("ollama_num_ctx", "32768"),
+        ("claude_export_json_dir", "/data/claude_export"),
     ]
 
     with get_connection() as conn:
@@ -174,6 +178,7 @@ def init_settings():
 
         # Remove defunct settings
         conn.execute("DELETE FROM settings WHERE key = 'ingestion_quest_dir'")
+        conn.execute("DELETE FROM settings WHERE key = 'claude_export_db_path'")
 
         for key, (default_value, is_secret, _cat, _val) in SETTINGS_REGISTRY.items():
             stored = default_value

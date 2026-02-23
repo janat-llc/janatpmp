@@ -14,7 +14,14 @@ _active_conversation_id: str = ""
 
 
 def get_active_conversation_id() -> str:
-    """Return the currently active conversation ID (empty string if none)."""
+    """Return the currently active conversation ID.
+
+    Falls back to the Janus conversation if no active ID has been set.
+    """
+    global _active_conversation_id
+    if not _active_conversation_id:
+        from db.chat_operations import get_or_create_janus_conversation
+        _active_conversation_id = get_or_create_janus_conversation()
     return _active_conversation_id
 
 

@@ -2,10 +2,12 @@
 import json
 import gradio as gr
 from db.chat_operations import (
-    create_conversation, add_message, parse_reasoning,
-    list_conversations,
+    add_message, parse_reasoning,
+    list_conversations, get_or_create_janus_conversation,
 )
+from services.settings import get_setting
 from shared.constants import DEFAULT_CHAT_HISTORY
+from shared.data_helpers import _windowed_api_history
 
 
 def _handle_chat(message, history, sidebar_conv_id=""):
@@ -24,16 +26,19 @@ def _handle_chat(message, history, sidebar_conv_id=""):
         pass
     from services.chat import chat
 
-    # Auto-create conversation on first message
+    # Janus fallback — always have a conversation
     if not sidebar_conv_id:
-        title = message.strip()[:50]
-        sidebar_conv_id = create_conversation(
-            provider="ollama", model="",
-            title=title, source="platform",
-        )
+        sidebar_conv_id = get_or_create_janus_conversation()
 
-    result = chat(message, history)
-    updated = result["history"]
+    # Apply sliding window — send only last N turns to LLM
+    window = int(get_setting("janus_context_messages") or "50")
+    api_window = _windowed_api_history(history, window)
+
+    result = chat(message, api_window)
+
+    # Reconstruct full history: original + new messages from this turn
+    new_messages = result["history"][len(api_window):]
+    updated = list(history) + new_messages
 
     # Split display vs API history (keep <details> out of API history
     # so model doesn't mimic HTML formatting on subsequent turns)
@@ -118,24 +123,25 @@ def _handle_chat_tab(message, history, conv_id, provider, model,
         pass
     from services.chat import chat
 
-    # Auto-create conversation on first message
+    # Janus fallback — always have a conversation
     if not conv_id:
-        title = message.strip()[:50]
-        conv_id = create_conversation(
-            provider=provider, model=model,
-            system_prompt_append=system_append,
-            temperature=temperature, top_p=top_p,
-            max_tokens=int(max_tokens), title=title,
-        )
+        conv_id = get_or_create_janus_conversation()
 
     try:
+        # Apply sliding window — send only last N turns to LLM
+        window = int(get_setting("janus_context_messages") or "50")
+        api_window = _windowed_api_history(history, window)
+
         result = chat(
-            message, history,
+            message, api_window,
             provider_override=provider, model_override=model,
             temperature=temperature, top_p=top_p,
             max_tokens=int(max_tokens), system_prompt_append=system_append,
         )
-        updated = result["history"]
+
+        # Reconstruct full history: original + new messages from this turn
+        new_messages = result["history"][len(api_window):]
+        updated = list(history) + new_messages
 
         # Extract final model response (skip tool-use status messages)
         raw_response = ""

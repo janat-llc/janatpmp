@@ -33,16 +33,6 @@ def _load_schema() -> str:
         return "{}"
 
 
-def _load_system_prompt() -> str:
-    """Load custom system prompt from settings DB.
-
-    Returns:
-        System prompt string, or empty string if not set.
-    """
-    from services.settings import get_setting
-    return get_setting("chat_system_prompt")
-
-
 def _backups_to_df() -> pd.DataFrame:
     """Get backups as display DataFrame.
 
@@ -125,32 +115,6 @@ def build_database_tab(conversations_state=None):
         Dict of key components for external reference (tab, stats, schema, etc.).
     """
     with gr.Tab("Admin") as admin_tab:
-        # System Prompt Editor
-        with gr.Accordion("System Prompt", open=False):
-            gr.Markdown("Customize the AI assistant's behavior. Leave empty for default.")
-            system_prompt_editor = gr.Textbox(
-                label="Custom System Prompt",
-                lines=6,
-                placeholder="e.g., You manage JANATPMP for The Janat Initiative. Focus on actionable responses.",
-                value=_load_system_prompt(),
-                interactive=True,
-            )
-            with gr.Row():
-                save_prompt_btn = gr.Button("Save Prompt", variant="primary")
-                prompt_status = gr.Textbox(show_label=False, interactive=False, scale=2)
-
-            def _save_prompt(prompt_text):
-                from services.settings import set_setting
-                set_setting("chat_system_prompt", prompt_text)
-                return "System prompt saved."
-
-            save_prompt_btn.click(
-                _save_prompt,
-                inputs=[system_prompt_editor],
-                outputs=[prompt_status],
-                api_visibility="private",
-            )
-
         # Settings section
         with gr.Accordion("Settings", open=False):
             from services.settings import get_setting as _get_setting

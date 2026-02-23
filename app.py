@@ -35,6 +35,7 @@ from db.chat_operations import (
     list_conversations, update_conversation, delete_conversation,
     search_conversations, add_message, get_messages,
     add_message_metadata, get_message_metadata,
+    get_or_create_janus_conversation, archive_janus_conversation,
 )
 from services.claude_import import import_conversations_json, import_conversations_directory
 from services.ingestion.orchestrator import (
@@ -61,7 +62,8 @@ from services.settings import init_settings
 init_settings()
 cleanup_old_logs()
 cleanup_cdc_outbox()
-logger.info("Database and settings initialized")
+get_or_create_janus_conversation()
+logger.info("Database, settings, and Janus conversation initialized")
 
 # Initialize vector store collections (safe if Qdrant not running)
 try:
@@ -136,6 +138,10 @@ with gr.Blocks(title="JANATPMP") as demo:
     # Cognitive telemetry (R12)
     gr.api(add_message_metadata)
     gr.api(get_message_metadata)
+
+    # Janus continuous chat (R14)
+    gr.api(get_or_create_janus_conversation)
+    gr.api(archive_janus_conversation)
 
     # Import pipeline (Phase 5)
     gr.api(import_conversations_json)

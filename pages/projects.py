@@ -8,12 +8,12 @@ from db.operations import (
     get_domains,
 )
 from tabs.tab_database import build_database_tab
-from services.claude_export import is_configured as is_export_configured
 from services.settings import get_setting, set_setting
 from services.chat import PROVIDER_PRESETS, fetch_ollama_models
 from db.chat_operations import (
     get_messages, list_conversations,
     update_conversation, delete_conversation,
+    get_or_create_janus_conversation,
 )
 from shared.constants import (
     ALL_TYPES, STATUSES,
@@ -30,7 +30,7 @@ from shared.data_helpers import (
 from tabs.tab_chat import _handle_chat
 from tabs.tab_knowledge import (
     _load_conv_stats, _load_conv_list, _load_selected_conversation,
-    _run_ingest, _delete_knowledge_conv, _run_import,
+    _delete_knowledge_conv,
     _run_search, _lookup_connections, _on_conn_create,
 )
 
@@ -58,10 +58,11 @@ def build_page():
     tasks_state = gr.State(_load_tasks())
     selected_doc_id = gr.State("")
     docs_state = gr.State(_load_documents())
+    _janus_id = get_or_create_janus_conversation()
     _initial_conv_id, _initial_chat_history = _load_most_recent_chat()
     chat_history = gr.State(list(_initial_chat_history))
     active_conversation_id = gr.State(_initial_conv_id)
-    sidebar_conv_id = gr.State(_initial_conv_id or "")
+    sidebar_conv_id = gr.State(_janus_id)
     conversations_state = gr.State(list_conversations(limit=30))
     selected_knowledge_conv_id = gr.State("")
 
@@ -352,54 +353,11 @@ def build_page():
                                 show_label=False, interactive=False, scale=2
                             )
 
-                # --- Conversations sub-tab ---
+                # --- Conversations sub-tab (browse-only — imports via Admin) ---
                 with gr.Tab("Conversations"):
-                    conv_configured = is_export_configured()
-
-                    if not conv_configured:
-                        gr.Markdown(
-                            "### Claude Export Not Configured\n\n"
-                            "Set `claude_export_db_path` and `claude_export_json_dir` "
-                            "in **Admin > Settings** to enable conversation browsing."
-                        )
-
                     with gr.Row():
                         with gr.Column(scale=1):
-                            # Stats
                             conv_stats_md = gr.Markdown("*Loading stats...*")
-
-                            # Ingest controls (legacy claude_export.db)
-                            with gr.Accordion("Import / Refresh", open=False):
-                                gr.Markdown(
-                                    "Import conversations from your Claude export JSON files. "
-                                    "Uses INSERT OR REPLACE — safe to re-run."
-                                )
-                                conv_ingest_btn = gr.Button(
-                                    "Ingest from Export Directory", variant="primary"
-                                )
-                                conv_ingest_status = gr.Textbox(
-                                    show_label=False, interactive=False
-                                )
-
-                            # Import conversations.json into JANATPMP triplet schema
-                            with gr.Accordion("Import conversations.json", open=False):
-                                gr.Markdown(
-                                    "Upload a Claude export `conversations.json` to import "
-                                    "into JANATPMP's conversations + messages tables. "
-                                    "Existing conversations (by UUID) are skipped."
-                                )
-                                conv_json_upload = gr.File(
-                                    label="conversations.json",
-                                    file_types=[".json"],
-                                )
-                                conv_import_btn = gr.Button(
-                                    "Import to JANATPMP", variant="primary"
-                                )
-                                conv_import_status = gr.Textbox(
-                                    show_label=False, interactive=False
-                                )
-
-                            # Conversation list (JANATPMP data)
                             gr.Markdown("### Conversations")
                             conv_list = gr.DataFrame(
                                 headers=["Title", "Source", "Msgs", "Updated", "ID"],
@@ -409,7 +367,7 @@ def build_page():
                             )
                             with gr.Row():
                                 conv_open_chat_btn = gr.Button(
-                                    "Open in Chat", variant="primary", size="sm"
+                                    "View Conversation", variant="primary", size="sm"
                                 )
                                 conv_delete_btn = gr.Button(
                                     "Delete Selected", variant="stop", size="sm"
@@ -1002,26 +960,6 @@ def build_page():
         _load_conv_stats, outputs=[conv_stats_md], api_visibility="private"
     )
 
-    # Ingest button
-    conv_ingest_btn.click(
-        _run_ingest, outputs=[conv_ingest_status], api_visibility="private"
-    ).then(
-        _load_conv_stats, outputs=[conv_stats_md], api_visibility="private"
-    ).then(
-        _load_conv_list, outputs=[conv_list], api_visibility="private"
-    )
-
-    # Import conversations.json button
-    conv_import_btn.click(
-        _run_import,
-        inputs=[conv_json_upload],
-        outputs=[conv_import_status, conversations_state],
-        api_visibility="private",
-    ).then(
-        _load_conv_stats, outputs=[conv_stats_md], api_visibility="private"
-    ).then(
-        _load_conv_list, outputs=[conv_list], api_visibility="private"
-    )
 
     # === CHAT WIRING ===
     chat_input.submit(

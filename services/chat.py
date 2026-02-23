@@ -166,10 +166,10 @@ When listing or searching, present results concisely. When creating, confirm the
 
 
 def _build_system_prompt(has_tools: bool = True) -> str:
-    """Compose the full system prompt from default + custom + auto-context.
+    """Compose the full system prompt from default + auto-context.
 
     Layers: DEFAULT_SYSTEM_PROMPT + tool instructions (if model supports tools)
-    + user custom prompt (from settings) + live project context snapshot.
+    + live project context snapshot.
 
     Args:
         has_tools: Whether the model supports tool calling. If False,
@@ -178,16 +178,11 @@ def _build_system_prompt(has_tools: bool = True) -> str:
     Returns:
         Complete system prompt string for injection into API call.
     """
-    from services.settings import get_setting
     from db.operations import get_context_snapshot
 
     base = DEFAULT_SYSTEM_PROMPT
     if has_tools:
         base += DEFAULT_SYSTEM_PROMPT_TOOLS
-
-    custom = get_setting("chat_system_prompt")
-    if custom and custom.strip():
-        base += f"\n\nAdditional Instructions:\n{custom.strip()}"
 
     context = get_context_snapshot()
     if context:

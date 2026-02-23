@@ -11,9 +11,6 @@ logger = logging.getLogger(__name__)
 from db.chat_operations import (
     get_messages, list_conversations, delete_conversation,
 )
-from services.settings import get_setting
-from services.claude_export import ingest_from_directory
-from services.claude_import import import_conversations_json
 from shared.constants import DEFAULT_CHAT_HISTORY
 from shared.formatting import fmt_enum
 from shared.data_helpers import _msgs_to_history
@@ -55,14 +52,6 @@ def _load_selected_conversation(evt: gr.SelectData, df):
     return [], ""
 
 
-def _run_ingest():
-    """Ingest conversations from Claude export directory."""
-    json_dir = get_setting("claude_export_json_dir")
-    if not json_dir:
-        return "Error: claude_export_json_dir not set in Settings."
-    return ingest_from_directory(json_dir)
-
-
 def _open_in_chat(conv_id):
     """Open a Knowledge conversation in the Chat tab."""
     if not conv_id:
@@ -88,23 +77,6 @@ def _delete_knowledge_conv(conv_id):
     delete_conversation(conv_id)
     convs = list_conversations(limit=30)
     return f"Deleted conversation.", convs
-
-
-def _run_import(file):
-    """Import conversations.json file into JANATPMP triplet schema."""
-    if file is None:
-        return "No file selected.", gr.skip()
-    result = import_conversations_json(file.name)
-    errors = result["errors"]
-    msg = (
-        f"{result['imported']} conversations imported, "
-        f"{result['skipped']} skipped, "
-        f"{result['total_messages']} messages"
-    )
-    if errors:
-        msg += f"\n{len(errors)} errors: {errors[0]}"
-    convs = list_conversations(limit=30)
-    return msg, convs
 
 
 # --- Search handlers ---

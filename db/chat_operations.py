@@ -479,3 +479,81 @@ def get_messages(conversation_id: str, limit: int = 100) -> list:
             LIMIT ?
         """, (conversation_id, limit))
         return [dict(row) for row in cursor.fetchall()]
+
+
+# =============================================================================
+# JANUS — Continuous Chat Lifecycle
+# =============================================================================
+
+def get_or_create_janus_conversation() -> str:
+    """Get the Janus conversation ID, creating it on first boot.
+
+    Checks the janus_conversation_id setting. If empty or pointing to a
+    non-existent conversation, creates a new one with title "Janus" and
+    stores the ID in settings.
+
+    Returns:
+        The Janus conversation ID (hex string).
+    """
+    from services.settings import get_setting, set_setting
+
+    janus_id = get_setting("janus_conversation_id")
+    if janus_id:
+        conv = get_conversation(janus_id)
+        if conv:
+            return janus_id
+
+    # Create fresh Janus conversation with current defaults
+    provider = get_setting("chat_provider") or "ollama"
+    model = get_setting("chat_model") or "qwen3-vl:8b"
+    janus_id = create_conversation(
+        provider=provider,
+        model=model,
+        title="Janus",
+        source="platform",
+    )
+    set_setting("janus_conversation_id", janus_id)
+    return janus_id
+
+
+def archive_janus_conversation(janus_conv_id: str) -> str:
+    """Archive the current Janus conversation and create a fresh one.
+
+    Sets is_active=0 on the current Janus conversation, renames it to
+    "Janus — Chapter N", creates a new Janus conversation, and updates
+    the janus_conversation_id setting.
+
+    Args:
+        janus_conv_id: Current Janus conversation ID to archive.
+
+    Returns:
+        The new Janus conversation ID (hex string).
+    """
+    from services.settings import get_setting, set_setting
+
+    # Count existing archived chapters for numbering
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM conversations WHERE title LIKE 'Janus%' AND is_active = 0"
+        )
+        chapter_num = cursor.fetchone()[0] + 1
+
+        # Archive the current conversation
+        cursor.execute(
+            "UPDATE conversations SET title = ?, is_active = 0 WHERE id = ?",
+            (f"Janus \u2014 Chapter {chapter_num}", janus_conv_id)
+        )
+        conn.commit()
+
+    # Create fresh Janus conversation
+    provider = get_setting("chat_provider") or "ollama"
+    model = get_setting("chat_model") or "qwen3-vl:8b"
+    new_id = create_conversation(
+        provider=provider,
+        model=model,
+        title="Janus",
+        source="platform",
+    )
+    set_setting("janus_conversation_id", new_id)
+    return new_id

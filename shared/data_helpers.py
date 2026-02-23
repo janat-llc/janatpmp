@@ -1,7 +1,10 @@
 """Shared data-loading helpers for JANATPMP UI."""
 import pandas as pd
 from db.operations import list_items, list_tasks, list_documents, get_connection
-from db.chat_operations import list_conversations, get_messages, get_message_metadata
+from db.chat_operations import (
+    list_conversations, get_messages, get_message_metadata,
+    get_or_create_janus_conversation,
+)
 from shared.constants import PROJECT_TYPES, DEFAULT_CHAT_HISTORY
 from shared.formatting import entity_list_to_df
 
@@ -77,11 +80,8 @@ def _msgs_to_history(msgs: list[dict]) -> list[dict]:
 
 
 def _load_most_recent_chat() -> tuple[str, list[dict]]:
-    """Load most recent conversation for Chat tab initialization."""
-    convs = list_conversations(limit=1)
-    if not convs:
-        return "", list(DEFAULT_CHAT_HISTORY)
-    conv_id = convs[0]["id"]
+    """Load the Janus conversation for sidebar initialization."""
+    conv_id = get_or_create_janus_conversation()
     msgs = get_messages(conv_id)
     if not msgs:
         return conv_id, list(DEFAULT_CHAT_HISTORY)
@@ -89,8 +89,27 @@ def _load_most_recent_chat() -> tuple[str, list[dict]]:
     return conv_id, history if history else list(DEFAULT_CHAT_HISTORY)
 
 
+def _windowed_api_history(api_history: list[dict], window: int) -> list[dict]:
+    """Return the last N message pairs from API history for LLM context.
+
+    Each turn is a user + assistant pair (2 entries). The window parameter
+    specifies the number of turns, so we keep the last window*2 entries.
+
+    Args:
+        api_history: Full API history (list of role/content dicts).
+        window: Number of turns to keep.
+
+    Returns:
+        Windowed subset of api_history.
+    """
+    max_entries = window * 2
+    if len(api_history) <= max_entries:
+        return list(api_history)
+    return list(api_history[-max_entries:])
+
+
 def _load_chat_session() -> dict:
-    """Load most recent conversation with full session data for sovereign chat.
+    """Load the Janus conversation with full session data for sovereign chat.
 
     Returns dict with: conv_id, display_history, api_history, token_totals.
     Display history has reasoning in <details> accordion.
@@ -104,10 +123,7 @@ def _load_chat_session() -> dict:
         "token_totals": {"prompt": 0, "reasoning": 0, "response": 0, "total": 0},
         "turn_count": 0,
     }
-    convs = list_conversations(limit=1)
-    if not convs:
-        return empty
-    conv_id = convs[0]["id"]
+    conv_id = get_or_create_janus_conversation()
     msgs = get_messages(conv_id)
     if not msgs:
         return {**empty, "conv_id": conv_id}

@@ -13,8 +13,9 @@ import re
 import gradio as gr
 import pandas as pd
 from db.chat_operations import (
-    create_conversation, parse_reasoning, add_message,
+    parse_reasoning, add_message,
     add_message_metadata, update_message_metadata,
+    get_or_create_janus_conversation, archive_janus_conversation,
 )
 from services.chat import chat, PROVIDER_PRESETS, fetch_ollama_models, _EMPTY_RAG_METRICS, _EMPTY_TOKEN_COUNTS
 
@@ -60,7 +61,7 @@ def _sanitize_tool_call_xml(text: str) -> str:
 
 from services.settings import get_setting, set_setting
 from shared.constants import DEFAULT_CHAT_HISTORY
-from shared.data_helpers import _load_most_recent_chat, _load_chat_session, _load_conversation_metrics
+from shared.data_helpers import _load_most_recent_chat, _load_chat_session, _load_conversation_metrics, _windowed_api_history
 from shared.chat_service import (
     set_active_conversation_id,
     get_chat_config,
@@ -72,7 +73,7 @@ from shared.chat_service import (
 # ---------------------------------------------------------------------------
 
 def _handle_send(message, history, conv_id, provider, model,
-                 temperature, top_p, max_tokens, system_append, metrics):
+                 temperature, top_p, max_tokens, metrics):
     """Process a chat message: inference → triplet persistence → metrics → UI update.
 
     Returns (display_history, api_history, cleared_input,
@@ -88,27 +89,28 @@ def _handle_send(message, history, conv_id, provider, model,
     except Exception:
         pass
 
-    # Auto-create conversation on first message
+    # Janus fallback — always have a conversation
     if not conv_id:
-        title = message.strip()[:50]
-        conv_id = create_conversation(
-            provider=provider, model=model,
-            system_prompt_append=system_append,
-            temperature=temperature, top_p=top_p,
-            max_tokens=int(max_tokens), title=title,
-        )
+        conv_id = get_or_create_janus_conversation()
 
     # Update module-level active conversation pointer
     set_active_conversation_id(conv_id)
 
     try:
+        # Apply sliding window — send only last N turns to LLM
+        window = int(get_setting("janus_context_messages") or "50")
+        api_window = _windowed_api_history(history, window)
+
         result = chat(
-            message, history,
+            message, api_window,
             provider_override=provider, model_override=model,
             temperature=temperature, top_p=top_p,
-            max_tokens=int(max_tokens), system_prompt_append=system_append,
+            max_tokens=int(max_tokens),
         )
-        updated = result["history"]
+
+        # Reconstruct full history: original + new messages from this turn
+        new_messages = result["history"][len(api_window):]
+        updated = list(history) + new_messages
         rag_metrics = result.get("rag_metrics", dict(_EMPTY_RAG_METRICS))
         token_counts = result.get("token_counts", dict(_EMPTY_TOKEN_COUNTS))
 
@@ -281,7 +283,6 @@ def build_chat_page():
     temperature_state = gr.State(config["temperature"])
     top_p_state = gr.State(config["top_p"])
     max_tokens_state = gr.State(config["max_tokens"])
-    system_append_state = gr.State("")
 
     # Metrics state — updated after each send, drives left sidebar render
     turn_metrics = gr.State({
@@ -389,8 +390,15 @@ def build_chat_page():
 
     # === RIGHT SIDEBAR — Session Parameters ===
     with gr.Sidebar(position="right"):
-        gr.Markdown("### Session")
-        new_chat_btn = gr.Button("New", variant="secondary", size="sm")
+        gr.Markdown("### Real-time")
+        archive_btn = gr.Button("Archive Chapter", variant="secondary", size="sm")
+        cfg_context_window = gr.Number(
+            label="Context Window",
+            value=int(get_setting("janus_context_messages") or "50"),
+            minimum=5, maximum=200,
+            step=5, interactive=True,
+            info="Message pairs sent to LLM",
+        )
         cfg_provider = gr.Dropdown(
             choices=["anthropic", "gemini", "ollama"],
             value=current_provider,
@@ -418,12 +426,6 @@ def build_chat_page():
             label="Max Tokens", minimum=256, maximum=16384,
             step=256, value=config["max_tokens"], interactive=True,
         )
-        cfg_system_append = gr.Textbox(
-            label="Session Instructions",
-            placeholder="Additional instructions for this session...",
-            lines=3, interactive=True,
-        )
-
         gr.Markdown("---")
 
         @gr.render(inputs=[turn_metrics])
@@ -704,16 +706,6 @@ def build_chat_page():
             )
 
             gr.Markdown("---")
-            gr.Markdown("### System Instructions")
-            gr.Markdown("*Base system prompt for all chat interactions. Like Memory in Claude — persistent context.*")
-            global_system_prompt = gr.Textbox(
-                value=get_setting("chat_system_prompt"),
-                label="System Prompt",
-                placeholder="You are a helpful assistant specialized in...",
-                lines=8, interactive=True,
-            )
-
-            gr.Markdown("---")
             gr.Markdown("### RAG Configuration")
             rag_threshold = gr.Slider(
                 label="Score Threshold", minimum=0.0, maximum=1.0,
@@ -795,18 +787,22 @@ def build_chat_page():
 
     # === EVENT WIRING ===
 
-    # --- New Chat ---
-    def _new_chat():
-        set_active_conversation_id("")
+    # --- Archive Chapter ---
+    def _archive_chapter(conv_id):
+        if not conv_id:
+            return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+        new_id = archive_janus_conversation(conv_id)
+        set_active_conversation_id(new_id)
         empty_metrics = {
             "rag_metrics": dict(_EMPTY_RAG_METRICS),
             "token_counts": dict(_EMPTY_TOKEN_COUNTS),
             "cumulative_tokens": dict(_EMPTY_TOKEN_COUNTS),
             "turn_count": 0,
         }
-        return "", list(DEFAULT_CHAT_HISTORY), list(DEFAULT_CHAT_HISTORY), empty_metrics
-    new_chat_btn.click(
-        _new_chat,
+        return new_id, list(DEFAULT_CHAT_HISTORY), list(DEFAULT_CHAT_HISTORY), empty_metrics
+    archive_btn.click(
+        _archive_chapter,
+        inputs=[active_conv_id],
         outputs=[active_conv_id, chatbot, chat_history, turn_metrics],
         api_visibility="private",
     )
@@ -816,7 +812,7 @@ def build_chat_page():
         chat_input, chat_history, active_conv_id,
         provider_state, model_state,
         temperature_state, top_p_state, max_tokens_state,
-        system_append_state, turn_metrics,
+        turn_metrics,
     ]
     _send_outputs = [
         chatbot, chat_history, chat_input,
@@ -860,8 +856,9 @@ def build_chat_page():
         lambda v: int(v), inputs=[cfg_max_tokens], outputs=[max_tokens_state],
         api_visibility="private",
     )
-    cfg_system_append.change(
-        lambda v: v, inputs=[cfg_system_append], outputs=[system_append_state],
+    cfg_context_window.change(
+        lambda v: set_setting("janus_context_messages", str(int(v))),
+        inputs=[cfg_context_window],
         api_visibility="private",
     )
 
@@ -901,11 +898,6 @@ def build_chat_page():
     global_max_tokens.change(
         lambda v: set_setting("chat_max_tokens", str(int(v))),
         inputs=[global_max_tokens],
-        api_visibility="private",
-    )
-    global_system_prompt.change(
-        lambda v: set_setting("chat_system_prompt", v),
-        inputs=[global_system_prompt],
         api_visibility="private",
     )
     rag_threshold.change(
