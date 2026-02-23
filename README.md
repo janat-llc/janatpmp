@@ -3,7 +3,7 @@
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
 ![Gradio 6.6.0](https://img.shields.io/badge/Gradio-6.6.0-orange?logo=gradio&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-55%20Tools-blueviolet)
+![MCP](https://img.shields.io/badge/MCP-57%20Tools-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![Neo4j](https://img.shields.io/badge/Neo4j-2026.01.4-008CC1?logo=neo4j&logoColor=white)
 
@@ -42,7 +42,7 @@ graph TB
 
 ```mermaid
 graph TB
-    MCP[MCP Tools<br/>52 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
+    MCP[MCP Tools<br/>57 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
     UI[Gradio UI] --> DB
     API[REST API] --> DB
     DB --> SQLite[(SQLite)]
@@ -57,9 +57,10 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 
 ## Features
 
-- **55 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, settings, backups)
+- **57 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, Janus lifecycle, backups)
 - **Triple-write pipeline** — every message fans out to SQLite, Qdrant, and Neo4j synchronously; immediately retrievable on the next turn
 - **Knowledge graph** — Neo4j with 7 entity types, CDC consumer for structural edges, INFORMED_BY provenance tracing, SIMILAR_TO cross-conversation linking
+- **Janus continuous chat** — one persistent conversation from platform birth, shared across Dashboard sidebar and Sovereign Chat; sliding window sends last N turns to LLM while RAG handles historical context
 - **Sovereign Chat** — dedicated chat page (`/chat`) with real-time metrics sidebar: RAG provenance, latency breakdown, token counts, salience scores
 - **Multi-provider chat** with triplet message persistence (Anthropic, Gemini, Ollama/local models)
 - **Thinking mode** — chain-of-thought captured separately via Ollama `think=True`, stored as `model_reasoning` in triplet schema for future fine-tuning
@@ -178,10 +179,11 @@ JANATPMP/
 ├── shared/
 │   ├── constants.py           # Enum lists, magic numbers, defaults
 │   ├── formatting.py          # Display helpers (fmt_enum, entity_list_to_df)
-│   └── data_helpers.py        # Data-loading helpers
+│   ├── data_helpers.py        # Data-loading helpers
+│   └── chat_service.py        # Cross-page conversation state + config
 ├── db/
 │   ├── schema.sql             # Database DDL
-│   ├── operations.py          # 26 CRUD + lifecycle functions
+│   ├── operations.py          # 28 CRUD + lifecycle functions
 │   ├── chat_operations.py     # Conversation + message + metadata CRUD
 │   └── migrations/            # Versioned schema migrations (0.3.0–0.6.0)
 ├── atlas/                     # ATLAS — HTTP client layer for model services
@@ -202,7 +204,6 @@ JANATPMP/
 │   ├── turn_timer.py          # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py             # Slumber Cycle — 4-stage background daemon (R12+R13)
 │   ├── settings.py            # Settings registry with validation
-│   ├── claude_export.py       # Claude Export ingestion service
 │   ├── claude_import.py       # Claude JSON → triplet messages
 │   ├── embedding.py           # Thin shim → atlas/embedding_service.py
 │   ├── vector_store.py        # Qdrant ops + two-stage search pipeline
@@ -218,7 +219,7 @@ JANATPMP/
 
 ## MCP Integration
 
-JANATPMP exposes **55 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
+JANATPMP exposes **57 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
 
 ```
 http://localhost:7860/gradio_api/mcp/sse
@@ -236,6 +237,7 @@ Full API documentation is available at `/gradio_api/docs` while the server is ru
 | Domains | `get_domains`, `get_domain`, `create_domain`, `update_domain` | Organizational categories — database-managed, no code deploys needed |
 | Relationships | `create_relationship`, `get_relationships` | Typed connections (blocks, enables, informs, etc.) |
 | Conversations | `create_conversation`, `list_conversations`, `search_conversations`, `add_message`, `get_messages`, ... | Chat history with triplet schema |
+| Janus | `get_or_create_janus_conversation`, `archive_janus_conversation` | Persistent conversation lifecycle, chapter archiving |
 | Telemetry | `add_message_metadata`, `get_message_metadata` | Per-turn timing, RAG snapshots, quality scores |
 | Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains`, `embed_all_items`, `embed_all_tasks`, `recreate_collections` | ATLAS two-stage search, bulk embedding, collection management |
 | Graph | `graph_query`, `graph_neighbors`, `graph_stats`, `backfill_graph` | Read-only Cypher queries, node traversal, graph statistics, CDC backfill |
@@ -344,9 +346,9 @@ feature/phase{X}-{description}  # legacy naming
 
 ## Future
 
-JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is now operational — every message fans out to all three stores via the triple-write pipeline. Planned next steps:
+JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **Janus continuous chat** is live (R14), and every message fans out to all three stores via the triple-write pipeline. Planned next steps:
 
-- **Janus continuous chat** — one persistent conversation stream from platform birth, separating live chat from historical knowledge
+- **Intelligent intake pipeline** — content-hash-aware incremental sync, freshness detection, automated embedding after ingestion
 - **Ollama Modelfiles pipeline** — specialized models (synthesizer, scorer, consolidator, classifier) sharing base weights for dynamic system prompt generation
 - **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY and SIMILAR_TO edges
 - **Temporal decay curves** — time-weighted salience that naturally deprioritizes stale knowledge

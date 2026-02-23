@@ -388,18 +388,21 @@ docker-compose logs -f
 
 ### Completing Work
 1. Verify everything runs: `docker compose down && docker compose up -d --build`
-2. Commit with descriptive message: `git add -A && git commit -m "Phase {X}: {summary of changes}"`
-3. Merge to main: `git checkout main && git merge feature/phase{X}-{name}`
-4. Delete feature branch: `git branch -d feature/phase{X}-{name}`
-5. Delete the TODO file (content lives in JANATPMP items, git history preserves the original)
+2. **Pre-commit hygiene** (MUST happen before the final commit on every sprint):
+   - Update `README.md` — tool counts, feature list, project structure, Future section
+   - Update `CLAUDE.md` — new architecture, settings, patterns, phase documentation
+   - Archive completed TODO files: `mv TODO_RN_*.md imports/markdown/`
+3. Commit with descriptive message: `git add -A && git commit -m "Phase {X}: {summary of changes}"`
+4. Merge to main: `git checkout main && git merge feature/phase{X}-{name}`
+5. Delete feature branch: `git branch -d feature/phase{X}-{name}`
 
 ### TODO File Workflow
 
 - TODO files (`TODO*.md`) are **gitignored** — they never enter the public repo
-- Create TODO files locally for sprint planning, then delete after the sprint merges
+- Create TODO files locally for sprint planning
+- On sprint completion, archive to `imports/markdown/` (ingested into platform knowledge)
 - Sprint content (goals, decisions, architecture notes) should be captured as JANATPMP
   items/documents so the platform itself is the source of truth
-- Historical TODOs live in git history if ever needed for archaeology
 
 ### Commit Message Format
 `Phase {version}: {one-line summary}` — examples:
