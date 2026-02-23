@@ -743,6 +743,42 @@ def build_chat_page():
                 placeholder="Enter Google AI API key...",
             )
 
+            gr.Markdown("---")
+            gr.Markdown("### Credentials")
+            gr.Markdown("*API key and base URL for the chat provider. Ollama needs no key.*")
+            _current_key = get_setting("chat_api_key")
+            _current_url = get_setting("chat_base_url")
+            _needs_key = PROVIDER_PRESETS.get(current_provider, {}).get("needs_api_key", True)
+            global_api_key = gr.Textbox(
+                value=_current_key,
+                label="API Key",
+                type="password", interactive=True,
+                placeholder="sk-ant-... or AIza...",
+                visible=_needs_key,
+            )
+            global_base_url = gr.Textbox(
+                value=_current_url,
+                label="Base URL (Ollama)",
+                interactive=True,
+                placeholder="http://ollama:11434/v1",
+                visible=(current_provider == "ollama"),
+            )
+
+            gr.Markdown("---")
+            gr.Markdown("### Ollama")
+            gr.Markdown("*Context window and model persistence for local inference.*")
+            with gr.Row():
+                global_num_ctx = gr.Number(
+                    label="Context Window (num_ctx)",
+                    value=int(get_setting("ollama_num_ctx")),
+                    precision=0, interactive=True,
+                )
+                global_keep_alive = gr.Textbox(
+                    label="Keep Alive",
+                    value=get_setting("ollama_keep_alive"),
+                    placeholder="5m", interactive=True,
+                )
+
     # === PER-SESSION INIT (one-shot timer — loads fresh data from DB) ===
     session_load_timer = gr.Timer(value=0.5, active=True)
 
@@ -873,11 +909,15 @@ def build_chat_page():
             models = preset.get("models", [])
         default_model = models[0] if models else preset.get("default_model", "")
         set_setting("chat_model", default_model)
-        return gr.Dropdown(choices=models, value=default_model)
+        return (
+            gr.Dropdown(choices=models, value=default_model),
+            gr.Textbox(visible=preset.get("needs_api_key", True)),
+            gr.Textbox(visible=(provider == "ollama")),
+        )
 
     global_provider.change(
         _on_global_provider_change, inputs=[global_provider],
-        outputs=[global_model],
+        outputs=[global_model, global_api_key, global_base_url],
         api_visibility="private",
     )
     global_model.change(
@@ -923,6 +963,26 @@ def build_chat_page():
     rag_synth_api_key.change(
         lambda v: set_setting("rag_synthesizer_api_key", v),
         inputs=[rag_synth_api_key],
+        api_visibility="private",
+    )
+    global_api_key.change(
+        lambda v: set_setting("chat_api_key", v),
+        inputs=[global_api_key],
+        api_visibility="private",
+    )
+    global_base_url.change(
+        lambda v: set_setting("chat_base_url", v),
+        inputs=[global_base_url],
+        api_visibility="private",
+    )
+    global_num_ctx.change(
+        lambda v: set_setting("ollama_num_ctx", str(int(v))),
+        inputs=[global_num_ctx],
+        api_visibility="private",
+    )
+    global_keep_alive.change(
+        lambda v: set_setting("ollama_keep_alive", v.strip()),
+        inputs=[global_keep_alive],
         api_visibility="private",
     )
 

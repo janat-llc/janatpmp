@@ -1,36 +1,14 @@
-"""Admin tab -- System prompt editor, stats, schema, backup, restore, reset."""
-import json
+"""Admin tab — database lifecycle, content ingestion, vector store, logs."""
 import logging
 import gradio as gr
 import pandas as pd
 from db.operations import (
-    get_stats, get_schema_info,
     backup_database, restore_database, reset_database, list_backups
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _load_stats() -> dict:
-    """Get database stats dict for gr.JSON display.
-
-    Returns:
-        Dict of table names to row counts.
-    """
-    return get_stats()
-
-
-def _load_schema() -> str:
-    """Get schema info as formatted JSON string.
-
-    Returns:
-        Pretty-printed JSON string of schema info, or '{}' on error.
-    """
-    try:
-        return json.dumps(get_schema_info(), indent=2)
-    except Exception as e:
-        logger.warning("Failed to load schema info: %s", e)
-        return "{}"
 
 
 def _backups_to_df() -> pd.DataFrame:
@@ -80,116 +58,65 @@ def _handle_restore(backup_name):
         backup_name: Filename of the backup to restore.
 
     Returns:
-        Tuple of (status_message, stats_dict, schema_json, backups_df).
+        Tuple of (status_message, backups_df).
     """
     if not backup_name:
-        return "Select a backup to restore", _load_stats(), _load_schema(), _backups_to_df()
+        return "Select a backup to restore", _backups_to_df()
     result = restore_database(backup_name)
-    return result, _load_stats(), _load_schema(), _backups_to_df()
+    return result, _backups_to_df()
 
 
 def _handle_reset():
     """Reset database to empty state (auto-creates backup first).
 
     Returns:
-        Tuple of (status_message, stats_dict, schema_json, backups_df, dropdown_update).
+        Tuple of (status_message, backups_df, dropdown_update).
     """
     result = reset_database()
     return (
         result,
-        _load_stats(),
-        _load_schema(),
         _backups_to_df(),
         gr.Dropdown(choices=_backup_names()),
     )
 
 
-def build_database_tab(conversations_state=None):
-    """Build the Admin tab with system prompt, settings, DB lifecycle, logs.
+def build_database_tab(conversations_state=None, admin_refresh=None):
+    """Build the Admin tab with DB lifecycle, content ingestion, vector store, logs.
+
+    All chat and model settings are managed in Chat -> Settings tab.
 
     Args:
         conversations_state: Optional gr.State holding conversation list.
             If provided, reset clears it to avoid stale sidebar data.
+        admin_refresh: Optional gr.State(int) bumped after DB-changing operations
+            to trigger sidebar stats re-render.
 
     Returns:
-        Dict of key components for external reference (tab, stats, schema, etc.).
+        Dict of key components for external reference.
     """
     with gr.Tab("Admin") as admin_tab:
-        # Settings section
-        with gr.Accordion("Settings", open=False):
-            from services.settings import get_setting as _get_setting
-
-            gr.Markdown("#### Ollama")
-            gr.Markdown("Context window and model persistence settings for local inference.")
+        # Database lifecycle
+        with gr.Accordion("Database", open=False):
+            gr.Markdown("### Backup & Restore")
             with gr.Row():
-                setting_num_ctx = gr.Number(
-                    label="Context Window (num_ctx)",
-                    value=int(_get_setting("ollama_num_ctx")),
-                    precision=0,
-                    interactive=True,
-                )
-                setting_keep_alive = gr.Textbox(
-                    label="Keep Alive",
-                    value=_get_setting("ollama_keep_alive"),
-                    placeholder="5m",
-                    interactive=True,
-                )
+                backup_btn = gr.Button("Backup Now", variant="primary")
+                db_status_msg = gr.Textbox(label="Status", interactive=False, scale=2)
 
-            with gr.Row():
-                save_settings_btn = gr.Button("Save Settings", variant="primary")
-                settings_status = gr.Textbox(show_label=False, interactive=False, scale=2)
-
-            def _save_all_settings(num_ctx, keep_alive):
-                from services.settings import set_setting
-                set_setting("ollama_num_ctx", str(int(num_ctx)))
-                set_setting("ollama_keep_alive", keep_alive.strip())
-                return "Settings saved."
-
-            save_settings_btn.click(
-                _save_all_settings,
-                inputs=[setting_num_ctx, setting_keep_alive],
-                outputs=[settings_status],
-                api_visibility="private",
+            backups_table = gr.DataFrame(
+                value=_backups_to_df(),
+                interactive=False, label="Available Backups"
             )
 
-        # Database section (collapsible)
-        with gr.Accordion("Database", open=False):
             with gr.Row():
-                # Left: Stats and Schema
+                restore_dropdown = gr.Dropdown(
+                    label="Select Backup", choices=_backup_names(),
+                    allow_custom_value=True, scale=2,
+                )
+                restore_btn = gr.Button("Restore Selected Backup", scale=1)
+
+            gr.Markdown("---")
+            with gr.Row():
                 with gr.Column(scale=1):
-                    with gr.Row():
-                        gr.Markdown("### Database Stats")
-                        refresh_stats_btn = gr.Button("Refresh", variant="secondary", size="sm")
-                    stats_display = gr.JSON(value=_load_stats(), label="Stats")
-                    with gr.Accordion("Schema Info", open=False):
-                        schema_display = gr.Code(value=_load_schema(), label="Schema", language="json", interactive=False, max_lines=30)
-
-                # Right: Lifecycle controls
-                with gr.Column(scale=1):
-                    gr.Markdown("### Backup & Restore")
-                    backup_btn = gr.Button("Backup Now", variant="primary")
-                    db_status_msg = gr.Textbox(label="Status", interactive=False)
-
-                    backups_table = gr.DataFrame(
-                        value=_backups_to_df(),
-                        interactive=False, label="Available Backups"
-                    )
-
-                    restore_dropdown = gr.Dropdown(
-                        label="Select Backup", choices=_backup_names(), allow_custom_value=True
-                    )
-                    restore_btn = gr.Button("Restore Selected Backup")
-
-                    gr.Markdown("---")
-                    gr.Markdown("### Reset Database")
-                    gr.Markdown(
-                        "Full platform reset — wipes **SQLite**, **Qdrant** vectors, and **Neo4j** graph. "
-                        "SQLite backup created automatically. Re-run ingestion + embedding after reset."
-                    )
-                    reset_btn = gr.Button("Reset Database", variant="stop")
-                    reset_status_msg = gr.Textbox(label="Reset Status", interactive=False)
-
-                    gr.Markdown("---")
                     gr.Markdown("### Portable Export")
                     gr.Markdown(
                         "Export project data (domains, items, tasks, relationships) to a "
@@ -207,6 +134,15 @@ def build_database_tab(conversations_state=None):
                         outputs=[export_status_msg],
                         api_visibility="private",
                     )
+
+                with gr.Column(scale=1):
+                    gr.Markdown("### Reset Database")
+                    gr.Markdown(
+                        "Full platform reset — wipes **SQLite**, **Qdrant** vectors, and **Neo4j** graph. "
+                        "SQLite backup created automatically. Re-run ingestion + embedding after reset."
+                    )
+                    reset_btn = gr.Button("Reset Database", variant="stop")
+                    reset_status_msg = gr.Textbox(label="Reset Status", interactive=False)
 
         # Content Ingestion
         with gr.Accordion("Content Ingestion", open=False):
@@ -317,15 +253,15 @@ def build_database_tab(conversations_state=None):
                 except Exception as e:
                     return {"error": str(e)}
 
-            ingest_claude_btn.click(
+            ingest_claude_click = ingest_claude_btn.click(
                 _ingest_claude, inputs=[ingestion_claude_dir],
                 outputs=[ingestion_result], api_visibility="private",
             )
-            ingest_google_btn.click(
+            ingest_google_click = ingest_google_btn.click(
                 _ingest_google, inputs=[ingestion_google_dir],
                 outputs=[ingestion_result], api_visibility="private",
             )
-            ingest_markdown_btn.click(
+            ingest_markdown_click = ingest_markdown_btn.click(
                 _ingest_markdown, inputs=[ingestion_markdown_dir],
                 outputs=[ingestion_result], api_visibility="private",
             )
@@ -421,27 +357,23 @@ def build_database_tab(conversations_state=None):
                 api_visibility="private",
             )
 
-        # Wiring -- outputs stay within this tab
-        def _handle_refresh():
-            return _load_stats(), _load_schema()
-
-        refresh_stats_btn.click(_handle_refresh, inputs=[], outputs=[stats_display, schema_display], api_visibility="private")
-        backup_btn.click(
+        # Wiring — outputs stay within this tab
+        backup_click = backup_btn.click(
             _handle_backup,
             inputs=[],
             outputs=[db_status_msg, backups_table, restore_dropdown],
             api_visibility="private"
         )
-        restore_btn.click(
+        restore_click = restore_btn.click(
             _handle_restore,
             inputs=[restore_dropdown],
-            outputs=[db_status_msg, stats_display, schema_display, backups_table],
+            outputs=[db_status_msg, backups_table],
             api_visibility="private"
         )
         reset_click = reset_btn.click(
             _handle_reset,
             inputs=[],
-            outputs=[reset_status_msg, stats_display, schema_display, backups_table, restore_dropdown],
+            outputs=[reset_status_msg, backups_table, restore_dropdown],
             api_visibility="private"
         )
         if conversations_state is not None:
@@ -451,10 +383,20 @@ def build_database_tab(conversations_state=None):
                 api_visibility="private",
             )
 
+        # Bump admin_refresh after DB-changing operations → sidebar stats re-render
+        if admin_refresh is not None:
+            _bump = lambda n: (n or 0) + 1
+            for click_event in [
+                backup_click, restore_click, reset_click,
+                ingest_claude_click, ingest_google_click, ingest_markdown_click,
+            ]:
+                click_event.then(
+                    _bump, inputs=[admin_refresh], outputs=[admin_refresh],
+                    api_visibility="private",
+                )
+
     return {
         'tab': admin_tab,
-        'stats': stats_display,
-        'schema': schema_display,
         'backups_table': backups_table,
         'restore_dropdown': restore_dropdown,
     }

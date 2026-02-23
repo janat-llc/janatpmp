@@ -5,11 +5,9 @@ from db.operations import (
     get_item, create_item, update_item,
     get_task, create_task, update_task,
     get_document, create_document,
-    get_domains,
+    get_domains, get_stats,
 )
 from tabs.tab_database import build_database_tab
-from services.settings import get_setting, set_setting
-from services.chat import PROVIDER_PRESETS, fetch_ollama_models
 from db.chat_operations import (
     get_messages, list_conversations,
     update_conversation, delete_conversation,
@@ -65,6 +63,7 @@ def build_page():
     sidebar_conv_id = gr.State(_janus_id)
     conversations_state = gr.State(list_conversations(limit=30))
     selected_knowledge_conv_id = gr.State("")
+    admin_refresh = gr.State(0)  # bumped by Admin operations to refresh sidebar stats
 
     # === RIGHT SIDEBAR — Janat quick-chat (all tabs) ===
     with gr.Sidebar(position="right"):
@@ -386,12 +385,15 @@ def build_page():
                             )
 
         # --- Admin tab ---
-        admin_components = build_database_tab(conversations_state=conversations_state)
+        admin_components = build_database_tab(
+            conversations_state=conversations_state,
+            admin_refresh=admin_refresh,
+        )
 
     # === LEFT SIDEBAR (contextual — defined after center so it can reference components) ===
     with gr.Sidebar():
-        @gr.render(inputs=[active_tab, projects_state, tasks_state, docs_state, conversations_state, active_conversation_id])
-        def render_left(tab, projects, tasks, docs, conversations, active_conv_id):
+        @gr.render(inputs=[active_tab, projects_state, tasks_state, docs_state, conversations_state, active_conversation_id, admin_refresh])
+        def render_left(tab, projects, tasks, docs, conversations, active_conv_id, _admin_tick):
             if tab == "Projects":
                 gr.Markdown("### Projects")
                 with gr.Row(key="proj-filter-row"):
@@ -555,85 +557,44 @@ def build_page():
                 )
 
             elif tab == "Admin":
-                gr.Markdown("### Quick Settings")
+                gr.Markdown("### Database Overview")
 
-                current_provider = get_setting("chat_provider")
-                current_model = get_setting("chat_model")
-                current_key = get_setting("chat_api_key")
-                current_url = get_setting("chat_base_url")
+                try:
+                    stats = get_stats()
+                except Exception:
+                    stats = {}
 
-                preset = PROVIDER_PRESETS.get(current_provider, {})
-                if current_provider == "ollama":
-                    model_choices = fetch_ollama_models() or [preset.get("default_model", "")]
-                else:
-                    model_choices = preset.get("models", [])
+                totals = {
+                    "Items": stats.get("total_items", 0),
+                    "Tasks": stats.get("total_tasks", 0),
+                    "Documents": stats.get("total_documents", 0),
+                    "Relationships": stats.get("total_relationships", 0),
+                }
 
-                sidebar_provider = gr.Dropdown(
-                    choices=["anthropic", "gemini", "ollama"],
-                    value=current_provider,
-                    label="Provider",
-                    key="admin-provider",
-                    interactive=True,
-                )
-                sidebar_model = gr.Dropdown(
-                    choices=model_choices,
-                    value=current_model,
-                    label="Model",
-                    key="admin-model",
-                    allow_custom_value=True,
-                    interactive=True,
-                )
-                sidebar_api_key = gr.Textbox(
-                    value=current_key,
-                    label="API Key",
-                    type="password",
-                    placeholder="sk-ant-... or AIza...",
-                    key="admin-api-key",
-                    interactive=True,
-                    visible=preset.get("needs_api_key", True),
-                )
-                sidebar_base_url = gr.Textbox(
-                    value=current_url,
-                    label="Base URL",
-                    key="admin-base-url",
-                    interactive=True,
-                    visible=(current_provider == "ollama"),
-                )
-
-                def _save_provider(provider):
-                    set_setting("chat_provider", provider)
-                    p = PROVIDER_PRESETS.get(provider, {})
-                    if provider == "ollama":
-                        models = fetch_ollama_models() or [p.get("default_model", "")]
-                    else:
-                        models = p.get("models", [])
-                    default_model = models[0] if models else p.get("default_model", "")
-                    set_setting("chat_model", default_model)
-                    return (
-                        gr.Dropdown(choices=models, value=default_model),
-                        gr.Textbox(visible=p.get("needs_api_key", True)),
-                        gr.Textbox(visible=(provider == "ollama")),
+                # Compact row-count cards
+                for label, count in totals.items():
+                    gr.Markdown(
+                        f"**{label}:** {count:,}",
+                        key=f"admin-stat-{label.lower()}",
                     )
 
-                def _save_model(model):
-                    set_setting("chat_model", model)
+                # Conversations + messages (from chat_operations)
+                try:
+                    from db.chat_operations import list_conversations, get_messages
+                    convs = list_conversations(limit=0)
+                    conv_count = len(convs) if convs else 0
+                    # Message count from stats doesn't exist — query directly
+                    from db.operations import get_connection
+                    with get_connection() as conn:
+                        msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                except Exception:
+                    conv_count, msg_count = 0, 0
 
-                def _save_api_key(key):
-                    set_setting("chat_api_key", key)
+                gr.Markdown(f"**Conversations:** {conv_count:,}", key="admin-stat-convs")
+                gr.Markdown(f"**Messages:** {msg_count:,}", key="admin-stat-msgs")
 
-                def _save_base_url(url):
-                    set_setting("chat_base_url", url)
-
-                sidebar_provider.change(
-                    _save_provider,
-                    inputs=[sidebar_provider],
-                    outputs=[sidebar_model, sidebar_api_key, sidebar_base_url],
-                    api_visibility="private",
-                    key="admin-provider-change",
-                )
-                sidebar_model.change(_save_model, inputs=[sidebar_model], api_visibility="private", key="admin-model-change")
-                sidebar_api_key.change(_save_api_key, inputs=[sidebar_api_key], api_visibility="private", key="admin-apikey-change")
-                sidebar_base_url.change(_save_base_url, inputs=[sidebar_base_url], api_visibility="private", key="admin-baseurl-change")
+                gr.Markdown("---")
+                gr.Markdown("[Chat Settings](/chat)", key="admin-settings-link")
 
     # === TAB TRACKING ===
     projects_tab.select(lambda: "Projects", outputs=[active_tab], api_visibility="private")
