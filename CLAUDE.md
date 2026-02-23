@@ -32,7 +32,7 @@ JANATPMP/
 │   └── chat.py               # Sovereign Chat page (R11) — full metrics sidebar
 ├── tabs/
 │   ├── __init__.py
-│   ├── tab_database.py       # Database/Admin tab builder (imported by projects.py)
+│   ├── tab_database.py       # Admin tab builder: DB lifecycle, ingestion, vector store, logs
 │   ├── tab_chat.py           # Chat handler functions (sidebar + Chat tab)
 │   └── tab_knowledge.py      # Knowledge tab handlers (conversations, search, connections)
 ├── shared/
@@ -77,7 +77,6 @@ JANATPMP/
 │   ├── chat.py               # Multi-provider chat with tool use (Anthropic/Gemini/Ollama)
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py            # Background evaluation daemon — Slumber Cycle (R12)
-│   ├── claude_export.py      # Claude Export service: ingest/query external conversation DB
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (directory scanner)
 │   ├── embedding.py          # Thin shim → atlas.embedding_service
 │   ├── vector_store.py       # Qdrant vector DB + two-stage search pipeline
@@ -171,50 +170,55 @@ def build_page():
 Sidebar is collapsible, mobile-friendly, and purpose-built for this layout.
 The center content is just the main Blocks body (no Row/Column wrapper needed).
 
-### Five Tabs (current state)
+### Four Tabs (current state — Chat tab removed in R11, Sovereign Chat at /chat)
 
 | Tab | Left Sidebar | Center | Status |
 |-----|-------------|--------|--------|
 | **Projects** | Project cards, filters, + New | Detail editor, List View | ✅ Working |
 | **Work** | Task cards, filters, + New Task | Task detail, List View | ✅ Working |
 | **Knowledge** | Document cards, filters, + New Doc | Documents (Detail/List), Search, Connections, Conversations | ✅ Working |
-| **Chat** | Conversation history list, + New Chat | Full-width chatbot (Enter=send), triplet persistence | ✅ Working |
-| **Admin** | Quick Settings (provider/model/key) | System Prompt editor, Stats, Backup/Restore | ✅ Working |
+| **Admin** | Database Overview (reactive row counts) | Database lifecycle, Content Ingestion, Vector Store, Logs | ✅ Working |
 
 ### Contextual Sidebars
 
-The left sidebar uses `@gr.render(inputs=[active_tab, projects_state, tasks_state])`
-to dynamically switch content based on the active tab. The right sidebar is also
-contextual: it shows Janat chat on all tabs EXCEPT Chat, where it transforms
-into a Chat Settings panel (provider, model, temperature, top_p, system prompt append,
-tool toggles). The sidebar chat is a continuous conversation window — it loads the
-most recent conversation on startup and carries context forward. No clear button;
-the conversation is persistent by design. Both sidebars use state bridge patterns —
+The left sidebar uses `@gr.render(inputs=[active_tab, projects_state, tasks_state, ..., admin_refresh])`
+to dynamically switch content based on the active tab. The Admin sidebar shows Database
+Overview with reactive row counts (auto-refreshes after backup/restore/reset/ingest via
+`admin_refresh` state counter). The right sidebar shows Janat quick-chat on all tabs —
+a persistent Janus conversation window. Both sidebars use state bridge patterns —
 render-created components sync to gr.State via .change listeners for cross-component
 data flow.
 
 ### Settings & Chat Architecture
+
+**Settings ownership:** All chat and model settings live in **Chat -> Settings tab** (Sovereign
+Chat at `/chat`). Admin tab has no settings — it's purely database administration.
 
 **Settings table** (`settings` in SQLite) — key-value store for persistent configuration:
 - `chat_provider` — "ollama" (default), "anthropic", or "gemini"
 - `chat_model` — Model identifier string (default: "qwen3-vl:8b")
 - `chat_api_key` — Base64-encoded API key (obfuscation, NOT encryption)
 - `chat_base_url` — Override URL for Ollama
-- `chat_system_prompt` — Custom system prompt (empty = use default)
 - `ollama_num_ctx` — Context window size (default: 131072 — 128K tokens)
-- `claude_export_db_path` — Path to claude_export.db (Knowledge tab browser)
+- `ollama_keep_alive` — Model persistence (default: "-1" = permanent)
+- `janus_conversation_id` — Persistent Janus conversation hex ID
+- `janus_context_messages` — Sliding window size (default: 50 turns)
 - `claude_export_json_dir` — Path to Claude export directory (ingestion)
+- `rag_score_threshold`, `rag_max_chunks` — RAG retrieval tuning
+- `rag_synthesizer_provider`, `rag_synthesizer_model` — RAG synthesis backend
 
 **Settings flow:**
 - `services/settings.py` provides `get_setting()` / `set_setting()` with auto base64 for secrets
-- Admin sidebar quick-settings save on change (no save button needed)
+- Chat -> Settings tab controls save on change (no save button needed)
 - Chat reads settings from DB on each message — no restart needed
 - `init_database()` calls `init_settings()` to seed defaults on first run
+- `_STALE_DEFAULTS` in `init_settings()` auto-migrates old defaults on startup
 
-**Chat auto-context injection:**
+**Dynamic system prompt (no user-editable prompt):**
 - `db/operations.py:get_context_snapshot()` builds a summary of active items + pending tasks
-- `services/chat.py:_build_system_prompt()` composes: default prompt + custom prompt + auto-context
-- Fresh context is injected per message, so the AI always knows current project state
+- `services/chat.py:_build_system_prompt()` composes: DEFAULT_SYSTEM_PROMPT + tool instructions + live project context
+- Fresh context is injected per message. Janus persona emerges from conversation history
+  and RAG salience, not from static system prompts.
 
 ### Knowledge Tab
 
@@ -226,12 +230,9 @@ The Knowledge tab surfaces documents, search, and entity relationships:
   Uses `search_items()` and `search_documents()` from db/operations.py.
 - **Connections** — Relationship viewer. Look up any entity (item/task/document) by ID
   to see incoming and outgoing relationships. Create new connections inline.
-- **Conversations** — Browse Claude export history via Chatbot viewer. Reads from
-  external `claude_export.db` via `services/claude_export.py`. Ingest from JSON exports.
-
-**Claude Export settings:**
-- `claude_export_db_path` — Path to claude_export.db file
-- `claude_export_json_dir` — Path to directory with JSON exports (users.json, projects.json, conversations.json)
+- **Conversations** — Browse all conversations from native `conversations` table (platform,
+  imported, archived Janus chapters). No external DB — ghost `claude_export.py` system deleted
+  in R14. Import buttons are in Admin -> Content Ingestion.
   Uses `get_relationships()` and `create_relationship()` from db/operations.py.
 
 All 6 underlying operations (`create_document`, `get_document`, `list_documents`,
@@ -582,11 +583,11 @@ with gr.Blocks() as demo:
 demo.launch(mcp_server=True)
 ```
 
-55 functions are exposed via `gr.api()` as MCP tools: 28 from `db/operations.py`
-(including domain CRUD + export/import), 11 from `db/chat_operations.py`, 8 vector/embedding
-operations from `services/`, 2 import pipelines, 2 ingestion orchestrators, and 4 graph
-operations from `graph/`. All MUST have Google-style docstrings with Args/Returns for
-MCP tool generation.
+57 functions are exposed via `gr.api()` as MCP tools: 28 from `db/operations.py`
+(including domain CRUD + export/import), 13 from `db/chat_operations.py` (including Janus
+lifecycle), 8 vector/embedding operations from `services/`, 2 import pipelines, 2 ingestion
+orchestrators, and 4 graph operations from `graph/`. All MUST have Google-style docstrings
+with Args/Returns for MCP tool generation.
 
 ### Common Mistakes to Avoid
 
@@ -629,31 +630,32 @@ The `conversations` table holds ALL conversation history, not just platform chat
 - `source='claude_export'`: 600+ conversations imported from Claude Export
 - `source='imported'`: From other sources (Gemini, etc.)
 
-Any conversation, regardless of source, can be loaded into Chat UI and discussed with
-any provider/model. Claude Export ingestion creates conversations + messages records
-alongside the existing documents pipeline in services/claude_export.py.
+Any conversation, regardless of source, can be browsed in Knowledge tab Conversations.
+Claude Export ingestion creates conversations + messages records via
+`services/claude_import.py` (native pipeline, integrated with triple-write).
 
-### System Prompt Layering
-Base system prompt lives in Admin settings (platform context, tool descriptions).
-Per-conversation append field allows scoping to specific project/persona.
-At inference: `base_prompt + "\n\n" + session_append`.
+### Chat Flow (Janus Continuous Chat — R14)
 
-### Chat Flow
 1. User types message, presses Enter
-2. If no active conversation, auto-create one (title = first 50 chars of first prompt)
-3. Call `chat()` with override params (provider, model, temperature, top_p, max_tokens, system_prompt_append) — no temp DB setting changes
-4. Parse reasoning from response via `parse_reasoning()` (`<think>` block extraction)
-5. Collect tool names from "Using `tool`..." status messages
-6. Store triplet via `add_message()` (user_prompt, model_reasoning, model_response, tools_called)
-7. Update conversations list in left sidebar
+2. If no active conversation, `get_or_create_janus_conversation()` provides one
+3. Apply sliding window: `_windowed_api_history(history, window)` sends last N turns to LLM
+4. Call `chat()` with per-session override params (provider, model, temperature, top_p, max_tokens)
+5. Reconstruct full history: `new_messages = result["history"][len(api_window):]` then append
+6. Parse reasoning via `parse_reasoning()`, split display vs API history
+7. Store triplet via `add_message()` + metadata + live memory (triple-write)
 
-### "New Chat" Semantics
-Not "Clear Chat" — "New Chat" verifies current conversation is persisted, creates a new
-conversation record, clears the display, sets the new one as active. Never destructive.
+### "Archive Chapter" Semantics
+
+Not "New Chat" — "Archive Chapter" marks the current Janus conversation as
+`is_active=0`, renames to "Janus — Chapter N", creates a fresh Janus conversation.
+Archived chapters appear in Knowledge tab Conversations. Archiving is rare and intentional.
 
 ### Database Operations (db/chat_operations.py)
+
 - `create_conversation()`, `get_conversation()`, `list_conversations()`, `update_conversation()`, `delete_conversation()`, `search_conversations()` (FTS)
 - `add_message()`, `get_messages()`, `get_next_sequence()`
+- `get_or_create_janus_conversation()` — reads/creates the persistent Janus conversation, stores ID in settings
+- `archive_janus_conversation(conv_id)` — archives current Janus as "Janus — Chapter N", creates fresh one
 - `parse_reasoning(raw_response)` → `tuple[str, str]` — extracts `<think>` blocks
 - Follows existing patterns: hex randomblob IDs, datetime('now'), FTS, CDC outbox triggers
 
@@ -896,16 +898,59 @@ date, and relevance scores.
 - `reset_database()` — wipes all three stores (SQLite, Qdrant, Neo4j). Auto-creates
   backup first. Re-run ingestion + embedding after reset.
 
+## Phase R14: Janus Continuous Chat + Settings Consolidation
+
+### Janus Continuous Chat
+
+One persistent conversation from platform birth — no "New Chat" semantics. Both Sovereign
+Chat (`/chat`) and sidebar quick-chat share the same Janus conversation for maximum context
+continuity. Key components:
+
+- `get_or_create_janus_conversation()` — reads `janus_conversation_id` from settings, creates
+  if missing, validates existence. Called at app startup and as fallback in all chat handlers.
+- `archive_janus_conversation(conv_id)` — chapter break: old becomes "Janus — Chapter N"
+  (`is_active=0`), fresh Janus created. Rare and intentional.
+- **Sliding window:** `_windowed_api_history(history, window)` sends last N turns to LLM
+  (default 50). Full history displayed in UI for scroll-back. Window configurable via
+  Chat right sidebar "Context Window" control.
+- **History reconstruction:** After windowed chat call, extract new messages from result
+  and append to full history: `new_messages = result["history"][len(api_window):]`.
+- **Dual history pattern:** `display_history` has `<details>` reasoning accordions,
+  `api_history` has clean responses only (prevents model from mimicking HTML formatting).
+
+### Import Consolidation
+
+Ghost system `services/claude_export.py` (separate external SQLite DB) deleted. All
+conversation browsing reads from native `conversations` table. Import buttons are in
+Admin -> Content Ingestion only. Knowledge tab Conversations is browse-only.
+
+### Settings Consolidation
+
+**Chat -> Settings tab** is the single source for all model and RAG configuration:
+Platform Defaults (provider, model, temperature, top_p, max_tokens), RAG Configuration,
+RAG Synthesizer, Credentials (API key, base URL), Ollama (num_ctx, keep_alive).
+
+**Admin tab** is purely database administration: Database lifecycle (backup/restore/reset/export),
+Content Ingestion, Vector Store (embedding), Application Logs. Left sidebar shows Database
+Overview with reactive row counts.
+
+### Emergent Persona
+
+No static system prompt for Janus identity. `chat_system_prompt` setting exists in DB but
+is dead code — not read by `_build_system_prompt()`. Persona emerges from continuous
+conversation history and RAG salience over the platform's lifetime.
+
 ## Future Architecture (not in scope, for context only)
 
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is now operational — the
-triple-write pipeline keeps all three stores in sync. Future work:
+triple-write pipeline keeps all three stores in sync. **Janus continuous chat** is live
+(R14) — one persistent conversation stream with sliding window context. Future work:
 
-- **Janus continuous chat** — one persistent stream from platform birth, no "New Chat".
-  Separate platform chat from historical conversations (library vs live stream).
+- **System prompt audit trail** — store composed system prompts per-turn in messages_metadata,
+  surface in a "Prompt Inspector" panel, consolidate in Slumber Cycles
 - **Ollama Modelfiles pipeline** — janat-synthesizer, janat-scorer, janat-consolidator,
   janat-classifier sharing Qwen3:1.7B base weights. Janus (8B) receives dynamic system
-  prompts from the synthesizer each turn (no static system prompt).
+  prompts from the synthesizer each turn.
 - **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY and SIMILAR_TO edges
 - **Temporal decay curves** — time-weighted salience that naturally deprioritizes stale knowledge
