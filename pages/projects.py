@@ -85,7 +85,7 @@ def build_page():
         # --- Projects tab ---
         with gr.Tab("Projects") as projects_tab:
             with gr.Tabs(selected="projects-list-view") as projects_sub_tabs:
-                with gr.Tab("Detail"):
+                with gr.Tab("Detail", id="projects-detail"):
                     detail_header = gr.Markdown(
                         "*Select a project from the sidebar, or create a new item.*"
                     )
@@ -392,8 +392,8 @@ def build_page():
 
     # === LEFT SIDEBAR (contextual — defined after center so it can reference components) ===
     with gr.Sidebar():
-        @gr.render(inputs=[active_tab, projects_state, tasks_state, docs_state, conversations_state, active_conversation_id, admin_refresh])
-        def render_left(tab, projects, tasks, docs, conversations, active_conv_id, _admin_tick):
+        @gr.render(inputs=[active_tab, projects_state, tasks_state, docs_state, conversations_state, active_conversation_id, admin_refresh, selected_project_id])
+        def render_left(tab, projects, tasks, docs, conversations, active_conv_id, _admin_tick, sel_proj_id):
             if tab == "Projects":
                 gr.Markdown("### Projects")
                 with gr.Row(key="proj-filter-row"):
@@ -407,14 +407,18 @@ def build_page():
                     )
                 refresh_btn = gr.Button("Refresh", variant="secondary", size="sm", key="proj-refresh")
 
-                if not projects:
-                    gr.Markdown("*No projects yet.*")
+                # Filter archived projects from sidebar (still visible in List View)
+                visible = [p for p in projects if p.get("status") != "archived"]
+                if not visible:
+                    gr.Markdown("*No active projects.*")
                 else:
-                    for p in projects:
+                    for p in visible:
+                        is_selected = (p["id"] == sel_proj_id)
                         btn = gr.Button(
                             f"{p['title']}\n{fmt_enum(p.get('status', ''))}  ·  {fmt_enum(p.get('domain', '')).upper()}",
                             key=f"proj-{p['id'][:8]}",
                             size="sm",
+                            variant="primary" if is_selected else "secondary",
                         )
                         def on_card_click(p_id=p["id"]):
                             return p_id
@@ -605,7 +609,7 @@ def build_page():
     # === PROJECT EVENT WIRING ===
 
     def _load_detail(item_id):
-        """Load item detail when selection changes."""
+        """Load item detail when selection changes — auto-switches to Detail tab."""
         if not item_id:
             return gr.skip()
         item = get_item(item_id)
@@ -625,6 +629,7 @@ def build_page():
             item.get("description", "") or "",
             "",
             _children_df(item_id),
+            gr.Tabs(selected="projects-detail"),
         )
 
     selected_project_id.change(
@@ -636,6 +641,7 @@ def build_page():
             detail_type, detail_domain, detail_priority,
             detail_created, detail_desc, save_msg,
             children_table,
+            projects_sub_tabs,
         ],
         api_visibility="private",
     )
