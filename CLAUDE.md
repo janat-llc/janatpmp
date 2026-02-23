@@ -958,7 +958,7 @@ were sent simultaneously. The fix: remove tools entirely from `_chat_ollama()`.
 - **RAG provides retrieved knowledge**, `get_context_snapshot()` provides live project state
 - Tools are for **MCP clients** (Claude Desktop, etc.) via `gr.api()` in `app.py`
 - Saves ~3,500 tokens of context window per turn
-- `_sanitize_tool_call_output()` in `services/chat.py` catches any hallucinated tool syntax
+- System prompt explicitly tells model "You have NO tools" to prevent hallucinated calls
 - Anthropic/Gemini providers keep their tool support for MCP compatibility
 
 ### Pipeline Observability (Migration 0.7.0)

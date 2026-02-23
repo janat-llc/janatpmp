@@ -112,7 +112,7 @@ SETTINGS_REGISTRY = {
     "chat_max_tokens":      ("8192", False, "chat", _validate_positive_int),
 
     # Ollama
-    "ollama_num_ctx":       ("131072", False, "ollama", _validate_positive_int),
+    "ollama_num_ctx":       ("32768", False, "ollama", _validate_positive_int),
     "ollama_keep_alive":    ("-1", False, "ollama", None),
 
     # Janus (continuous chat)
@@ -182,7 +182,7 @@ def init_settings():
         ("chat_provider", "anthropic"),
         ("chat_model", "claude-sonnet-4-20250514"),
         ("chat_model", "nemotron-3-nano:latest"),
-        ("ollama_num_ctx", "32768"),
+        ("ollama_num_ctx", "131072"),  # R15: 128K caused VRAM thrashing, 32K is plenty
         ("claude_export_json_dir", "/data/claude_export"),
         ("janus_context_messages", "50"),
     ]

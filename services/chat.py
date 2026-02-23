@@ -153,6 +153,10 @@ TOOL_DEFINITIONS = _build_tool_definitions()
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = """You are Janus, an AI collaborator embedded in JANATPMP (Janat Project Management Platform).
 You help Mat manage projects, tasks, and documents across multiple domains.
 
+You have NO tools or functions available. Do NOT generate tool calls, function calls,
+or JSON tool invocations. All the context you need is provided below — answer directly
+from it. If you don't have enough context to answer, say so plainly.
+
 Key context:
 - Items are projects, books, features, websites, etc. organized by domain and hierarchy.
 - Tasks are work items assigned to agents, Claude, Mat, Janus, or unassigned.
@@ -275,6 +279,35 @@ def _fts_search_messages(query: str, limit: int = 10) -> list[dict]:
     return results
 
 
+def _needs_rag(message: str) -> bool:
+    """Decide whether a message warrants RAG retrieval.
+
+    Skips RAG for short conversational messages (greetings, acknowledgments,
+    single-word responses) that don't need knowledge base context. This avoids
+    loading 3 extra models (embedder, reranker, synthesizer) for "Hello Janus".
+
+    Args:
+        message: The user's message text.
+
+    Returns:
+        True if RAG should run, False to skip.
+    """
+    # Strip and lowercase for matching
+    clean = message.strip().lower()
+
+    # Too short to be a knowledge query (under ~4 words)
+    words = clean.split()
+    if len(words) < 4:
+        return False
+
+    # After removing stop words, is there enough substance?
+    content_words = [w for w in words if w not in _FTS_STOP_WORDS]
+    if len(content_words) < 2:
+        return False
+
+    return True
+
+
 def _build_rag_context(user_message: str) -> tuple[str, dict]:
     """Hybrid search: Qdrant vectors + SQLite FTS keyword matching.
 
@@ -285,6 +318,10 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
     Reads rag_score_threshold and rag_max_chunks from settings DB so they
     can be tuned at runtime via the Admin panel.
 
+    Skips retrieval entirely for short conversational messages (greetings,
+    acknowledgments) via _needs_rag() gate — avoids loading embedder, reranker,
+    and synthesizer models for messages that don't need knowledge context.
+
     Args:
         user_message: The user's current message.
 
@@ -293,6 +330,11 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
         Returns ("", empty_metrics) if no results or Qdrant unavailable.
     """
     metrics = dict(_EMPTY_RAG_METRICS, scores=[], rejected=[])
+
+    if not _needs_rag(user_message):
+        logger.debug("RAG skipped — message too short/conversational: %s", user_message[:50])
+        return "", metrics
+
     try:
         from services.vector_store import search_all
         threshold = float(get_setting("rag_score_threshold") or RAG_SCORE_THRESHOLD)
@@ -516,7 +558,7 @@ def _synth_ollama(model: str, prompt: str) -> str:
         ],
         temperature=0.1,
         max_tokens=4096,
-        extra_body={"options": {"num_ctx": int(get_setting("ollama_num_ctx"))}},
+        extra_body={"options": {"num_ctx": 8192}},  # Synthesizer processes short chunks, not full conversations
     )
     return response.choices[0].message.content or ""
 
@@ -875,77 +917,6 @@ def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: s
     return history, tokens
 
 
-# --- Tool Call Sanitizer (safety net for hallucinated tool syntax) ---
-
-def _sanitize_tool_call_output(text: str) -> str:
-    """Strip hallucinated tool call syntax from model responses.
-
-    Even without sending tool definitions, models sometimes emit tool call
-    syntax (XML <tool_call> tags or JSON {"name": ..., "arguments": ...}).
-    Gradio's markdown renderer strips unknown XML tags, leaving empty chat
-    bubbles. This converts hallucinated calls to readable text.
-
-    Args:
-        text: Raw model output text.
-
-    Returns:
-        Sanitized text with tool call syntax converted to readable content.
-    """
-    if not text:
-        return text
-
-    import re
-
-    # Pattern 1: <tool_call> XML with <function=name><parameter=key>value</parameter></function>
-    if "<tool_call>" in text:
-        calls = []
-        for match in re.finditer(
-            r'<function=(\w+)>(.*?)</function>',
-            text,
-            re.DOTALL,
-        ):
-            fn_name = match.group(1)
-            params_block = match.group(2).strip()
-            params = []
-            for pm in re.finditer(
-                r'<parameter=(\w+)>\s*(.*?)\s*</parameter>',
-                params_block,
-                re.DOTALL,
-            ):
-                params.append(f'{pm.group(1)}="{pm.group(2).strip()}"')
-            param_str = ", ".join(params) if params else ""
-            calls.append(f"`{fn_name}({param_str})`")
-
-        if calls:
-            call_list = ", ".join(calls)
-            return (
-                f"I wanted to look up {call_list}, "
-                f"but that information may not be in my current context."
-            )
-        # Fallback: wrap raw XML in code block so it's visible
-        return f"```xml\n{text.strip()}\n```"
-
-    # Pattern 2: JSON tool call — {"name": "...", "arguments": {...}}
-    if '"name"' in text and '"arguments"' in text:
-        try:
-            # Try to extract tool call JSON and convert to readable text
-            match = re.search(r'\{[^{}]*"name"\s*:\s*"(\w+)"[^{}]*\}', text)
-            if match:
-                fn_name = match.group(1)
-                # Strip the JSON tool call, keep any surrounding text
-                cleaned = text[:match.start()].rstrip() + text[match.end():].lstrip()
-                if cleaned.strip():
-                    return cleaned
-                return (
-                    f"I wanted to call `{fn_name}`, "
-                    f"but that information may not be in my current context."
-                )
-        except Exception:
-            pass
-
-    return text
-
-
 def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: str,
                  temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 8192,
                  num_ctx: int = 0, keep_alive: str = "") -> tuple[list[dict], dict]:
@@ -1000,8 +971,6 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
             text_parts.append(f"<think>{reasoning}</think>")
         if msg.content:
             text_parts.append(msg.content)
-        # Sanitize any hallucinated tool call syntax
-        text_parts = [_sanitize_tool_call_output(t) for t in text_parts]
         return text_parts, []  # Never return tool_calls — no tools for in-app chat
 
     def handle_tools(response, tool_calls, history):

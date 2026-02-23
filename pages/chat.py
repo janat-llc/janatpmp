@@ -16,7 +16,7 @@ from db.chat_operations import (
     add_message_metadata, update_message_metadata,
     get_or_create_janus_conversation, archive_janus_conversation,
 )
-from services.chat import chat, PROVIDER_PRESETS, fetch_ollama_models, _EMPTY_RAG_METRICS, _EMPTY_TOKEN_COUNTS, _sanitize_tool_call_output
+from services.chat import chat, PROVIDER_PRESETS, fetch_ollama_models, _EMPTY_RAG_METRICS, _EMPTY_TOKEN_COUNTS
 from services.settings import get_setting, set_setting
 from shared.constants import DEFAULT_CHAT_HISTORY
 from shared.data_helpers import _load_most_recent_chat, _load_chat_session, _load_conversation_metrics, _windowed_api_history
@@ -80,10 +80,6 @@ def _handle_send(message, history, conv_id, provider, model,
                 break
 
         reasoning, clean_response = parse_reasoning(raw_response)
-
-        # Sanitize hallucinated tool call syntax (XML or JSON) —
-        # safety net in case models emit tool calls despite not receiving tools
-        clean_response = _sanitize_tool_call_output(clean_response)
 
         # Decompose reasoning tokens from completion_tokens when provider
         # doesn't report them separately (Ollama lumps <think> + response).
