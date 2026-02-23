@@ -23,7 +23,7 @@ from shared.data_helpers import (
     _load_projects, _children_df, _all_items_df,
     _load_tasks, _all_tasks_df,
     _load_documents, _all_docs_df,
-    _msgs_to_history, _load_most_recent_chat,
+    _msgs_to_history, _load_chat_session,
 )
 from tabs.tab_chat import _handle_chat
 from tabs.tab_knowledge import (
@@ -56,12 +56,12 @@ def build_page():
     tasks_state = gr.State(_load_tasks())
     selected_doc_id = gr.State("")
     docs_state = gr.State(_load_documents())
-    _janus_id = get_or_create_janus_conversation()
-    _initial_conv_id, _initial_chat_history = _load_most_recent_chat()
-    chat_history = gr.State(list(_initial_chat_history))
-    active_conversation_id = gr.State(_initial_conv_id)
-    sidebar_conv_id = gr.State(_janus_id)
-    conversations_state = gr.State(list_conversations(limit=30))
+    # Callable values → fresh DB read per session (not stale build-time snapshot).
+    # _load_chat_session splits display vs API history so LLM never sees <details> tags.
+    chat_history = gr.State(lambda: _load_chat_session()["api_history"])
+    active_conversation_id = gr.State(get_or_create_janus_conversation)
+    sidebar_conv_id = gr.State(get_or_create_janus_conversation)
+    conversations_state = gr.State(lambda: list_conversations(limit=30))
     selected_knowledge_conv_id = gr.State("")
     admin_refresh = gr.State(0)  # bumped by Admin operations to refresh sidebar stats
 
@@ -69,7 +69,7 @@ def build_page():
     with gr.Sidebar(position="right"):
         gr.Markdown("### Janat", elem_classes=["right-panel-header"])
         chatbot = gr.Chatbot(
-            value=list(_initial_chat_history),
+            value=lambda: _load_chat_session()["display_history"],
             show_label=False,
             buttons=["copy"],
             scale=1, min_height=300,

@@ -31,7 +31,7 @@ def _handle_chat(message, history, sidebar_conv_id=""):
         sidebar_conv_id = get_or_create_janus_conversation()
 
     # Apply sliding window — send only last N turns to LLM
-    window = int(get_setting("janus_context_messages") or "50")
+    window = int(get_setting("janus_context_messages") or "10")
     api_window = _windowed_api_history(history, window)
 
     result = chat(message, api_window)
@@ -129,7 +129,7 @@ def _handle_chat_tab(message, history, conv_id, provider, model,
 
     try:
         # Apply sliding window — send only last N turns to LLM
-        window = int(get_setting("janus_context_messages") or "50")
+        window = int(get_setting("janus_context_messages") or "10")
         api_window = _windowed_api_history(history, window)
 
         result = chat(

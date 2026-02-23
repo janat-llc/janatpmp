@@ -460,24 +460,35 @@ def update_message_metadata(
         return f"Updated metadata for message {message_id}" if cursor.rowcount > 0 else f"Metadata for message {message_id} not found"
 
 
-def get_messages(conversation_id: str, limit: int = 100) -> list:
+def get_messages(conversation_id: str, limit: int = 100, latest: bool = False) -> list:
     """Get messages for a conversation ordered by sequence.
 
     Args:
         conversation_id: The conversation ID
         limit: Maximum messages to return
+        latest: If True, return the last N messages instead of the first N
 
     Returns:
-        List of message dicts ordered by sequence
+        List of message dicts ordered by sequence (ascending)
     """
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM messages
-            WHERE conversation_id = ?
-            ORDER BY sequence ASC
-            LIMIT ?
-        """, (conversation_id, limit))
+        if latest:
+            cursor.execute("""
+                SELECT * FROM (
+                    SELECT * FROM messages
+                    WHERE conversation_id = ?
+                    ORDER BY sequence DESC
+                    LIMIT ?
+                ) sub ORDER BY sequence ASC
+            """, (conversation_id, limit))
+        else:
+            cursor.execute("""
+                SELECT * FROM messages
+                WHERE conversation_id = ?
+                ORDER BY sequence ASC
+                LIMIT ?
+            """, (conversation_id, limit))
         return [dict(row) for row in cursor.fetchall()]
 
 

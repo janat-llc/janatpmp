@@ -98,7 +98,7 @@ def _handle_send(message, history, conv_id, provider, model,
 
     try:
         # Apply sliding window — send only last N turns to LLM
-        window = int(get_setting("janus_context_messages") or "50")
+        window = int(get_setting("janus_context_messages") or "10")
         api_window = _windowed_api_history(history, window)
 
         result = chat(
@@ -393,11 +393,11 @@ def build_chat_page():
         gr.Markdown("### Real-time")
         archive_btn = gr.Button("Archive Chapter", variant="secondary", size="sm")
         cfg_context_window = gr.Number(
-            label="Context Window",
-            value=int(get_setting("janus_context_messages") or "50"),
-            minimum=5, maximum=200,
-            step=5, interactive=True,
-            info="Message pairs sent to LLM",
+            label="LLM Context Turns",
+            value=int(get_setting("janus_context_messages") or "10"),
+            minimum=1, maximum=50,
+            step=1, interactive=True,
+            info="Recent turns sent to LLM (RAG handles the rest)",
         )
         cfg_provider = gr.Dropdown(
             choices=["anthropic", "gemini", "ollama"],

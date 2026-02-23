@@ -124,14 +124,13 @@ JANAT_CSS = """
     /* Right panel header — right-justified to avoid toggle overlap */
     .right-panel-header { text-align: right !important; }
 
-    /* === Right sidebar — fill height, scroll when needed === */
+    /* === Right sidebar — fill height, chatbot owns the scroll === */
     .sidebar.right .sidebar-content {
         height: 100% !important;
         display: flex !important;
         flex-direction: column !important;
         padding: 4px 8px !important;
-        overflow-y: auto !important;
-        overflow-x: hidden !important;
+        overflow: hidden !important;
         box-sizing: border-box !important;
     }
     /* Flatten nested wrappers — but allow visible overflow for controls */

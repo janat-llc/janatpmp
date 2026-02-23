@@ -5,6 +5,7 @@ from db.chat_operations import (
     list_conversations, get_messages, get_message_metadata,
     get_or_create_janus_conversation,
 )
+from services.settings import get_setting
 from shared.constants import PROJECT_TYPES, DEFAULT_CHAT_HISTORY
 from shared.formatting import entity_list_to_df
 
@@ -80,9 +81,13 @@ def _msgs_to_history(msgs: list[dict]) -> list[dict]:
 
 
 def _load_most_recent_chat() -> tuple[str, list[dict]]:
-    """Load the Janus conversation for sidebar initialization."""
+    """Load the Janus conversation for sidebar initialization.
+
+    Only loads the last N turns (janus_display_turns setting) for UI performance.
+    """
     conv_id = get_or_create_janus_conversation()
-    msgs = get_messages(conv_id)
+    display_limit = int(get_setting("janus_display_turns") or "20")
+    msgs = get_messages(conv_id, limit=display_limit, latest=True)
     if not msgs:
         return conv_id, list(DEFAULT_CHAT_HISTORY)
     history = _msgs_to_history(msgs)
@@ -111,10 +116,11 @@ def _windowed_api_history(api_history: list[dict], window: int) -> list[dict]:
 def _load_chat_session() -> dict:
     """Load the Janus conversation with full session data for sovereign chat.
 
+    Only loads the last N turns (janus_display_turns setting) for UI performance.
     Returns dict with: conv_id, display_history, api_history, token_totals.
     Display history has reasoning in <details> accordion.
     API history has clean responses only (no HTML — prevents model mimicry).
-    Token totals are cumulative across all turns in the conversation.
+    Token totals are cumulative across the loaded turns.
     """
     empty = {
         "conv_id": "",
@@ -124,7 +130,8 @@ def _load_chat_session() -> dict:
         "turn_count": 0,
     }
     conv_id = get_or_create_janus_conversation()
-    msgs = get_messages(conv_id)
+    display_limit = int(get_setting("janus_display_turns") or "20")
+    msgs = get_messages(conv_id, limit=display_limit, latest=True)
     if not msgs:
         return {**empty, "conv_id": conv_id}
 

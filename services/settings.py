@@ -97,7 +97,8 @@ SETTINGS_REGISTRY = {
 
     # Janus (continuous chat)
     "janus_conversation_id":  ("", False, "chat", None),
-    "janus_context_messages": ("50", False, "chat", _validate_positive_int),
+    "janus_context_messages": ("10", False, "chat", _validate_positive_int),
+    "janus_display_turns":    ("20", False, "chat", _validate_positive_int),
 
     # Export
     "claude_export_json_dir": ("/app/imports/claude", False, "export", None),
@@ -162,6 +163,7 @@ def init_settings():
         ("chat_model", "nemotron-3-nano:latest"),
         ("ollama_num_ctx", "32768"),
         ("claude_export_json_dir", "/data/claude_export"),
+        ("janus_context_messages", "50"),
     ]
 
     with get_connection() as conn:
