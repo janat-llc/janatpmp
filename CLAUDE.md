@@ -158,7 +158,7 @@ with gr.Blocks(title="JANATPMP") as demo:
     startup_banner = gr.HTML(value=_STARTUP_BANNER_HTML, visible=True)
     build_page()          # builds everything: sidebars + tabs + wiring
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)   # 68 MCP tools from mcp_registry.py
+        gr.api(tool_fn)   # 71 MCP tools from mcp_registry.py
 demo.launch(mcp_server=True, server_name="0.0.0.0")
 ```
 
@@ -522,8 +522,8 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
   - External URL: `http://localhost:7474` (Neo4j Browser)
   - Volume: `neo4j_data` (local)
   - Auth: `neo4j/janatpmp_graph`
-  - Node labels: Item, Task, Document, Conversation, Message, Domain, MessageMetadata, Chunk
-  - Edge types: IN_DOMAIN, TARGETS_ITEM, BELONGS_TO, FOLLOWS, DESCRIBES, INFORMED_BY, SIMILAR_TO, PART_OF
+  - Node labels: Item, Task, Document, Conversation, Message, Domain, MessageMetadata, Chunk, Person, Identity
+  - Edge types: IN_DOMAIN, TARGETS_ITEM, BELONGS_TO, FOLLOWS, DESCRIBES, INFORMED_BY, SIMILAR_TO, PART_OF, BECAME, INHERITS_MEMORY_OF, PARTICIPATED_IN, SPOKE
 - **Ollama:** `janatpmp-ollama` container on port 11435, shares `ollama_data` external volume
   - Internal URL: `http://ollama:11434/v1` (Docker DNS)
   - External URL: `http://localhost:11435` (host access for testing)
@@ -643,19 +643,19 @@ from mcp_registry import ALL_MCP_TOOLS
 with gr.Blocks() as demo:
     build_page()
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)  # 68 MCP tools from registry
+        gr.api(tool_fn)  # 71 MCP tools from registry
 
 demo.launch(mcp_server=True)
 ```
 
-68 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
-28 from `db/operations.py` (including domain CRUD + export/import), 13 from
-`db/chat_operations.py` (including Janus lifecycle), 4 from `db/chunk_operations.py`
-(chunk CRUD + stats + search), 3 from `db/file_registry_ops.py` (R17 file registry),
-10 vector/embedding/chunking operations from `services/`, 2 import pipelines, 2 ingestion
-orchestrators, 4 graph operations from `graph/`, and 2 from R17 (ingestion progress +
-temporal context). All MUST have Google-style docstrings with Args/Returns for MCP tool
-generation.
+71 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
+28 from `db/operations.py` (including domain CRUD + export/import), 15 from
+`db/chat_operations.py` (including Janus lifecycle + conversation stream), 4 from
+`db/chunk_operations.py` (chunk CRUD + stats + search), 3 from `db/file_registry_ops.py`
+(R17 file registry), 10 vector/embedding/chunking operations from `services/`, 2 import
+pipelines, 2 ingestion orchestrators, 5 graph operations from `graph/` (including identity
+seeding), and 2 from R17 (ingestion progress + temporal context). All MUST have Google-style
+docstrings with Args/Returns for MCP tool generation.
 
 ### Common Mistakes to Avoid
 
@@ -942,16 +942,22 @@ monolith Chat tab, sidebar quick-chat):
 
 ### Knowledge Graph (`graph/`)
 
-- **Neo4j 2026.01.4** with 8 uniqueness constraints and 4 range indexes
+- **Neo4j 2026.01.4** with 10 uniqueness constraints and 5 range indexes
 - **CDC consumer** daemon polls `cdc_outbox WHERE processed_neo4j = 0`, syncs all 9 entity
   types (item, task, document, conversation, message, domain, message_metadata, relationship, chunk)
-- **4 MCP tools:** `graph_query` (read-only Cypher), `graph_neighbors`, `graph_stats`, `backfill_graph`
+- **5 MCP tools:** `graph_query` (read-only Cypher), `graph_neighbors`, `graph_stats`,
+  `backfill_graph`, `seed_identity_graph`
 - Config in `atlas/config.py`: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, CDC_POLL_INTERVAL, CDC_BATCH_SIZE
 - **Edge separation:** CDC consumer creates structural edges (BELONGS_TO, FOLLOWS, IN_DOMAIN,
   TARGETS_ITEM, DESCRIBES, PART_OF). on_write creates INFORMED_BY edges (requires rag_hits).
   Slumber Relate creates SIMILAR_TO edges (keyword overlap).
 - **Chunk nodes:** CDC consumer creates Chunk nodes with PART_OF edges to parent Message or
   Document nodes. Enables graph traversal: "find all chunks of this message."
+- **Identity graph (R17-H):** 3 identity nodes (Mat as Person, Janus and Claude as Identity)
+  with BECAME/INHERITS_MEMORY_OF meta-relationships. PARTICIPATED_IN edges on every Conversation
+  (Mat + Claude for claude_export, Mat + Janus for platform/google_ai). SPOKE edges on every
+  Message (user→Mat, assistant→Claude or Janus based on conversation source). Seeded by
+  `seed_identity_graph()`, also runs as Phase 3 of `backfill_graph()`. All MERGE — idempotent.
 
 ### RAG Provenance
 
@@ -1253,7 +1259,7 @@ Operational metadata table — tracks which files have been ingested. No CDC par
   New content auto-discovered and fully processed in a single idle cycle.
 - **Ingestion pipelines** — Claude export, Google AI Studio, markdown. Auto-embed + dedup.
   Auto-ingestion scanner for hands-free operation.
-- **68 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal exposed for external AI clients.
+- **71 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal exposed for external AI clients.
 
 ### What's Missing (Architectural Gaps)
 

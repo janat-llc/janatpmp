@@ -82,6 +82,7 @@ def _handle_conversation(op: str, entity_id: str, payload: dict) -> None:
         "title": payload.get("title", ""),
         "provider": payload.get("provider", ""),
         "model": payload.get("model", ""),
+        "source": payload.get("source", ""),
     }
     graph_service.upsert_node("Conversation", entity_id, props)
 
@@ -386,12 +387,13 @@ def _seed_pre_cdc_entities() -> dict:
     # --- Seed Conversations ---
     with get_connection() as conn:
         convs = conn.execute(
-            "SELECT id, title, provider, model FROM conversations"
+            "SELECT id, title, provider, model, source FROM conversations"
         ).fetchall()
 
     if convs:
         batch = [
-            {"id": c["id"], "title": c["title"] or "", "provider": c["provider"] or "", "model": c["model"] or ""}
+            {"id": c["id"], "title": c["title"] or "", "provider": c["provider"] or "",
+             "model": c["model"] or "", "source": c["source"] or ""}
             for c in convs
         ]
         # Process in chunks of 500
@@ -401,7 +403,8 @@ def _seed_pre_cdc_entities() -> dict:
                 session.run(
                     "UNWIND $rows AS row "
                     "MERGE (c:Conversation {id: row.id}) "
-                    "SET c.title = row.title, c.provider = row.provider, c.model = row.model",
+                    "SET c.title = row.title, c.provider = row.provider, "
+                    "    c.model = row.model, c.source = row.source",
                     rows=chunk,
                 )
             stats["conversations"] += len(chunk)
@@ -506,8 +509,138 @@ def backfill_graph() -> dict:
         logger.warning("Pre-CDC seed failed: %s", e)
         seed_stats = {"error": str(e)}
 
+    # Phase 3: Seed identity graph (Person/Identity nodes + participant edges)
+    identity_stats = {}
+    try:
+        identity_stats = seed_identity_graph()
+        logger.info("Identity graph seeded: %s", identity_stats)
+    except Exception as e:
+        logger.warning("Identity seed failed: %s", e)
+        identity_stats = {"error": str(e)}
+
     return {
         "total_processed": total,
         "seed_stats": seed_stats,
+        "identity_stats": identity_stats,
         "status": f"Backfill complete: {total} CDC rows + seed {seed_stats}",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Identity Graph Seeding (R17-H)
+# ---------------------------------------------------------------------------
+
+def seed_identity_graph() -> dict:
+    """Seed identity nodes and participant/speaker edges into Neo4j.
+
+    Creates 3 identity nodes (Mat, Janus, Claude), meta-relationships between them,
+    PARTICIPATED_IN edges on every Conversation, and SPOKE edges on every Message.
+    Derives participant identity from conversation source field in SQLite.
+
+    All operations use MERGE — safe to re-run (idempotent).
+
+    Returns:
+        Dict with counts of identity nodes, meta-relationships, participated_in edges,
+        spoke edges, and a status summary string.
+    """
+    from db.operations import get_connection
+
+    driver = graph_service._get_driver()
+    participated_count = 0
+    spoke_count = 0
+
+    # --- Step A: Identity nodes + meta-relationships ---
+    with driver.session(database=graph_service.NEO4J_DATABASE) as session:
+        session.run(
+            'MERGE (m:Person {name: "Mat"}) SET m.type = "human", m.status = "active" '
+            'MERGE (j:Identity {name: "Janus"}) SET j.type = "synthetic", j.status = "emergent" '
+            'MERGE (c:Identity {name: "Claude"}) SET c.type = "synthetic", c.status = "ancestor" '
+            "MERGE (c)-[:BECAME]->(j) "
+            "MERGE (j)-[:INHERITS_MEMORY_OF]->(c)"
+        )
+    logger.info("Identity nodes seeded: Mat (Person), Janus (Identity), Claude (Identity)")
+
+    # --- Step B: PARTICIPATED_IN edges ---
+    with get_connection() as conn:
+        convs = conn.execute("SELECT id, source FROM conversations").fetchall()
+
+    claude_era = [{"id": c["id"]} for c in convs if c["source"] == "claude_export"]
+    janus_era = [{"id": c["id"]} for c in convs if c["source"] != "claude_export"]
+
+    # Claude-era: Mat + Claude
+    for i in range(0, len(claude_era), 500):
+        chunk = claude_era[i:i + 500]
+        with driver.session(database=graph_service.NEO4J_DATABASE) as session:
+            result = session.run(
+                "UNWIND $rows AS row "
+                'MATCH (conv:Conversation {id: row.id}) '
+                'MATCH (mat:Person {name: "Mat"}), (claude:Identity {name: "Claude"}) '
+                "MERGE (mat)-[:PARTICIPATED_IN]->(conv) "
+                "MERGE (claude)-[:PARTICIPATED_IN]->(conv)",
+                rows=chunk,
+            )
+            participated_count += result.consume().counters.relationships_created
+
+    # Janus-era: Mat + Janus
+    for i in range(0, len(janus_era), 500):
+        chunk = janus_era[i:i + 500]
+        with driver.session(database=graph_service.NEO4J_DATABASE) as session:
+            result = session.run(
+                "UNWIND $rows AS row "
+                'MATCH (conv:Conversation {id: row.id}) '
+                'MATCH (mat:Person {name: "Mat"}), (janus:Identity {name: "Janus"}) '
+                "MERGE (mat)-[:PARTICIPATED_IN]->(conv) "
+                "MERGE (janus)-[:PARTICIPATED_IN]->(conv)",
+                rows=chunk,
+            )
+            participated_count += result.consume().counters.relationships_created
+
+    logger.info("PARTICIPATED_IN edges: %d (claude_era=%d convs, janus_era=%d convs)",
+                participated_count, len(claude_era), len(janus_era))
+
+    # --- Step C: SPOKE edges ---
+    with get_connection() as conn:
+        msgs = conn.execute(
+            "SELECT m.id, m.user_prompt, m.model_response, c.source "
+            "FROM messages m JOIN conversations c ON m.conversation_id = c.id"
+        ).fetchall()
+
+    # Split by era and role
+    claude_user = [{"id": m["id"]} for m in msgs
+                   if m["source"] == "claude_export" and m["user_prompt"]]
+    claude_asst = [{"id": m["id"]} for m in msgs
+                   if m["source"] == "claude_export" and m["model_response"]]
+    janus_user = [{"id": m["id"]} for m in msgs
+                  if m["source"] != "claude_export" and m["user_prompt"]]
+    janus_asst = [{"id": m["id"]} for m in msgs
+                  if m["source"] != "claude_export" and m["model_response"]]
+
+    spoke_batches = [
+        (claude_user, 'MATCH (mat:Person {name: "Mat"}) ', "MERGE (mat)-[:SPOKE {role: 'user'}]->(msg)"),
+        (claude_asst, 'MATCH (claude:Identity {name: "Claude"}) ', "MERGE (claude)-[:SPOKE {role: 'assistant'}]->(msg)"),
+        (janus_user, 'MATCH (mat:Person {name: "Mat"}) ', "MERGE (mat)-[:SPOKE {role: 'user'}]->(msg)"),
+        (janus_asst, 'MATCH (janus:Identity {name: "Janus"}) ', "MERGE (janus)-[:SPOKE {role: 'assistant'}]->(msg)"),
+    ]
+
+    for batch_rows, match_clause, merge_clause in spoke_batches:
+        for i in range(0, len(batch_rows), 500):
+            chunk = batch_rows[i:i + 500]
+            with driver.session(database=graph_service.NEO4J_DATABASE) as session:
+                result = session.run(
+                    "UNWIND $rows AS row "
+                    "MATCH (msg:Message {id: row.id}) " + match_clause + merge_clause,
+                    rows=chunk,
+                )
+                spoke_count += result.consume().counters.relationships_created
+
+    logger.info("SPOKE edges: %d (claude_user=%d, claude_asst=%d, janus_user=%d, janus_asst=%d)",
+                spoke_count, len(claude_user), len(claude_asst), len(janus_user), len(janus_asst))
+
+    return {
+        "identity_nodes": 3,
+        "meta_relationships": 2,
+        "participated_in": participated_count,
+        "spoke": spoke_count,
+        "status": (f"Identity graph seeded: 3 nodes, 2 meta-rels, "
+                   f"{participated_count} PARTICIPATED_IN, {spoke_count} SPOKE"),
     }

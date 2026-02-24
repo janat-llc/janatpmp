@@ -576,3 +576,42 @@ def archive_janus_conversation(janus_conv_id: str) -> str:
     )
     set_setting("janus_conversation_id", new_id)
     return new_id
+
+
+# ---------------------------------------------------------------------------
+# Conversation Stream (real-time message access)
+# ---------------------------------------------------------------------------
+
+def get_conversation_stream(conversation_id: str, limit: int = 20) -> list:
+    """Get the most recent messages from a conversation, newest first.
+
+    Stream-friendly wrapper around get_messages() with defaults tuned for
+    reading a live conversation tail: small limit, reverse chronological order.
+
+    Args:
+        conversation_id: The conversation ID (hex string)
+        limit: Maximum number of messages to return (default 20)
+
+    Returns:
+        List of message dicts, newest first
+    """
+    messages = get_messages(conversation_id, limit=limit, latest=True)
+    messages.reverse()
+    return messages
+
+
+def get_janus_stream(limit: int = 20) -> list:
+    """Get the most recent messages from the active Janus conversation.
+
+    Convenience shortcut that auto-resolves the active Janus conversation ID
+    then returns the latest messages newest-first. Ideal for MCP clients that
+    need quick access to what Janus actually said.
+
+    Args:
+        limit: Maximum number of messages to return (default 20)
+
+    Returns:
+        List of message dicts from Janus, newest first
+    """
+    janus_id = get_or_create_janus_conversation()
+    return get_conversation_stream(janus_id, limit=limit)

@@ -28,9 +28,10 @@ from db.chat_operations import (
 # --- Cognitive telemetry (R12) — 2 functions ---
 from db.chat_operations import add_message_metadata, get_message_metadata
 
-# --- Janus continuous chat (R14) — 2 functions ---
+# --- Janus continuous chat + stream (R14/R17) — 4 functions ---
 from db.chat_operations import (
     get_or_create_janus_conversation, archive_janus_conversation,
+    get_conversation_stream, get_janus_stream,
 )
 
 # --- Import pipelines (Phase 5) — 2 functions ---
@@ -60,9 +61,9 @@ from db.chunk_operations import (
     get_chunks, get_chunk_stats, search_chunks, delete_chunks,
 )
 
-# --- Knowledge graph (R13: Neo4j) — 4 functions ---
+# --- Knowledge graph (R13: Neo4j) — 5 functions ---
 from graph.graph_service import graph_query, graph_neighbors, graph_stats
-from graph.cdc_consumer import backfill_graph
+from graph.cdc_consumer import backfill_graph, seed_identity_graph
 
 # --- File registry + auto-ingestion + temporal context (R17) — 5 functions ---
 from db.file_registry_ops import (
@@ -90,8 +91,9 @@ ALL_MCP_TOOLS: list = [
     add_message, get_messages, get_conversation_by_uri,
     # Cognitive telemetry (2)
     add_message_metadata, get_message_metadata,
-    # Janus (2)
+    # Janus (4)
     get_or_create_janus_conversation, archive_janus_conversation,
+    get_conversation_stream, get_janus_stream,
     # Import (2)
     import_conversations_json, import_conversations_directory,
     # RAG + Embedding (10)
@@ -104,8 +106,8 @@ ALL_MCP_TOOLS: list = [
     ingest_google_ai_conversations, ingest_markdown_documents,
     # Chunks (4)
     get_chunks, get_chunk_stats, search_chunks, delete_chunks,
-    # Graph (4)
-    graph_query, graph_neighbors, graph_stats, backfill_graph,
+    # Graph (5)
+    graph_query, graph_neighbors, graph_stats, backfill_graph, seed_identity_graph,
     # File Registry + Temporal (5)
     get_file_registry_stats, list_registered_files, search_file_registry,
     get_ingestion_progress, get_temporal_context,
