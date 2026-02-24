@@ -108,14 +108,16 @@ def ingest_google_ai_conversations(directory: str, auto_embed: bool = True) -> d
         f"{len(errors)} errors, {total_messages} messages"
     )
 
-    # Auto-embed new messages into Qdrant (checkpoint-based, skips existing)
+    # Auto-chunk and embed new messages into Qdrant
     if auto_embed and imported > 0:
         try:
-            from services.bulk_embed import embed_all_messages
+            from services.bulk_embed import chunk_all_messages, embed_all_messages
+            chunk_result = chunk_all_messages()
+            logger.info("Auto-chunk after Google AI ingestion: %s", chunk_result)
             embed_result = embed_all_messages()
             logger.info("Auto-embed after Google AI ingestion: %s", embed_result)
         except Exception as e:
-            logger.warning("Auto-embed after Google AI ingestion failed: %s", e)
+            logger.warning("Auto-chunk/embed after Google AI ingestion failed: %s", e)
 
     return {
         "imported": imported,
@@ -185,14 +187,16 @@ def ingest_markdown_documents(directory: str, auto_embed: bool = True) -> dict:
         f"{len(errors)} errors"
     )
 
-    # Auto-embed new documents into Qdrant (checkpoint-based, skips existing)
+    # Auto-chunk and embed new documents into Qdrant
     if auto_embed and imported > 0:
         try:
-            from services.bulk_embed import embed_all_documents
+            from services.bulk_embed import chunk_all_documents, embed_all_documents
+            chunk_result = chunk_all_documents()
+            logger.info("Auto-chunk after markdown ingestion: %s", chunk_result)
             embed_result = embed_all_documents()
             logger.info("Auto-embed after markdown ingestion: %s", embed_result)
         except Exception as e:
-            logger.warning("Auto-embed after markdown ingestion failed: %s", e)
+            logger.warning("Auto-chunk/embed after markdown ingestion failed: %s", e)
 
     return {
         "imported": imported,
