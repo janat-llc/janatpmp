@@ -24,7 +24,8 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 
 ```
 JANATPMP/
-├── app.py                    # Thin orchestrator: init_database(), build_page(), gr.api(), launch
+├── app.py                    # Thin launcher: startup calls, gr.Blocks, banner, demo.launch()
+├── mcp_registry.py           # MCP Tool Registry — all 68 gr.api() function imports + ALL_MCP_TOOLS list
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── pages/
 │   ├── __init__.py
@@ -90,6 +91,7 @@ JANATPMP/
 │   ├── bulk_embed.py         # Batch embed via Ollama with progress & checkpointing
 │   ├── settings.py           # Settings registry with validation and categories
 │   ├── auto_ingest.py        # Startup + Slumber auto-ingestion scanner (R17)
+│   ├── startup.py            # Platform init: initialize_core(), initialize_services(), background auto-ingest
 │   └── ingestion/            # Content ingestion parsers (Phase 6A)
 │       ├── __init__.py
 │       ├── google_ai_studio.py  # Google AI Studio chunkedPrompt parser
@@ -144,11 +146,19 @@ plus Sovereign Chat at `/chat` via `demo.route()`. The monolith retains dual sid
 **Implementation in code:**
 
 ```python
-# app.py
+# app.py — thin launcher
+from mcp_registry import ALL_MCP_TOOLS
+from services.startup import initialize_core, initialize_services, start_auto_ingest
+
+initialize_core()       # DB, settings, Janus (blocking, fast)
+initialize_services()   # Qdrant, Slumber, Neo4j (optional)
+start_auto_ingest()     # Background thread (non-blocking)
+
 with gr.Blocks(title="JANATPMP") as demo:
+    startup_banner = gr.HTML(value=_STARTUP_BANNER_HTML, visible=True)
     build_page()          # builds everything: sidebars + tabs + wiring
-    gr.api(create_item)   # MCP tools exposed here
-    ...
+    for tool_fn in ALL_MCP_TOOLS:
+        gr.api(tool_fn)   # 68 MCP tools from mcp_registry.py
 demo.launch(mcp_server=True, server_name="0.0.0.0")
 ```
 
@@ -271,6 +281,24 @@ db/operations.py → 28 functions → three surfaces:
 - NO `demo.load()` — data is computed at build time and passed via `value=`
 - `gr.api()` exposes db functions as MCP tools without UI components
 - `build_page()` is the single entry point for all UI construction
+
+### Startup Sequence (`services/startup.py`)
+
+Platform initialization is extracted into three functions called from `app.py`:
+
+1. **`initialize_core()`** — DB, settings, cleanup, Janus conversation. BLOCKING, fast (<1s).
+2. **`initialize_services()`** — Qdrant, Slumber daemon, Neo4j. Each isolated in try/except.
+3. **`start_auto_ingest()`** — Launches `scan_and_ingest()` in a background daemon thread.
+   Non-blocking: the webserver starts immediately while ingestion runs behind the scenes.
+
+A branded startup banner ("JANUS is getting ready for work...") appears in the UI and
+auto-dismisses via `gr.Timer` polling `is_auto_ingest_complete()` every 2 seconds.
+
+### MCP Tool Registry (`mcp_registry.py`)
+
+All 68 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
+category. `app.py` loops over this list: `for tool_fn in ALL_MCP_TOOLS: gr.api(tool_fn)`.
+This centralizes tool registration and keeps `app.py` thin (~60 lines).
 
 ### Shared Module (`shared/`)
 
@@ -609,21 +637,25 @@ demo.load(lambda: get_items_dataframe(), outputs=[items_table])
 Gradio auto-generates MCP tools from functions with proper docstrings:
 
 ```python
+# mcp_registry.py centralizes all tool imports
+from mcp_registry import ALL_MCP_TOOLS
+
 with gr.Blocks() as demo:
     build_page()
-    gr.api(create_item)  # Becomes MCP tool, no UI element
-    ...
+    for tool_fn in ALL_MCP_TOOLS:
+        gr.api(tool_fn)  # 68 MCP tools from registry
 
 demo.launch(mcp_server=True)
 ```
 
-68 functions are exposed via `gr.api()` as MCP tools: 28 from `db/operations.py`
-(including domain CRUD + export/import), 13 from `db/chat_operations.py` (including Janus
-lifecycle), 4 from `db/chunk_operations.py` (chunk CRUD + stats + search), 3 from
-`db/file_registry_ops.py` (R17 file registry), 8 vector/embedding operations from `services/`
-(including 2 bulk chunk tools), 2 import pipelines, 4 ingestion orchestrators, 4 graph
-operations from `graph/`, and 2 from R17 (ingestion progress + temporal context). All MUST
-have Google-style docstrings with Args/Returns for MCP tool generation.
+68 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
+28 from `db/operations.py` (including domain CRUD + export/import), 13 from
+`db/chat_operations.py` (including Janus lifecycle), 4 from `db/chunk_operations.py`
+(chunk CRUD + stats + search), 3 from `db/file_registry_ops.py` (R17 file registry),
+10 vector/embedding/chunking operations from `services/`, 2 import pipelines, 2 ingestion
+orchestrators, 4 graph operations from `graph/`, and 2 from R17 (ingestion progress +
+temporal context). All MUST have Google-style docstrings with Args/Returns for MCP tool
+generation.
 
 ### Common Mistakes to Avoid
 

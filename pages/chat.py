@@ -351,6 +351,37 @@ def build_chat_page():
                                 key=f"rejected-{i}",
                             )
 
+        # --- Platform State (static, loaded at build time) ---
+        with gr.Accordion("Platform State", open=False):
+            try:
+                from db.operations import get_stats, get_connection
+                stats = get_stats()
+                with get_connection() as _conn:
+                    _conv_count = _conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+                    _msg_count = _conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                    _chunk_row = _conn.execute(
+                        "SELECT COUNT(*), SUM(CASE WHEN embedded_at IS NOT NULL THEN 1 ELSE 0 END) FROM chunks"
+                    ).fetchone()
+                    _chunk_count, _embedded_count = _chunk_row[0], _chunk_row[1] or 0
+                    try:
+                        _file_count = _conn.execute("SELECT COUNT(*) FROM file_registry").fetchone()[0]
+                    except Exception:
+                        _file_count = 0
+
+                gr.Markdown(
+                    f"**Items:** {stats.get('total_items', 0):,}\n\n"
+                    f"**Tasks:** {stats.get('total_tasks', 0):,}\n\n"
+                    f"**Documents:** {stats.get('total_documents', 0):,}\n\n"
+                    f"**Relationships:** {stats.get('total_relationships', 0):,}\n\n"
+                    f"**Conversations:** {_conv_count:,}\n\n"
+                    f"**Messages:** {_msg_count:,}\n\n"
+                    f"**Chunks:** {_chunk_count:,} ({_embedded_count:,} embedded)\n\n"
+                    f"**Files Tracked:** {_file_count:,}",
+                    key="platform-state-stats",
+                )
+            except Exception:
+                gr.Markdown("*Database stats unavailable*", key="platform-state-error")
+
     # === RIGHT SIDEBAR — Session Parameters ===
     with gr.Sidebar(position="right"):
         gr.Markdown("### Real-time")

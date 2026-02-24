@@ -144,6 +144,7 @@ SETTINGS_REGISTRY = {
     # Ingestion
     "ingestion_google_ai_dir": ("/app/imports/google_ai", False, "ingestion", None),
     "ingestion_markdown_dir":  ("/app/imports/markdown", False, "ingestion", None),
+    "auto_import_threshold_hours": ("24", False, "ingestion", _validate_positive_int),
 
     # RAG
     "qdrant_url":           ("http://janatpmp-qdrant:6333", False, "rag", None),

@@ -11,7 +11,7 @@ The embed phase is the long pole (~20 min for 30K chunks); progress must answer
 import hashlib
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from db.operations import get_connection
@@ -502,6 +502,74 @@ def _scan_markdown_dir(directory: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Auto-Import Platform Export (empty DB recovery)
+# ---------------------------------------------------------------------------
+
+def _auto_import_export() -> dict:
+    """Auto-import newest platform export if DB is empty and export is recent.
+
+    Trigger: items table has 0 rows AND newest export within threshold.
+    Called at top of scan_and_ingest(), before external file scanning.
+    Once items exist (after import or manual creation), never re-triggers.
+
+    Returns:
+        {"imported": True, "file": str, "result": str} on success,
+        {"imported": False, "reason": str} otherwise.
+    """
+    # 1. Quick check: does the DB already have items?
+    with get_connection() as conn:
+        item_count = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+    if item_count > 0:
+        return {"imported": False, "reason": "DB already has items"}
+
+    # 2. Find newest platform export
+    exports_dir = Path(__file__).resolve().parent.parent / "db" / "exports"
+    if not exports_dir.is_dir():
+        return {"imported": False, "reason": "No exports directory"}
+
+    export_files = sorted(
+        exports_dir.glob("platform_export_*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not export_files:
+        return {"imported": False, "reason": "No export files found"}
+
+    newest = export_files[0]
+
+    # 3. Check if newest is within threshold
+    threshold_hours = int(get_setting("auto_import_threshold_hours") or "24")
+    age_seconds = time.time() - newest.stat().st_mtime
+    age_hours = age_seconds / 3600
+    if age_hours > threshold_hours:
+        return {
+            "imported": False,
+            "reason": f"Newest export is {age_hours:.1f}h old (threshold: {threshold_hours}h)",
+        }
+
+    # 4. Import the export
+    logger.info("Auto-importing platform export: %s (%.1fh old)", newest.name, age_hours)
+    try:
+        from db.operations import import_platform_data
+        result = import_platform_data(str(newest))
+        logger.info("Auto-import result: %s", result)
+    except Exception as e:
+        logger.warning("Auto-import failed: %s", e)
+        return {"imported": False, "reason": f"Import failed: {e}"}
+
+    # 5. Embed imported items + tasks (populate Qdrant vectors)
+    try:
+        from services.bulk_embed import embed_all_items, embed_all_tasks, embed_all_domains
+        embed_all_domains()
+        embed_all_items()
+        embed_all_tasks()
+    except Exception as e:
+        logger.warning("Auto-import embed failed (non-fatal): %s", e)
+
+    return {"imported": True, "file": newest.name, "result": result}
+
+
+# ---------------------------------------------------------------------------
 # Scanner Core
 # ---------------------------------------------------------------------------
 
@@ -528,6 +596,14 @@ def scan_and_ingest(auto_embed: bool = True, source: str = "startup") -> dict:
     """
     start_time = time.time()
     _reset_progress()
+
+    # Phase 0: Auto-import platform export if DB is empty
+    _update_progress(status="scanning", current_phase="export_check",
+                     phase_detail="Checking for platform exports")
+    export_result = _auto_import_export()
+    if export_result.get("imported"):
+        logger.info("Auto-imported platform export: %s", export_result["file"])
+
     _update_progress(status="scanning", current_phase="init",
                      phase_detail="Reading directory settings")
 
@@ -641,6 +717,7 @@ def scan_and_ingest(auto_embed: bool = True, source: str = "startup") -> dict:
     _current_progress["errors"] = all_errors
 
     summary = {
+        "export_imported": export_result if export_result.get("imported") else None,
         "files_found": total_ingested + total_skipped + total_failed,
         "files_ingested": total_ingested,
         "files_skipped": total_skipped,

@@ -12,192 +12,91 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from services.log_config import setup_logging, cleanup_old_logs
+from services.log_config import setup_logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
 import gradio as gr
-from db.operations import (
-    init_database, cleanup_cdc_outbox,
-    # MCP-exposed operations
-    create_item, get_item, list_items, update_item, delete_item,
-    create_task, get_task, list_tasks, update_task,
-    create_document, get_document, list_documents,
-    search_items, search_documents,
-    create_relationship, get_relationships,
-    get_stats, get_schema_info,
-    backup_database, reset_database, restore_database, list_backups,
-    get_domains, get_domain, create_domain, update_domain,
-    export_platform_data, import_platform_data,
+from mcp_registry import ALL_MCP_TOOLS
+from services.startup import (
+    initialize_core, initialize_services,
+    start_auto_ingest, is_auto_ingest_complete,
 )
-from db.chat_operations import (
-    create_conversation, get_conversation, get_conversation_by_uri,
-    list_conversations, update_conversation, delete_conversation,
-    search_conversations, add_message, get_messages,
-    add_message_metadata, get_message_metadata,
-    get_or_create_janus_conversation, archive_janus_conversation,
-)
-from services.claude_import import import_conversations_json, import_conversations_directory
-from services.ingestion.orchestrator import (
-    ingest_google_ai_conversations,
-    ingest_markdown_documents,
-)
-from services.vector_store import (
-    search as vector_search, search_all as vector_search_all,
-    recreate_collections,
-)
-from services.bulk_embed import (
-    chunk_all_messages, chunk_all_documents,
-    embed_all_documents, embed_all_messages, embed_all_domains,
-    embed_all_items, embed_all_tasks,
-)
-from db.chunk_operations import (
-    get_chunks, get_chunk_stats, search_chunks, delete_chunks,
-)
-from db.file_registry_ops import (
-    get_file_registry_stats, list_registered_files, search_file_registry,
-)
-from services.auto_ingest import get_ingestion_progress
-from atlas.temporal import get_temporal_context
-from graph.graph_service import graph_query, graph_neighbors, graph_stats
-from graph.cdc_consumer import backfill_graph
 from pages.projects import build_page
 from pages import chat as chat_page
 from janat_theme import JanatTheme, JANAT_CSS
 
-# Initialize database and settings BEFORE building UI
-init_database()
-from services.settings import init_settings
-init_settings()
-cleanup_old_logs()
-cleanup_cdc_outbox()
-get_or_create_janus_conversation()
-logger.info("Database, settings, and Janus conversation initialized")
+# --- Platform initialization (strict order) ---
+initialize_core()       # DB, settings, cleanup, Janus (blocking, fast)
+initialize_services()   # Qdrant, Slumber, Neo4j (optional, graceful degrade)
+start_auto_ingest()     # Background thread (non-blocking)
 
-# Initialize vector store collections (safe if Qdrant not running)
-try:
-    from services.vector_store import ensure_collections
-    ensure_collections()
-except Exception:
-    logger.warning("Qdrant not available -- vector search disabled")
+# --- Startup banner ---
+_STARTUP_BANNER_HTML = """
+<div style="
+    background: linear-gradient(135deg, #0a0a0a 0%, #1a001a 100%);
+    border: 1px solid #00FFFF;
+    border-radius: 8px;
+    padding: 16px 24px;
+    margin: 12px 0;
+    text-align: center;
+    font-family: 'Rajdhani', sans-serif;
+">
+    <span style="
+        font-family: 'Orbitron', sans-serif;
+        color: #00FFFF;
+        font-size: 1.1rem;
+        letter-spacing: 0.1em;
+    ">JANUS</span>
+    <span style="
+        color: #808080;
+        font-size: 0.95rem;
+        margin-left: 8px;
+    ">is getting ready for work...</span>
+    <div style="
+        margin-top: 8px;
+        height: 2px;
+        background: linear-gradient(90deg, transparent, #00FFFF, transparent);
+        animation: janus-pulse 2s ease-in-out infinite;
+    "></div>
+</div>
+<style>
+    @keyframes janus-pulse {
+        0%, 100% { opacity: 0.3; }
+        50% { opacity: 1; }
+    }
+</style>
+"""
 
-# Startup auto-ingest: scan configured directories for new files (R17)
-try:
-    from services.auto_ingest import scan_and_ingest
-    ingest_result = scan_and_ingest(auto_embed=True, source="startup")
-    logger.info("Startup auto-ingest: %s", ingest_result)
-except Exception as e:
-    logger.warning("Startup auto-ingest failed: %s", e)
 
-# Start Slumber Cycle (background cognitive telemetry evaluation)
-from services.slumber import start_slumber
-start_slumber()
+def _check_ingest_status():
+    """Poll background auto-ingest. Dismiss banner and stop timer when done."""
+    if is_auto_ingest_complete():
+        return gr.HTML(visible=False), gr.Timer(active=False)
+    return gr.skip(), gr.skip()
 
-# Initialize Neo4j graph schema and start CDC consumer
-try:
-    from graph.graph_service import ensure_schema
-    ensure_schema()
-    from graph.cdc_consumer import start_cdc_consumer
-    start_cdc_consumer()
-    logger.info("Neo4j graph service and CDC consumer started")
-except Exception:
-    logger.warning("Neo4j not available -- graph features disabled")
 
-# Build multipage application
+# --- Build multipage application ---
 # Navbar is auto-generated by demo.route() — restyled as branded header via JANAT_CSS.
 with gr.Blocks(title="JANATPMP") as demo:
     gr.Navbar(main_page_name="Dashboard")
+
+    # Startup status banner (dismissed when background auto-ingest completes)
+    startup_banner = gr.HTML(value=_STARTUP_BANNER_HTML, visible=True)
+    ingest_timer = gr.Timer(value=2.0, active=True)
+
     build_page()
 
-    # Expose ALL operations as MCP tools
-    gr.api(create_item)
-    gr.api(get_item)
-    gr.api(list_items)
-    gr.api(update_item)
-    gr.api(delete_item)
-    gr.api(create_task)
-    gr.api(get_task)
-    gr.api(list_tasks)
-    gr.api(update_task)
-    gr.api(create_document)
-    gr.api(get_document)
-    gr.api(list_documents)
-    gr.api(search_items)
-    gr.api(search_documents)
-    gr.api(create_relationship)
-    gr.api(get_relationships)
-    gr.api(get_stats)
-    gr.api(get_schema_info)
-    gr.api(backup_database)
-    gr.api(reset_database)
-    gr.api(restore_database)
-    gr.api(list_backups)
-    gr.api(export_platform_data)
-    gr.api(import_platform_data)
+    # Register all MCP tools (68 functions from mcp_registry.py)
+    for tool_fn in ALL_MCP_TOOLS:
+        gr.api(tool_fn)
 
-    # Domain operations (R8)
-    gr.api(get_domains)
-    gr.api(get_domain)
-    gr.api(create_domain)
-    gr.api(update_domain)
-
-    # Chat operations (Phase 4B)
-    gr.api(create_conversation)
-    gr.api(get_conversation)
-    gr.api(list_conversations)
-    gr.api(update_conversation)
-    gr.api(delete_conversation)
-    gr.api(search_conversations)
-    gr.api(add_message)
-    gr.api(get_messages)
-    gr.api(get_conversation_by_uri)
-
-    # Cognitive telemetry (R12)
-    gr.api(add_message_metadata)
-    gr.api(get_message_metadata)
-
-    # Janus continuous chat (R14)
-    gr.api(get_or_create_janus_conversation)
-    gr.api(archive_janus_conversation)
-
-    # Import pipeline (Phase 5)
-    gr.api(import_conversations_json)
-    gr.api(import_conversations_directory)
-
-    # RAG pipeline (R9: ATLAS two-stage search + embedding)
-    gr.api(vector_search)
-    gr.api(vector_search_all)
-    gr.api(chunk_all_messages)
-    gr.api(chunk_all_documents)
-    gr.api(embed_all_documents)
-    gr.api(embed_all_messages)
-    gr.api(embed_all_domains)
-    gr.api(embed_all_items)
-    gr.api(embed_all_tasks)
-    gr.api(recreate_collections)
-
-    # Content ingestion (Phase 6A)
-    gr.api(ingest_google_ai_conversations)
-    gr.api(ingest_markdown_documents)
-
-    # Chunk operations (R16)
-    gr.api(get_chunks)
-    gr.api(get_chunk_stats)
-    gr.api(search_chunks)
-    gr.api(delete_chunks)
-
-    # Knowledge graph (R13: Neo4j)
-    gr.api(graph_query)
-    gr.api(graph_neighbors)
-    gr.api(graph_stats)
-    gr.api(backfill_graph)
-
-    # File registry + auto-ingestion + temporal context (R17)
-    gr.api(get_file_registry_stats)
-    gr.api(list_registered_files)
-    gr.api(search_file_registry)
-    gr.api(get_ingestion_progress)
-    gr.api(get_temporal_context)
+    # Banner dismissal wiring
+    ingest_timer.tick(
+        _check_ingest_status,
+        outputs=[startup_banner, ingest_timer],
+        api_visibility="private",
+    )
 
 # --- Sovereign Chat route (outside main Blocks context) ---
 with demo.route("Chat", "/chat"):
