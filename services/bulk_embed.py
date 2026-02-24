@@ -30,12 +30,19 @@ BATCH_SIZE = 32
 def _generate_point_id(entity_id: str, chunk_index: int, chunk_total: int) -> str:
     """Generate Qdrant point ID for a chunk.
 
+    Qdrant collections that contain UUID-typed points reject non-UUID strings.
+    Since bare 32-char hex entity_ids are auto-parsed as UUIDs by Qdrant,
+    multi-chunk IDs must also be valid UUIDs.
+
     Single-chunk entities use the raw entity_id (backward compatible).
-    Multi-chunk entities use {entity_id}_c{index:03d}.
+    Multi-chunk entities use UUID v5 derived from entity_id + chunk_index
+    (deterministic: same input always produces the same UUID).
     """
     if chunk_total <= 1:
         return entity_id
-    return f"{entity_id}_c{chunk_index:03d}"
+    import uuid
+    namespace = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    return str(uuid.uuid5(namespace, f"{entity_id}_c{chunk_index:03d}"))
 
 
 # ---------------------------------------------------------------------------

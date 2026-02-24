@@ -53,12 +53,19 @@ def on_message_write(
 def _generate_point_id(message_id: str, chunk_index: int, chunk_total: int) -> str:
     """Generate Qdrant point ID for a chunk.
 
+    Qdrant collections that contain UUID-typed points reject non-UUID strings.
+    Since bare 32-char hex entity_ids are auto-parsed as UUIDs by Qdrant,
+    multi-chunk IDs must also be valid UUIDs.
+
     Single-chunk messages use the raw message_id (backward compatible).
-    Multi-chunk messages use {message_id}_c{index:03d}.
+    Multi-chunk messages use UUID v5 derived from message_id + chunk_index
+    (deterministic: same input always produces the same UUID).
     """
     if chunk_total <= 1:
         return message_id
-    return f"{message_id}_c{chunk_index:03d}"
+    import uuid
+    namespace = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    return str(uuid.uuid5(namespace, f"{message_id}_c{chunk_index:03d}"))
 
 
 def _get_message_context(

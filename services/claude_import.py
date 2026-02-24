@@ -126,6 +126,10 @@ def _build_triplets(chat_messages: list[dict]) -> list[dict]:
     if current is not None:
         triplets.append(current)
 
+    # Drop triplets where both prompt and response are empty
+    triplets = [t for t in triplets
+                if t["user_prompt"].strip() or t["model_response"].strip()]
+
     return triplets
 
 
@@ -160,6 +164,10 @@ def _import_single_conversation(
     chat_messages = conv_data.get("chat_messages", [])
 
     triplets = _build_triplets(chat_messages)
+
+    # Skip empty conversations (no usable message pairs)
+    if not triplets:
+        return False, 0
 
     # Create conversation row directly (need conversation_uri which
     # create_conversation() doesn't support)
