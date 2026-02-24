@@ -1,36 +1,21 @@
-"""Main page layout — contextual sidebar, center tabs, Claude chat."""
+"""Projects page layout — Projects + Work tabs with contextual sidebar."""
 import gradio as gr
 import pandas as pd
 from db.operations import (
     get_item, create_item, update_item,
     get_task, create_task, update_task,
-    get_document, create_document,
-    get_domains, get_stats,
-)
-from tabs.tab_database import build_database_tab
-from db.chat_operations import (
-    get_messages, list_conversations,
-    update_conversation, delete_conversation,
-    get_or_create_janus_conversation,
+    get_domains,
 )
 from shared.constants import (
     ALL_TYPES, STATUSES,
     TASK_STATUSES, TASK_TYPES, ASSIGNEES, PRIORITIES,
-    DOC_TYPES, DOC_SOURCES, DEFAULT_CHAT_HISTORY,
 )
 from shared.formatting import fmt_enum
 from shared.data_helpers import (
     _load_projects, _children_df, _all_items_df,
     _load_tasks, _all_tasks_df,
-    _load_documents, _all_docs_df,
-    _msgs_to_history, _load_chat_session,
 )
-from tabs.tab_chat import _handle_chat
-from tabs.tab_knowledge import (
-    _load_conv_stats, _load_conv_list, _load_selected_conversation,
-    _delete_knowledge_conv,
-    _run_search, _lookup_connections, _on_conn_create,
-)
+from shared.chat_sidebar import build_chat_sidebar, wire_chat_sidebar
 
 
 def _domain_choices(include_blank: bool = True) -> list[str]:
@@ -43,10 +28,11 @@ def _domain_choices(include_blank: bool = True) -> list[str]:
 # --- Page builder ---
 
 def build_page():
-    """Build the complete JANATPMP single-page layout.
+    """Build the Projects page layout.
 
     Must be called from within a `with gr.Blocks():` context.
-    Creates contextual left sidebar, right chat sidebar, and center tabs.
+    Creates contextual left sidebar, right chat sidebar, and center tabs
+    for Projects and Work.
     """
     # === STATES ===
     active_tab = gr.State("Projects")
@@ -54,31 +40,9 @@ def build_page():
     selected_task_id = gr.State("")
     projects_state = gr.State(_load_projects())
     tasks_state = gr.State(_load_tasks())
-    selected_doc_id = gr.State("")
-    docs_state = gr.State(_load_documents())
-    # Callable values → fresh DB read per session (not stale build-time snapshot).
-    # _load_chat_session splits display vs API history so LLM never sees <details> tags.
-    chat_history = gr.State(lambda: _load_chat_session()["api_history"])
-    active_conversation_id = gr.State(get_or_create_janus_conversation)
-    sidebar_conv_id = gr.State(get_or_create_janus_conversation)
-    conversations_state = gr.State(lambda: list_conversations(limit=30))
-    selected_knowledge_conv_id = gr.State("")
-    admin_refresh = gr.State(0)  # bumped by Admin operations to refresh sidebar stats
 
-    # === RIGHT SIDEBAR — Janat quick-chat (all tabs) ===
-    with gr.Sidebar(position="right"):
-        gr.Markdown("### Janat", elem_classes=["right-panel-header"])
-        chatbot = gr.Chatbot(
-            value=lambda: _load_chat_session()["display_history"],
-            show_label=False,
-            buttons=["copy"],
-            scale=1, min_height=300,
-            elem_id="sidebar-chatbot",
-        )
-        chat_input = gr.Textbox(
-            placeholder="What should We do?",
-            show_label=False, interactive=True, max_lines=5, lines=3,
-        )
+    # === RIGHT SIDEBAR — Janat quick-chat (shared) ===
+    chatbot, chat_input, chat_history, sidebar_conv_id = build_chat_sidebar()
 
     # === CENTER TABS (defined before left sidebar so render can reference them) ===
     with gr.Tabs(elem_id="main-tabs") as main_tabs:
@@ -203,197 +167,10 @@ def build_page():
                     )
                     work_list_refresh = gr.Button("Refresh All", variant="secondary", size="sm")
 
-        # --- Knowledge tab ---
-        with gr.Tab("Knowledge") as knowledge_tab:
-            with gr.Tabs():
-                # --- Documents sub-tab ---
-                with gr.Tab("Documents"):
-                    doc_header = gr.Markdown(
-                        "*Select a document from the sidebar, or create a new one.*"
-                    )
-
-                    with gr.Column(visible=False) as doc_detail_section:
-                        doc_id_display = gr.Textbox(
-                            label="ID", interactive=False, max_lines=1
-                        )
-                        with gr.Row():
-                            doc_title = gr.Textbox(
-                                label="Title", interactive=True, scale=3
-                            )
-                            doc_type_display = gr.Textbox(
-                                label="Type", interactive=False, scale=1
-                            )
-                            doc_source_display = gr.Textbox(
-                                label="Source", interactive=False, scale=1
-                            )
-
-                        doc_content = gr.Textbox(
-                            label="Content", lines=15, interactive=False,
-                        )
-
-                        with gr.Accordion("Metadata", open=False):
-                            with gr.Row():
-                                doc_file_path = gr.Textbox(
-                                    label="File Path", interactive=False
-                                )
-                                doc_created = gr.Textbox(
-                                    label="Created", interactive=False
-                                )
-
-                    # --- Create Document form ---
-                    with gr.Column(visible=False) as doc_create_section:
-                        with gr.Row():
-                            new_doc_type = gr.Dropdown(
-                                label="Type", choices=DOC_TYPES,
-                                value="session_notes", scale=1
-                            )
-                            new_doc_source = gr.Dropdown(
-                                label="Source", choices=DOC_SOURCES,
-                                value="manual", scale=1
-                            )
-                        new_doc_title = gr.Textbox(
-                            label="Title", placeholder="Document title..."
-                        )
-                        new_doc_content = gr.Textbox(
-                            label="Content", lines=10,
-                            placeholder="Document content..."
-                        )
-                        with gr.Row():
-                            doc_create_btn = gr.Button("Create", variant="primary")
-                            doc_cancel_btn = gr.Button("Cancel", variant="secondary")
-                            doc_create_msg = gr.Textbox(
-                                show_label=False, interactive=False, scale=2
-                            )
-
-                # --- Documents List View sub-tab ---
-                with gr.Tab("List View"):
-                    gr.Markdown("### All Documents")
-                    all_docs_table = gr.DataFrame(
-                        value=_all_docs_df(), interactive=False,
-                    )
-                    docs_refresh_btn = gr.Button(
-                        "Refresh All", variant="secondary", size="sm"
-                    )
-
-                # --- Search sub-tab ---
-                with gr.Tab("Search"):
-                    gr.Markdown("### Universal Search")
-                    gr.Markdown("Search across all items and documents using full-text search.")
-                    with gr.Row():
-                        search_input = gr.Textbox(
-                            label="Search Query",
-                            placeholder='e.g. "consciousness" or "gradio deploy"',
-                            scale=4,
-                        )
-                        search_btn = gr.Button("Search", variant="primary", scale=1)
-
-                    search_items_results = gr.DataFrame(
-                        value=pd.DataFrame(
-                            columns=["ID", "Title", "Domain", "Type", "Status"]
-                        ),
-                        label="Items",
-                        interactive=False,
-                    )
-                    search_docs_results = gr.DataFrame(
-                        value=pd.DataFrame(
-                            columns=["ID", "Title", "Type", "Source", "Created"]
-                        ),
-                        label="Documents",
-                        interactive=False,
-                    )
-
-                # --- Connections sub-tab ---
-                with gr.Tab("Connections"):
-                    gr.Markdown("### Entity Connections")
-                    gr.Markdown("View relationships for any item, task, or document.")
-                    with gr.Row():
-                        conn_entity_type = gr.Dropdown(
-                            choices=["item", "task", "document"],
-                            value="item", label="Entity Type", scale=1
-                        )
-                        conn_entity_id = gr.Textbox(
-                            label="Entity ID",
-                            placeholder="Paste full ID or 8-char prefix...",
-                            scale=2,
-                        )
-                        conn_lookup_btn = gr.Button("Look Up", variant="primary", scale=1)
-                    connections_table = gr.DataFrame(
-                        value=pd.DataFrame(
-                            columns=[
-                                "Relationship", "Direction",
-                                "Connected Type", "Connected ID", "Strength"
-                            ]
-                        ),
-                        label="Connections",
-                        interactive=False,
-                    )
-                    with gr.Accordion("+ Add Connection", open=False):
-                        with gr.Row():
-                            conn_target_type = gr.Dropdown(
-                                choices=["item", "task", "document"],
-                                value="item", label="Target Type", scale=1
-                            )
-                            conn_target_id = gr.Textbox(
-                                label="Target ID",
-                                placeholder="Target entity ID...",
-                                scale=2,
-                            )
-                        conn_rel_type = gr.Dropdown(
-                            choices=[
-                                "blocks", "enables", "informs", "references",
-                                "implements", "documents", "depends_on",
-                                "parent_of", "attached_to"
-                            ],
-                            value="references", label="Relationship Type",
-                        )
-                        with gr.Row():
-                            conn_create_btn = gr.Button("Create Connection", variant="primary")
-                            conn_create_msg = gr.Textbox(
-                                show_label=False, interactive=False, scale=2
-                            )
-
-                # --- Conversations sub-tab (browse-only — imports via Admin) ---
-                with gr.Tab("Conversations"):
-                    with gr.Row():
-                        with gr.Column(scale=1):
-                            conv_stats_md = gr.Markdown("*Loading stats...*")
-                            gr.Markdown("### Conversations")
-                            conv_list = gr.DataFrame(
-                                headers=["Title", "Source", "Msgs", "Updated", "ID"],
-                                datatype=["str", "str", "number", "str", "str"],
-                                interactive=False,
-                                wrap=True,
-                            )
-                            with gr.Row():
-                                conv_open_chat_btn = gr.Button(
-                                    "View Conversation", variant="primary", size="sm"
-                                )
-                                conv_delete_btn = gr.Button(
-                                    "Delete Selected", variant="stop", size="sm"
-                                )
-                                conv_refresh_list_btn = gr.Button(
-                                    "Refresh", variant="secondary", size="sm"
-                                )
-                            conv_action_status = gr.Textbox(
-                                show_label=False, interactive=False
-                            )
-
-                        with gr.Column(scale=2):
-                            conv_viewer = gr.Chatbot(
-                                label="Conversation Viewer",
-                                height=600,
-                            )
-
-        # --- Admin tab ---
-        admin_components = build_database_tab(
-            conversations_state=conversations_state,
-            admin_refresh=admin_refresh,
-        )
-
     # === LEFT SIDEBAR (contextual — defined after center so it can reference components) ===
     with gr.Sidebar():
-        @gr.render(inputs=[active_tab, projects_state, tasks_state, docs_state, conversations_state, active_conversation_id, admin_refresh, selected_project_id])
-        def render_left(tab, projects, tasks, docs, conversations, active_conv_id, _admin_tick, sel_proj_id):
+        @gr.render(inputs=[active_tab, projects_state, tasks_state, selected_project_id])
+        def render_left(tab, projects, tasks, sel_proj_id):
             if tab == "Projects":
                 gr.Markdown("### Projects")
                 with gr.Row(key="proj-filter-row"):
@@ -482,154 +259,9 @@ def build_page():
                     key="new-task-click",
                 )
 
-            elif tab == "Knowledge":
-                gr.Markdown("### Documents")
-                with gr.Row(key="doc-filter-row"):
-                    doc_type_filter = gr.Dropdown(
-                        label="Type", choices=[""] + DOC_TYPES, value="",
-                        key="doc-type-filter", scale=1, min_width=100,
-                    )
-                    doc_source_filter = gr.Dropdown(
-                        label="Source", choices=[""] + DOC_SOURCES, value="",
-                        key="doc-source-filter", scale=1, min_width=100,
-                    )
-                docs_sidebar_refresh = gr.Button(
-                    "Refresh", variant="secondary", size="sm", key="docs-refresh"
-                )
-
-                if not docs:
-                    gr.Markdown("*No documents yet.*")
-                else:
-                    for d in docs:
-                        btn = gr.Button(
-                            f"{d['title']}\n{fmt_enum(d.get('doc_type', ''))}  ·  {fmt_enum(d.get('source', '')).upper()}",
-                            key=f"doc-{d['id'][:8]}",
-                            size="sm",
-                        )
-                        def on_doc_click(d_id=d["id"]):
-                            return d_id
-                        btn.click(
-                            on_doc_click, outputs=[selected_doc_id],
-                            api_visibility="private",
-                            key=f"doc-click-{d['id'][:8]}",
-                        )
-
-                new_doc_btn = gr.Button(
-                    "+ New Document", variant="primary", key="new-doc-btn"
-                )
-
-                # Wiring (inside render)
-                def _refresh_docs(dtype, source):
-                    return _load_documents(dtype, source)
-                doc_type_filter.change(
-                    _refresh_docs,
-                    inputs=[doc_type_filter, doc_source_filter],
-                    outputs=[docs_state], api_visibility="private",
-                    key="doc-type-change",
-                )
-                doc_source_filter.change(
-                    _refresh_docs,
-                    inputs=[doc_type_filter, doc_source_filter],
-                    outputs=[docs_state], api_visibility="private",
-                    key="doc-source-change",
-                )
-                docs_sidebar_refresh.click(
-                    _refresh_docs,
-                    inputs=[doc_type_filter, doc_source_filter],
-                    outputs=[docs_state], api_visibility="private",
-                    key="docs-refresh-click",
-                )
-
-                new_doc_btn.click(
-                    lambda: (
-                        "## New Document",
-                        gr.Column(visible=False),
-                        gr.Column(visible=True),
-                        "",                   # clear title
-                        "",                   # clear content
-                        "",                   # clear status message
-                        "session_notes",      # reset type dropdown
-                        "manual",             # reset source dropdown
-                    ),
-                    outputs=[
-                        doc_header, doc_detail_section, doc_create_section,
-                        new_doc_title, new_doc_content, doc_create_msg,
-                        new_doc_type, new_doc_source,
-                    ],
-                    api_visibility="private",
-                    key="new-doc-click",
-                )
-
-            elif tab == "Admin":
-                gr.Markdown("### Database Overview")
-
-                try:
-                    stats = get_stats()
-                except Exception:
-                    stats = {}
-
-                totals = {
-                    "Items": stats.get("total_items", 0),
-                    "Tasks": stats.get("total_tasks", 0),
-                    "Documents": stats.get("total_documents", 0),
-                    "Relationships": stats.get("total_relationships", 0),
-                }
-
-                # Compact row-count cards
-                for label, count in totals.items():
-                    gr.Markdown(
-                        f"**{label}:** {count:,}",
-                        key=f"admin-stat-{label.lower()}",
-                    )
-
-                # Conversations + messages (from chat_operations)
-                try:
-                    from db.chat_operations import list_conversations, get_messages
-                    convs = list_conversations(limit=9999, active_only=False)
-                    conv_count = len(convs) if convs else 0
-                    # Message count from stats doesn't exist — query directly
-                    from db.operations import get_connection
-                    with get_connection() as conn:
-                        msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-                except Exception:
-                    conv_count, msg_count = 0, 0
-
-                gr.Markdown(f"**Conversations:** {conv_count:,}", key="admin-stat-convs")
-                gr.Markdown(f"**Messages:** {msg_count:,}", key="admin-stat-msgs")
-
-                # R16: chunk stats
-                try:
-                    from db.operations import get_connection as _gc
-                    with _gc() as conn:
-                        chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-                        embedded_count = conn.execute(
-                            "SELECT COUNT(*) FROM chunks WHERE embedded_at IS NOT NULL"
-                        ).fetchone()[0]
-                except Exception:
-                    chunk_count, embedded_count = 0, 0
-                gr.Markdown(
-                    f"**Chunks:** {chunk_count:,} ({embedded_count:,} embedded)",
-                    key="admin-stat-chunks",
-                )
-
-                # R17: file registry count
-                try:
-                    with _gc() as conn:
-                        file_count = conn.execute(
-                            "SELECT COUNT(*) FROM file_registry"
-                        ).fetchone()[0]
-                except Exception:
-                    file_count = 0
-                gr.Markdown(f"**Files Tracked:** {file_count:,}", key="admin-stat-files")
-
-                gr.Markdown("---")
-                gr.Markdown("[Chat Settings](/chat)", key="admin-settings-link")
-
     # === TAB TRACKING ===
     projects_tab.select(lambda: "Projects", outputs=[active_tab], api_visibility="private")
     work_tab.select(lambda: "Work", outputs=[active_tab], api_visibility="private")
-    knowledge_tab.select(lambda: "Knowledge", outputs=[active_tab], api_visibility="private")
-    admin_components['tab'].select(lambda: "Admin", outputs=[active_tab], api_visibility="private")
 
     # === PROJECT EVENT WIRING ===
 
@@ -792,172 +424,5 @@ def build_page():
         api_visibility="private",
     )
 
-    # === KNOWLEDGE EVENT WIRING ===
-
-    # Document detail loading
-    def _load_doc_detail(doc_id):
-        """Load document detail when selection changes."""
-        if not doc_id:
-            return gr.skip()
-        doc = get_document(doc_id)
-        if not doc:
-            return gr.skip()
-        return (
-            f"## {doc['title']}",
-            gr.Column(visible=True),
-            gr.Column(visible=False),
-            doc_id,
-            doc.get("title", ""),
-            fmt_enum(doc.get("doc_type", "")),
-            fmt_enum(doc.get("source", "")),
-            doc.get("content", "") or "",
-            doc.get("file_path", "") or "",
-            doc.get("created_at", "")[:16] if doc.get("created_at") else "",
-        )
-
-    selected_doc_id.change(
-        _load_doc_detail,
-        inputs=[selected_doc_id],
-        outputs=[
-            doc_header, doc_detail_section, doc_create_section,
-            doc_id_display, doc_title, doc_type_display,
-            doc_source_display, doc_content,
-            doc_file_path, doc_created,
-        ],
-        api_visibility="private",
-    )
-
-    # Document creation
-    def _on_doc_create(doc_type, source, title, content):
-        if not title.strip():
-            return "Title is required", gr.skip(), gr.skip()
-        doc_id = create_document(
-            doc_type=doc_type,
-            source=source,
-            title=title.strip(),
-            content=content.strip() if content else "",
-        )
-        return f"Created {doc_id[:8]}", _load_documents(), doc_id
-
-    doc_create_btn.click(
-        _on_doc_create,
-        inputs=[new_doc_type, new_doc_source, new_doc_title, new_doc_content],
-        outputs=[doc_create_msg, docs_state, selected_doc_id],
-        api_visibility="private",
-    )
-
-    # Document list refresh
-    docs_refresh_btn.click(
-        _all_docs_df, outputs=[all_docs_table], api_visibility="private"
-    )
-
-    # Universal search
-    search_btn.click(
-        _run_search,
-        inputs=[search_input],
-        outputs=[search_items_results, search_docs_results],
-        api_visibility="private",
-    )
-    search_input.submit(
-        _run_search,
-        inputs=[search_input],
-        outputs=[search_items_results, search_docs_results],
-        api_visibility="private",
-    )
-
-    # Connections lookup
-    conn_lookup_btn.click(
-        _lookup_connections,
-        inputs=[conn_entity_type, conn_entity_id],
-        outputs=[connections_table],
-        api_visibility="private",
-    )
-
-    # Create connection
-    conn_create_btn.click(
-        _on_conn_create,
-        inputs=[
-            conn_entity_type, conn_entity_id,
-            conn_target_type, conn_target_id, conn_rel_type,
-        ],
-        outputs=[conn_create_msg],
-        api_visibility="private",
-    )
-
-    # Document cancel button
-    doc_cancel_btn.click(
-        lambda: (
-            "*Select a document from the sidebar, or create a new one.*",
-            gr.Column(visible=False),   # hide detail
-            gr.Column(visible=False),   # hide create form
-            "",                         # clear create message
-            "",                         # clear title field
-            "",                         # clear content field
-        ),
-        outputs=[
-            doc_header, doc_detail_section, doc_create_section,
-            doc_create_msg, new_doc_title, new_doc_content,
-        ],
-        api_visibility="private",
-    )
-
-    # --- Conversations sub-tab wiring ---
-
-    # Load stats and list when Knowledge tab is selected
-    knowledge_tab.select(
-        _load_conv_stats, outputs=[conv_stats_md], api_visibility="private"
-    )
-    knowledge_tab.select(
-        _load_conv_list, outputs=[conv_list], api_visibility="private"
-    )
-
-    # Conversation selection -> preview in viewer + store ID
-    conv_list.select(
-        _load_selected_conversation, inputs=[conv_list],
-        outputs=[conv_viewer, selected_knowledge_conv_id], api_visibility="private"
-    )
-
-    # Open in Chat — store conversation ID in shared state, user navigates via navbar
-    def _open_in_chat_page(conv_id):
-        if not conv_id:
-            return gr.skip(), gr.skip(), "No conversation selected."
-        from shared.chat_service import set_active_conversation_id
-        set_active_conversation_id(conv_id)
-        convs = list_conversations(limit=30)
-        return conv_id, convs, "Conversation ready — click **Chat** in the navbar to open it."
-
-    conv_open_chat_btn.click(
-        _open_in_chat_page,
-        inputs=[selected_knowledge_conv_id],
-        outputs=[active_conversation_id, conversations_state, conv_action_status],
-        api_visibility="private",
-    )
-
-    # Delete selected conversation from Knowledge tab
-    conv_delete_btn.click(
-        _delete_knowledge_conv,
-        inputs=[selected_knowledge_conv_id],
-        outputs=[conv_action_status, conversations_state],
-        api_visibility="private",
-    ).then(
-        _load_conv_list, outputs=[conv_list], api_visibility="private"
-    ).then(
-        _load_conv_stats, outputs=[conv_stats_md], api_visibility="private"
-    )
-
-    # Refresh list button
-    conv_refresh_list_btn.click(
-        _load_conv_list, outputs=[conv_list], api_visibility="private"
-    ).then(
-        _load_conv_stats, outputs=[conv_stats_md], api_visibility="private"
-    )
-
-
-    # === CHAT WIRING ===
-    chat_input.submit(
-        _handle_chat,
-        inputs=[chat_input, chat_history, sidebar_conv_id],
-        outputs=[chatbot, chat_history, chat_input, sidebar_conv_id],
-        api_visibility="private",
-    )
-
+    # === CHAT WIRING (shared sidebar) ===
+    wire_chat_sidebar(chat_input, chatbot, chat_history, sidebar_conv_id)

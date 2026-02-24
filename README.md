@@ -3,7 +3,7 @@
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
 ![Gradio 6.6.0](https://img.shields.io/badge/Gradio-6.6.0-orange?logo=gradio&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-68%20Tools-blueviolet)
+![MCP](https://img.shields.io/badge/MCP-71%20Tools-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![Neo4j](https://img.shields.io/badge/Neo4j-2026.01.4-008CC1?logo=neo4j&logoColor=white)
 
@@ -42,7 +42,7 @@ graph TB
 
 ```mermaid
 graph TB
-    MCP[MCP Tools<br/>68 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
+    MCP[MCP Tools<br/>71 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
     UI[Gradio UI] --> DB
     API[REST API] --> DB
     DB --> SQLite[(SQLite)]
@@ -57,11 +57,12 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 
 ## Features
 
-- **68 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, chunks, Janus lifecycle, backups, file registry, temporal context)
+- **71 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, chunks, Janus lifecycle, backups, file registry, temporal context)
+- **Sovereign multipage architecture** — 4 independent pages (Projects, Knowledge, Admin, Chat) with client-side navbar navigation; one process, one port, one MCP surface; each page has purpose-built left sidebar + shared Janus right sidebar
 - **Message chunking** — long messages and documents are split into focused ~2500-char chunks before embedding; each chunk gets its own Qdrant vector with parent traceability; RAG returns specific paragraphs instead of entire turns; paragraph-aware splitting with configurable thresholds
 - **Triple-write pipeline** — every message is chunked, then each chunk fans out to SQLite, Qdrant, and Neo4j synchronously; immediately retrievable on the next turn
-- **Knowledge graph** — Neo4j with 8 entity types (including Chunk), CDC consumer for structural edges, INFORMED_BY provenance tracing, SIMILAR_TO cross-conversation linking, PART_OF chunk→parent edges
-- **Janus continuous chat** — one persistent conversation from platform birth, shared across Dashboard sidebar and Sovereign Chat; sliding window sends last N turns to LLM while RAG handles historical context
+- **Knowledge graph** — Neo4j with 10 entity types (including Chunk, Person, Identity), CDC consumer for structural edges, INFORMED_BY provenance tracing, SIMILAR_TO cross-conversation linking, PART_OF chunk-to-parent edges, identity graph with BECAME/SPOKE/PARTICIPATED_IN edges
+- **Janus continuous chat** — one persistent conversation from platform birth, shared across all page sidebars and Sovereign Chat; sliding window sends last N turns to LLM while RAG handles historical context
 - **Sovereign Chat** — dedicated chat page (`/chat`) with real-time metrics sidebar: RAG provenance, latency breakdown, token counts, salience scores
 - **Multi-provider chat** with triplet message persistence (Anthropic, Gemini, Ollama/local models)
 - **Thinking mode** — chain-of-thought captured separately via Ollama `think=True`, stored as `model_reasoning` in triplet schema for future fine-tuning
@@ -81,7 +82,6 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Project / Task / Document management** with typed relationships and hierarchy
 - **Claude conversation import** — ingest Claude export JSON into a searchable triplet schema
 - **Full-text search** via SQLite FTS5 across items, documents, conversation messages, and chunks
-- **Hybrid multipage UI** — monolith dashboard (`/`) with dual collapsible sidebars + Sovereign Chat (`/chat`) via `demo.route()`
 - **Auto-context injection** — every chat message receives a live snapshot of active projects and pending tasks
 - **Change Data Capture** outbox with background Neo4j sync consumer
 
@@ -146,8 +146,10 @@ Once running:
 
 | Surface | URL |
 |---------|-----|
-| Dashboard | http://localhost:7860 |
-| Sovereign Chat | http://localhost:7860/chat |
+| Projects | http://localhost:7860 |
+| Knowledge | http://localhost:7860/knowledge |
+| Admin | http://localhost:7860/admin |
+| Chat | http://localhost:7860/chat |
 | MCP endpoint | http://localhost:7860/gradio_api/mcp/sse |
 | API docs | http://localhost:7860/gradio_api/docs |
 | Qdrant dashboard | http://localhost:6343/dashboard |
@@ -168,22 +170,24 @@ python app.py
 
 ```
 JANATPMP/
-├── app.py                     # Orchestrator: init, build_page(), gr.api(), launch
+├── app.py                     # Orchestrator: startup, routes, gr.api(), launch
+├── mcp_registry.py            # MCP Tool Registry — 71 gr.api() imports + ALL_MCP_TOOLS
 ├── janat_theme.py             # Custom Gradio theme (Janat brand colors + CSS)
 ├── assets/
 │   └── janat_logo_bold_transparent.png  # Janat Mandala logo
 ├── pages/
-│   ├── projects.py            # Dashboard UI layout + event wiring
+│   ├── projects.py            # Projects + Work page — sidebar-first layout (~350 lines)
+│   ├── knowledge.py           # Knowledge page — Memory, Connections, Pipeline, Synthesis
+│   ├── admin.py               # Admin page — Settings, Persona, Operations
 │   └── chat.py                # Sovereign Chat page with metrics sidebar (R11)
 ├── tabs/
-│   ├── tab_database.py        # Admin tab builder
-│   ├── tab_chat.py            # Chat handler functions
-│   └── tab_knowledge.py       # Knowledge tab handlers
+│   ├── tab_chat.py            # Chat handler: _handle_chat() for sidebar quick-chat
+│   └── tab_knowledge.py       # Knowledge page handlers (search, connections, conversation loading)
 ├── shared/
+│   ├── chat_sidebar.py        # Reusable Janus quick-chat right sidebar (R18)
 │   ├── constants.py           # Enum lists, magic numbers, defaults
 │   ├── formatting.py          # Display helpers (fmt_enum, entity_list_to_df)
-│   ├── data_helpers.py        # Data-loading helpers
-│   └── chat_service.py        # Cross-page conversation state + config
+│   └── data_helpers.py        # Data-loading helpers
 ├── db/
 │   ├── schema.sql             # Database DDL
 │   ├── operations.py          # 28 CRUD + lifecycle functions
@@ -207,11 +211,12 @@ JANATPMP/
 │   └── cdc_consumer.py        # Background CDC poller + backfill MCP tool
 ├── services/
 │   ├── log_config.py          # SQLite log handler + setup_logging()
-│   ├── chat.py                # Multi-provider chat with tool use + thinking mode
+│   ├── chat.py                # Multi-provider chat with thinking mode
 │   ├── turn_timer.py          # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py             # Slumber Cycle — 5-stage background daemon (R12+R13+R17)
-│   ├── settings.py            # Settings registry with validation
+│   ├── settings.py            # Settings registry with validation and categories
 │   ├── auto_ingest.py         # Startup + Slumber auto-ingestion scanner (R17)
+│   ├── startup.py             # Platform init: core, services, background auto-ingest
 │   ├── claude_import.py       # Claude JSON → triplet messages
 │   ├── embedding.py           # Thin shim → atlas/embedding_service.py
 │   ├── vector_store.py        # Qdrant ops + two-stage search pipeline
@@ -227,7 +232,7 @@ JANATPMP/
 
 ## MCP Integration
 
-JANATPMP exposes **68 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
+JANATPMP exposes **71 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
 
 ```
 http://localhost:7860/gradio_api/mcp/sse
@@ -245,11 +250,11 @@ Full API documentation is available at `/gradio_api/docs` while the server is ru
 | Domains | `get_domains`, `get_domain`, `create_domain`, `update_domain` | Organizational categories — database-managed, no code deploys needed |
 | Relationships | `create_relationship`, `get_relationships` | Typed connections (blocks, enables, informs, etc.) |
 | Conversations | `create_conversation`, `list_conversations`, `search_conversations`, `add_message`, `get_messages`, ... | Chat history with triplet schema |
-| Janus | `get_or_create_janus_conversation`, `archive_janus_conversation` | Persistent conversation lifecycle, chapter archiving |
+| Janus | `get_or_create_janus_conversation`, `archive_janus_conversation`, `get_conversation_stream`, `get_janus_stream` | Persistent conversation lifecycle, chapter archiving, stream API |
 | Telemetry | `add_message_metadata`, `get_message_metadata` | Per-turn timing, RAG snapshots, quality scores |
 | Chunks | `chunk_all_messages`, `chunk_all_documents`, `get_chunks`, `get_chunk_stats`, `search_chunks`, `delete_chunks` | Populate/search/manage chunk records for messages and documents |
 | Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains`, `embed_all_items`, `embed_all_tasks`, `recreate_collections` | ATLAS two-stage search, bulk embedding, collection management |
-| Graph | `graph_query`, `graph_neighbors`, `graph_stats`, `backfill_graph` | Read-only Cypher queries, node traversal, graph statistics, CDC backfill |
+| Graph | `graph_query`, `graph_neighbors`, `graph_stats`, `backfill_graph`, `seed_identity_graph` | Read-only Cypher queries, node traversal, graph statistics, CDC backfill, identity seeding |
 | System | `get_stats`, `get_schema_info`, `backup_database`, `restore_database`, `list_backups`, `reset_database`, `export_platform_data`, `import_platform_data` | Database administration, portable export/import |
 | Import | `import_conversations_json`, `import_conversations_directory`, `ingest_google_ai_conversations`, `ingest_markdown_documents` | Claude, Google AI Studio, and markdown ingestion |
 | File Registry | `get_file_registry_stats`, `list_registered_files`, `search_file_registry` | Auto-ingestion file tracking (R17) |
@@ -261,29 +266,82 @@ All tools are auto-generated from Python docstrings — no separate API definiti
 
 ## UI Layout
 
-### Dashboard (`/`)
+### Sovereign Multipage Architecture (R18)
+
+```
+app.py — orchestrator (one process, one port, one MCP surface)
+├── /              → pages/projects.py   [Projects + Work]
+├── /knowledge     → pages/knowledge.py  [Memory, Connections, Pipeline, Synthesis]
+├── /admin         → pages/admin.py      [Settings, Persona, Operations]
+└── /chat          → pages/chat.py       [Sovereign Chat — full metrics]
+```
+
+Navbar: **Projects** (home) | **Knowledge** | **Admin** | **Chat**
+
+Every page uses the three-panel pattern:
+- **Left sidebar** — context, navigation, filtering (purpose-built per page)
+- **Center** — content, editors, controls
+- **Right sidebar** — Janus quick-chat (shared across all pages via `shared/chat_sidebar.py`)
+
+### Projects (`/`)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  JANATPMP                          [Dashboard]  [Chat]                   │
+│  JANATPMP             [Projects]  [Knowledge]  [Admin]  [Chat]          │
 ├──────────────────────────────────────────────────────────────────────────┤
-│  [Projects]  [Work]  [Knowledge]  [Admin]           ← Top-level tabs    │
-├───────────┬──────────────────────────────────┬────────────────────────────┤
-│  LEFT     │     CENTER CONTENT               │  RIGHT                    │
-│  SIDEBAR  │                                  │  SIDEBAR                  │
-│           │                                  │                           │
-│  Context  │  Content changes per tab.        │  Janat Chat (continuous)  │
-│  cards    │  Each tab can have sub-tabs      │                           │
-│  Filters  │  (Detail / List views, etc.)     │                           │
-│  + New    │                                  │                           │
-└───────────┴──────────────────────────────────┴────────────────────────────┘
+│  [Projects]  [Work]                              ← Tabs                 │
+├───────────┬──────────────────────────────────┬───────────────────────────┤
+│  LEFT     │     CENTER CONTENT               │  RIGHT                   │
+│  SIDEBAR  │                                  │  SIDEBAR                 │
+│           │                                  │                          │
+│  Project  │  Project detail / List view      │  Janus quick-chat        │
+│  cards    │  Task detail / List view         │  (continuous)            │
+│  Filters  │                                  │                          │
+│  + New    │                                  │                          │
+└───────────┴──────────────────────────────────┴───────────────────────────┘
+```
+
+### Knowledge (`/knowledge`)
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  JANATPMP             [Projects]  [Knowledge]  [Admin]  [Chat]          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  [Memory]  [Connections]  [Pipeline]  [Synthesis]        ← Tabs         │
+├───────────┬──────────────────────────────────┬───────────────────────────┤
+│  LEFT     │     CENTER CONTENT               │  RIGHT                   │
+│  SIDEBAR  │                                  │  SIDEBAR                 │
+│           │                                  │                          │
+│  Type     │  Memory: conversation/doc detail │  Janus quick-chat        │
+│  filter   │  Connections: relationship table │  (continuous)            │
+│  Search   │  Pipeline: ingestion/embed/graph │                          │
+│  Results  │  Synthesis: R19 placeholder      │                          │
+└───────────┴──────────────────────────────────┴───────────────────────────┘
+```
+
+### Admin (`/admin`)
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  JANATPMP             [Projects]  [Knowledge]  [Admin]  [Chat]          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  [Settings]  [Persona]  [Operations]                     ← Tabs        │
+├───────────┬──────────────────────────────────┬───────────────────────────┤
+│  LEFT     │     CENTER CONTENT               │  RIGHT                   │
+│  SIDEBAR  │                                  │  SIDEBAR                 │
+│           │                                  │                          │
+│  Category │  Settings: category editor       │  Janus quick-chat        │
+│  picker   │  Persona: identity + location    │  (continuous)            │
+│  Identity │  Operations: backup/logs/reset   │                          │
+│  Health   │                                  │                          │
+└───────────┴──────────────────────────────────┴───────────────────────────┘
 ```
 
 ### Sovereign Chat (`/chat`)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  JANATPMP                          [Dashboard]  [Chat]                   │
+│  JANATPMP             [Projects]  [Knowledge]  [Admin]  [Chat]          │
 ├──────────────┬───────────────────────────────────┬───────────────────────┤
 │  LEFT        │     CHATBOT                       │  RIGHT               │
 │  SIDEBAR     │                                   │  SIDEBAR             │
@@ -303,11 +361,9 @@ Both sidebars collapse independently on mobile, leaving center content full-widt
 
 ## Screenshots
 
-> Screenshots need updating — the current images predate R11's Sovereign Chat redesign.
-
 | View | Screenshot |
 |------|-----------|
-| Dashboard (Projects) | ![Projects](screenshots/projects.png) |
+| Projects | ![Projects](screenshots/projects.png) |
 | Sovereign Chat | ![Chat](screenshots/chat.png) |
 | Admin | ![Admin](screenshots/admin.png) |
 
@@ -359,9 +415,10 @@ feature/phase{X}-{description}  # legacy naming
 
 ## Future
 
-JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), and **auto-ingestion** removes manual import friction (R17). Planned next steps:
+JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), and **auto-ingestion** removes manual import friction (R17). Planned next steps:
 
 - **Janus self-introspection** — let Janus query its own `messages_metadata` to ground self-description in data
+- **Synthesis tab** — Memory node review, evidence chains, source attribution (Knowledge page placeholder ready)
 - **Ollama Modelfiles pipeline** — specialized models (synthesizer, scorer, consolidator, classifier) sharing base weights for dynamic system prompt generation
 - **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY, SIMILAR_TO, and PART_OF edges
 - **Temporal decay curves** — time-weighted salience that naturally deprioritizes stale knowledge

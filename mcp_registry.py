@@ -74,41 +74,41 @@ from atlas.temporal import get_temporal_context
 
 
 ALL_MCP_TOOLS: list = [
-    # Core CRUD (24)
+    # --- Projects page: items + tasks CRUD (15) ---
     create_item, get_item, list_items, update_item, delete_item,
     create_task, get_task, list_tasks, update_task,
-    create_document, get_document, list_documents,
-    search_items, search_documents,
+    search_items,
     create_relationship, get_relationships,
-    get_stats, get_schema_info,
-    backup_database, reset_database, restore_database, list_backups,
-    export_platform_data, import_platform_data,
-    # Domains (4)
     get_domains, get_domain, create_domain, update_domain,
-    # Chat (9)
+
+    # --- Knowledge page: memory + connections + pipeline (34) ---
+    # Memory (conversations, documents, search)
+    create_document, get_document, list_documents, search_documents,
     create_conversation, get_conversation, list_conversations,
     update_conversation, delete_conversation, search_conversations,
     add_message, get_messages, get_conversation_by_uri,
-    # Cognitive telemetry (2)
     add_message_metadata, get_message_metadata,
-    # Janus (4)
+    # Janus lifecycle
     get_or_create_janus_conversation, archive_janus_conversation,
     get_conversation_stream, get_janus_stream,
-    # Import (2)
+    # Pipeline (ingestion, embedding, chunking, graph)
     import_conversations_json, import_conversations_directory,
-    # RAG + Embedding (10)
-    vector_search, vector_search_all,
+    ingest_google_ai_conversations, ingest_markdown_documents,
+    vector_search, vector_search_all, recreate_collections,
     chunk_all_messages, chunk_all_documents,
     embed_all_documents, embed_all_messages, embed_all_domains,
     embed_all_items, embed_all_tasks,
-    recreate_collections,
-    # Content Ingestion (2)
-    ingest_google_ai_conversations, ingest_markdown_documents,
-    # Chunks (4)
     get_chunks, get_chunk_stats, search_chunks, delete_chunks,
-    # Graph (5)
-    graph_query, graph_neighbors, graph_stats, backfill_graph, seed_identity_graph,
-    # File Registry + Temporal (5)
+    graph_query, graph_neighbors, graph_stats,
+    backfill_graph, seed_identity_graph,
     get_file_registry_stats, list_registered_files, search_file_registry,
-    get_ingestion_progress, get_temporal_context,
+    get_ingestion_progress,
+
+    # --- Admin page: operations + platform (6) ---
+    get_stats, get_schema_info,
+    backup_database, reset_database, restore_database, list_backups,
+    export_platform_data, import_platform_data,
+
+    # --- Cross-cutting: temporal context (1) ---
+    get_temporal_context,
 ]

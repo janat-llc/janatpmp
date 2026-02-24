@@ -1,6 +1,6 @@
-"""Tab modules for JANATPMP Gradio UI."""
-from .tab_database import build_database_tab
+"""Tab modules for JANATPMP Gradio UI.
 
-# Phase 2+ — available but not directly imported by tabs/__init__
-# tab_tasks.py patterns are used as reference in pages/projects.py
-# tab_documents.py will be used in Phase 3
+Handler functions used by pages:
+- tab_chat._handle_chat — sidebar quick-chat (used by shared/chat_sidebar.py)
+- tab_knowledge.* — Knowledge page handlers (used by pages/knowledge.py)
+"""

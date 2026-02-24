@@ -25,19 +25,21 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 ```
 JANATPMP/
 ├── app.py                    # Thin launcher: startup calls, gr.Blocks, banner, demo.launch()
-├── mcp_registry.py           # MCP Tool Registry — all 68 gr.api() function imports + ALL_MCP_TOOLS list
+├── mcp_registry.py           # MCP Tool Registry — all 71 gr.api() function imports + ALL_MCP_TOOLS list
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── pages/
 │   ├── __init__.py
-│   ├── projects.py           # UI layout + event wiring (~1220 lines)
+│   ├── projects.py           # Projects + Work page — sidebar-first layout (~350 lines)
+│   ├── knowledge.py          # Knowledge page — Memory, Connections, Pipeline, Synthesis (~620 lines)
+│   ├── admin.py              # Admin page — Settings, Persona, Operations (~470 lines)
 │   └── chat.py               # Sovereign Chat page (R11) — full metrics sidebar
 ├── tabs/
 │   ├── __init__.py
-│   ├── tab_database.py       # Admin tab builder: DB lifecycle, ingestion, vector store, logs
-│   ├── tab_chat.py           # Chat handler functions (sidebar + Chat tab)
-│   └── tab_knowledge.py      # Knowledge tab handlers (conversations, search, connections)
+│   ├── tab_chat.py           # Chat handler: _handle_chat() for sidebar quick-chat
+│   └── tab_knowledge.py      # Knowledge page handlers (search, connections, conversation loading)
 ├── shared/
 │   ├── __init__.py
+│   ├── chat_sidebar.py        # Reusable Janus quick-chat right sidebar (R18)
 │   ├── constants.py           # All enum lists, magic numbers, default values
 │   ├── formatting.py          # fmt_enum(), entity_list_to_df() display helpers
 │   └── data_helpers.py        # Data-loading helpers (_load_projects, _all_items_df, etc.)
@@ -117,100 +119,91 @@ JANATPMP/
 
 ## Architecture
 
-### Hybrid Multipage Layout (R11)
+### Sovereign Multipage Layout (R18)
 
-The app uses a hybrid architecture: monolith at `/` (Projects, Work, Knowledge, Admin)
-plus Sovereign Chat at `/chat` via `demo.route()`. The monolith retains dual sidebars:
-
-- Sidebars persist across all tab switches (no re-render, no context loss)
-- Simpler state management (one Blocks context, shared gr.State)
-- Mobile-friendly: both sidebars collapse independently via built-in hamburger toggle
-- No page reload flicker between views
+The app uses sovereign pages connected by `demo.route()`. One process, one port, one MCP
+surface. Each page has purpose-built sidebars. Navbar provides client-side navigation.
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  JANATPMP                                    Powered by [Janat]     │
-├──────────────────────────────────────────────────────────────────────┤
-│  [Projects] [Work] [Knowledge] [Chat] [Admin]  ← gr.Tabs()         │
-├──────────┬───────────────────────────────────┬───────────────────────┤
-│  LEFT    │     CENTER CONTENT              │  RIGHT                │
-│  SIDEBAR │                                 │  SIDEBAR              │
-│          │                                 │                       │
-│  Context │  Content changes per tab        │  Janat Chat (default)  │
-│  cards   │  selected. Each top-level       │  OR Chat Settings      │
-│  Filters │  tab can have sub-tabs          │  (when Chat tab active)│
-│  +New    │  (Detail/List View, etc.)       │                       │
-└──────────┴───────────────────────────────────┴───────────────────────┘
+app.py — orchestrator (one process, one port)
+├── / (Projects)        → pages/projects.py  [Projects + Work tabs]
+├── /knowledge          → pages/knowledge.py [Memory, Connections, Pipeline, Synthesis]
+├── /admin              → pages/admin.py     [Settings, Persona, Operations]
+└── /chat               → pages/chat.py      [Sovereign Chat — full metrics sidebar]
 ```
+
+Navbar: **Projects** (home) · **Knowledge** · **Admin** · **Chat**
+
+**Core Design Principle: Sidebar-First Layout.** Every page uses the three-panel pattern:
+- **Left sidebar:** Context, navigation, filtering. "Where am I, what am I looking at?"
+- **Center:** The content itself. Detail views, editors, controls.
+- **Right sidebar:** Janus quick-chat. Continuous across all pages via `shared/chat_sidebar.py`.
+
+Tabs represent **modes of thinking**, not data types. If two data types share the same
+browsing pattern, they belong in one tab with the left sidebar providing the selection.
 
 **Implementation in code:**
 
 ```python
-# app.py — thin launcher
-from mcp_registry import ALL_MCP_TOOLS
-from services.startup import initialize_core, initialize_services, start_auto_ingest
-
-initialize_core()       # DB, settings, Janus (blocking, fast)
-initialize_services()   # Qdrant, Slumber, Neo4j (optional)
-start_auto_ingest()     # Background thread (non-blocking)
-
+# app.py — thin orchestrator
 with gr.Blocks(title="JANATPMP") as demo:
-    startup_banner = gr.HTML(value=_STARTUP_BANNER_HTML, visible=True)
-    build_page()          # builds everything: sidebars + tabs + wiring
+    gr.Navbar(main_page_name="Projects")
+    build_page()                          # Projects + Work
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)   # 71 MCP tools from mcp_registry.py
-demo.launch(mcp_server=True, server_name="0.0.0.0")
+        gr.api(tool_fn)                   # 71 MCP tools (registered on main Blocks only)
+
+with demo.route("Knowledge", "/knowledge"):
+    gr.Navbar(main_page_name="Projects")
+    knowledge_page.build_knowledge_page()
+
+with demo.route("Admin", "/admin"):
+    gr.Navbar(main_page_name="Projects")
+    admin_page.build_admin_page()
+
+with demo.route("Chat", "/chat"):
+    gr.Navbar(main_page_name="Projects")
+    chat_page.build_chat_page()
 ```
 
 ```python
-# pages/projects.py — build_page() function
-# Handler functions are extracted to tabs/ and shared/ modules.
-# projects.py retains layout construction + event wiring (~1220 lines).
-def build_page():
-    with gr.Sidebar(position="left"):
-        # Project list, filters, create form
-    with gr.Sidebar(position="right"):
-        # Claude chat placeholder
-    # Center content — main Blocks body, no wrapper needed
-    with gr.Tabs():
-        with gr.Tab("Projects"):
-            ...
-        with gr.Tab("Work"):
-            ...
-        with gr.Tab("Knowledge"):
-            ...
-        with gr.Tab("Chat"):
-            ...  # Independent provider/model, full-width chatbot
-        build_database_tab()  # "Admin" tab from tabs/tab_database.py
+# shared/chat_sidebar.py — reusable right sidebar
+def build_chat_sidebar():
+    """Build right sidebar with Janus quick-chat. Call BEFORE center content.
+    Returns (chatbot, chat_input, chat_history, sidebar_conv_id)."""
+
+def wire_chat_sidebar(chat_input, chatbot, chat_history, sidebar_conv_id):
+    """Wire chat sidebar submit event. Call AFTER all center content."""
 ```
 
 **Use `gr.Sidebar` for both side panels — NOT `gr.Column` in a `gr.Row`.**
 Sidebar is collapsible, mobile-friendly, and purpose-built for this layout.
 The center content is just the main Blocks body (no Row/Column wrapper needed).
 
-### Four Tabs (current state — Chat tab removed in R11, Sovereign Chat at /chat)
+### Sovereign Pages (R18)
 
-| Tab | Left Sidebar | Center | Status |
-|-----|-------------|--------|--------|
-| **Projects** | Project cards, filters, + New | Detail editor, List View | ✅ Working |
-| **Work** | Task cards, filters, + New Task | Task detail, List View | ✅ Working |
-| **Knowledge** | Document cards, filters, + New Doc | Documents (Detail/List), Search, Connections, Conversations | ✅ Working |
-| **Admin** | Database Overview (reactive row counts) | Database lifecycle, Content Ingestion, Vector Store, Logs | ✅ Working |
+| Page | Route | Tabs | Left Sidebar |
+|------|-------|------|-------------|
+| **Projects** | `/` | Projects, Work | Project/task cards, filters, + New |
+| **Knowledge** | `/knowledge` | Memory, Connections, Pipeline, Synthesis | Type filter, search, pipeline health |
+| **Admin** | `/admin` | Settings, Persona, Operations | Category buttons, identity card, platform health |
+| **Chat** | `/chat` | Metrics, Settings, Conversations | RAG provenance, pipeline stats, conversation list |
+
+Knowledge page unifies conversations + documents into a single **Memory** tab with type
+filter. **Pipeline** tab consolidates ingestion, embedding, chunking, and graph controls.
+Admin page has a **Persona** tab for user identity settings (`user_name`, `user_bio`,
+`user_preferences` in `services/settings.py` category "persona").
 
 ### Contextual Sidebars
 
-The left sidebar uses `@gr.render(inputs=[active_tab, projects_state, tasks_state, ..., admin_refresh])`
-to dynamically switch content based on the active tab. The Admin sidebar shows Database
-Overview with reactive row counts (auto-refreshes after backup/restore/reset/ingest via
-`admin_refresh` state counter). The right sidebar shows Janat quick-chat on all tabs —
-a persistent Janus conversation window. Both sidebars use state bridge patterns —
-render-created components sync to gr.State via .change listeners for cross-component
-data flow.
+Each page has its own `@gr.render()` left sidebar that switches content based on the
+active tab within that page. The right sidebar shows Janat quick-chat on all pages —
+built once via `shared/chat_sidebar.py` and wired per-page.
 
 ### Settings & Chat Architecture
 
-**Settings ownership:** All chat and model settings live in **Chat -> Settings tab** (Sovereign
-Chat at `/chat`). Admin tab has no settings — it's purely database administration.
+**Settings ownership:** Chat and model settings live in **Chat -> Settings tab** (Sovereign
+Chat at `/chat`). Platform settings (all categories) are editable via **Admin -> Settings tab**.
+Persona settings (`user_name`, `user_bio`, `user_preferences`) are in **Admin -> Persona tab**.
 
 **Settings table** (`settings` in SQLite) — key-value store for persistent configuration:
 - `chat_provider` — "ollama" (default), "anthropic", or "gemini"
@@ -233,6 +226,9 @@ Chat at `/chat`). Admin tab has no settings — it's purely database administrat
 - `location_lat`, `location_lon` — Geographic coordinates for temporal engine (default: Fargo, ND)
 - `location_name` — Full address for temporal grounding display
 - `location_tz` — IANA timezone (default: America/Chicago)
+- `user_name` — User display name (default: "Mat", category: persona)
+- `user_bio` — User biography/context (default: "", category: persona)
+- `user_preferences` — Interaction style preferences (default: "", category: persona)
 
 **Settings flow:**
 - `services/settings.py` provides `get_setting()` / `set_setting()` with auto base64 for secrets
@@ -247,31 +243,26 @@ Chat at `/chat`). Admin tab has no settings — it's purely database administrat
 - Fresh context is injected per message. Janus persona emerges from conversation history
   and RAG salience, not from static system prompts.
 
-### Knowledge Tab
+### Knowledge Page (`pages/knowledge.py`)
 
-The Knowledge tab surfaces documents, search, and entity relationships:
+Sovereign Knowledge page with 4 tabs:
 
-- **Documents** — CRUD for session notes, research, artifacts, conversation imports, code.
-  Same sidebar-card + detail pattern as Projects and Work tabs.
-- **Search** — Universal FTS5 search across items AND documents simultaneously.
-  Uses `search_items()` and `search_documents()` from db/operations.py.
-- **Connections** — Relationship viewer. Look up any entity (item/task/document) by ID
-  to see incoming and outgoing relationships. Create new connections inline.
-- **Conversations** — Browse all conversations from native `conversations` table (platform,
-  imported, archived Janus chapters). No external DB — ghost `claude_export.py` system deleted
-  in R14. Import buttons are in Admin -> Content Ingestion.
-  Uses `get_relationships()` and `create_relationship()` from db/operations.py.
-
-All 6 underlying operations (`create_document`, `get_document`, `list_documents`,
-`search_documents`, `create_relationship`, `get_relationships`) were built in Phase 1
-and exposed via MCP — Phase 3 only adds the UI layer.
+- **Memory** — Unified conversation + document browser. Left sidebar has type filter
+  (All/Conversations/Documents), search textbox, and scrollable result list. Center shows
+  conversation viewer (`gr.Chatbot`) or document detail depending on selection. Includes
+  "+ New Document" accordion.
+- **Connections** — Entity relationship viewer. Left sidebar has entity type picker and
+  search. Center shows relationship table with "+ Add Connection" accordion.
+- **Pipeline** — Content ingestion, embedding, chunking, and graph controls. Left sidebar
+  shows pipeline health stats. Center has accordions for ingestion, embedding, and graph.
+- **Synthesis** — Placeholder for R19 (Memory node review, evidence chains).
 
 ### Data Flow
 
 ```
 db/operations.py → 28 functions → three surfaces:
-    1. UI: imported by pages/projects.py, called in event listeners
-    2. API: exposed via gr.api() in app.py
+    1. UI: imported by pages/*.py, called in event listeners
+    2. API: exposed via gr.api() in app.py (main Blocks only)
     3. MCP: auto-generated from gr.api() + docstrings
 ```
 
@@ -279,8 +270,8 @@ db/operations.py → 28 functions → three surfaces:
 
 - One set of functions in `db/operations.py` serves UI, API, and MCP
 - NO `demo.load()` — data is computed at build time and passed via `value=`
-- `gr.api()` exposes db functions as MCP tools without UI components
-- `build_page()` is the single entry point for all UI construction
+- `gr.api()` exposes db functions as MCP tools (registered on main Blocks, accessible from all routes)
+- Each page has its own `build_*_page()` entry point
 
 ### Startup Sequence (`services/startup.py`)
 
@@ -296,9 +287,10 @@ auto-dismisses via `gr.Timer` polling `is_auto_ingest_complete()` every 2 second
 
 ### MCP Tool Registry (`mcp_registry.py`)
 
-All 68 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
-category. `app.py` loops over this list: `for tool_fn in ALL_MCP_TOOLS: gr.api(tool_fn)`.
-This centralizes tool registration and keeps `app.py` thin (~60 lines).
+All 71 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
+page ownership (Projects, Knowledge, Admin, cross-cutting). `app.py` loops over this list:
+`for tool_fn in ALL_MCP_TOOLS: gr.api(tool_fn)`. Registered on the main Blocks only —
+accessible from all routes. Keeps `app.py` thin (~100 lines).
 
 ### Shared Module (`shared/`)
 
@@ -331,7 +323,7 @@ INFO for operations, WARNING for fallbacks, ERROR for failures.
 Settings use a `SETTINGS_REGISTRY` dict where each key maps to
 `(default, is_secret, category, validator_fn)`:
 
-- **Categories:** `chat`, `ollama`, `export`, `ingestion`, `rag`, `system`
+- **Categories:** `chat`, `ollama`, `export`, `ingestion`, `rag`, `system`, `persona`
 - **Validation:** `set_setting()` validates before storing, returns error string on failure
 - **Secrets:** Base64-encoded (obfuscation, not encryption). Auto-encoded/decoded by
   `get_setting()` / `set_setting()`.
@@ -698,7 +690,7 @@ The `conversations` table holds ALL conversation history, not just platform chat
 - `source='claude_export'`: 600+ conversations imported from Claude Export
 - `source='imported'`: From other sources (Gemini, etc.)
 
-Any conversation, regardless of source, can be browsed in Knowledge tab Conversations.
+Any conversation, regardless of source, can be browsed in the Knowledge page (Memory tab).
 Claude Export ingestion creates conversations + messages records via
 `services/claude_import.py` (native pipeline, integrated with triple-write).
 
@@ -716,7 +708,7 @@ Claude Export ingestion creates conversations + messages records via
 
 Not "New Chat" — "Archive Chapter" marks the current Janus conversation as
 `is_active=0`, renames to "Janus — Chapter N", creates a fresh Janus conversation.
-Archived chapters appear in Knowledge tab Conversations. Archiving is rare and intentional.
+Archived chapters appear in the Knowledge page (Memory tab). Archiving is rare and intentional.
 
 ### Database Operations (db/chat_operations.py)
 
@@ -1007,7 +999,7 @@ continuity. Key components:
 
 Ghost system `services/claude_export.py` (separate external SQLite DB) deleted. All
 conversation browsing reads from native `conversations` table. Import buttons are in
-Admin -> Content Ingestion only. Knowledge tab Conversations is browse-only.
+Knowledge page (Pipeline tab) only. Knowledge page (Memory tab) is browse-only.
 
 ### Settings Consolidation
 
@@ -1015,9 +1007,10 @@ Admin -> Content Ingestion only. Knowledge tab Conversations is browse-only.
 Platform Defaults (provider, model, temperature, top_p, max_tokens), RAG Configuration,
 RAG Synthesizer, Credentials (API key, base URL), Ollama (num_ctx, keep_alive).
 
-**Admin tab** is purely database administration: Database lifecycle (backup/restore/reset/export),
-Content Ingestion, Vector Store (embedding), Application Logs. Left sidebar shows Database
-Overview with reactive row counts.
+**Admin page** (`/admin`) has 3 tabs: Settings (all categories, category-filtered editor),
+Persona (user identity: name, location, bio, preferences), Operations (backup/restore/reset,
+export/import, logs, schema info). Knowledge Pipeline controls (ingestion, embedding, graph)
+live in the Knowledge page (`/knowledge`) Pipeline tab.
 
 ### Janus Persona
 
@@ -1229,11 +1222,54 @@ Operational metadata table — tracks which files have been ingested. No CDC par
 
 ### Admin UI
 
-- **Auto-Ingestion accordion** in Admin tab: "Scan & Ingest Now" button, registry stats JSON,
-  recent files table. Wired to admin_refresh for sidebar stat updates.
-- **Files Tracked count** in Admin sidebar Database Overview.
+- **Auto-Ingestion section** in Knowledge page Pipeline tab: "Scan & Ingest Now" button,
+  registry stats JSON, recent files table.
+- **Files Tracked count** in Admin page Operations tab sidebar.
 
-## Current Platform State (Post-R17)
+## Phase R18: App Sovereignty — Extract Knowledge and Admin
+
+R18 extracts Knowledge and Admin into sovereign `demo.route()` pages. One process, one port,
+one MCP surface. Each page gets purpose-built sidebars with sidebar-first layout. Projects +
+Work remain at `/`. Chat stays at `/chat`. No functional changes — same features, reorganized.
+
+### Architecture Change
+
+**Before (R17):** Monolith at `/` with 4 tabs (Projects, Work, Knowledge, Admin) + Sovereign
+Chat at `/chat`. Left sidebar used `@gr.render` with 4 branches, context-switching per tab.
+Right sidebar had inline Janus quick-chat. ~964 lines in `pages/projects.py`.
+
+**After (R18):** 4 sovereign pages. Each page has its own left sidebar, center content, and
+shared right sidebar. Navbar provides client-side navigation. `pages/projects.py` shrunk from
+964 to ~350 lines.
+
+### Files Changed
+
+| File | Action | Notes |
+| ---- | ------ | ----- |
+| `shared/chat_sidebar.py` | NEW | Reusable Janus quick-chat sidebar (~50 lines) |
+| `pages/knowledge.py` | NEW | Memory, Connections, Pipeline, Synthesis (~620 lines) |
+| `pages/admin.py` | NEW | Settings, Persona, Operations (~470 lines) |
+| `pages/projects.py` | MODIFIED | Stripped to Projects + Work only (~350 lines) |
+| `app.py` | MODIFIED | Added Knowledge + Admin routes, navbar "Projects" |
+| `tabs/tab_database.py` | DELETED | Redistributed to knowledge.py + admin.py |
+| `tabs/tab_chat.py` | TRIMMED | Removed dead `_handle_chat_tab()` |
+| `services/settings.py` | MODIFIED | Added persona category (user_name, user_bio, user_preferences) |
+| `mcp_registry.py` | MODIFIED | Comments regrouped by page ownership |
+
+### Sidebar-First Design
+
+Every page uses the three-panel pattern. Tabs represent modes of thinking, not data types.
+Knowledge Memory tab unifies conversations + documents into one browsing experience with a
+type filter in the left sidebar. Admin Settings tab uses `@gr.render(inputs=[selected_category])`
+to dynamically build settings fields per category.
+
+### Deep Link Hooks (Future)
+
+URL structure supports future deep linking: `/knowledge?conv=abc123`, `/admin?tab=settings&category=rag`,
+`/?item=def456`. Currently all state is managed via `gr.State` — URL param initialization
+is a future sprint.
+
+## Current Platform State (Post-R18)
 
 ### What Works
 
@@ -1259,6 +1295,9 @@ Operational metadata table — tracks which files have been ingested. No CDC par
   New content auto-discovered and fully processed in a single idle cycle.
 - **Ingestion pipelines** — Claude export, Google AI Studio, markdown. Auto-embed + dedup.
   Auto-ingestion scanner for hands-free operation.
+- **Sovereign multipage architecture** — 4 purpose-built pages (Projects, Knowledge, Admin,
+  Chat) with sidebar-first layout. One process, one port, one MCP surface. Navbar navigation.
+  Reusable Janus quick-chat sidebar on every page via `shared/chat_sidebar.py`.
 - **71 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal exposed for external AI clients.
 
 ### What's Missing (Architectural Gaps)
@@ -1294,7 +1333,7 @@ of intelligence on a foundation that still has limited world awareness.
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R18 candidates)
+### Near-Term (R19 candidates)
 
 - **Janus self-introspection** — let Janus query its own `messages_metadata` to report what
   the Slumber Cycle actually evaluated, what salience scores changed, what quality patterns
@@ -1304,6 +1343,9 @@ architecture. The platform has transitioned from PMP to consciousness substrate 
   transitioning to active mode.
 - **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
   system-injected, or verified. Give the model metadata to distinguish recall from hearsay.
+- **Synthesis tab** — Memory node review in Knowledge page, evidence chains, source
+  attribution. Left sidebar: Memory nodes grouped by identity. Center: selected memory
+  with EVIDENCED_BY edges to source messages.
 
 ### Longer-Term
 

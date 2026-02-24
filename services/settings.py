@@ -177,6 +177,11 @@ SETTINGS_REGISTRY = {
     "slumber_batch_size":      ("20",  False, "system", _validate_positive_int),
     "slumber_evaluator":       ("heuristic", False, "system", None),
     "slumber_prune_age_days":  ("7",   False, "system", _validate_positive_int),
+
+    # Persona (R18)
+    "user_name":        ("Mat", False, "persona", None),
+    "user_bio":         ("", False, "persona", None),
+    "user_preferences": ("", False, "persona", None),
 }
 
 # Backward-compat alias
