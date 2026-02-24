@@ -1,6 +1,6 @@
 """ATLAS reranking service — Qwen3-Reranker-0.6B via vLLM.
 
-HTTP client to vLLM's /v1/score endpoint. Returns 0-1 probability scores
+HTTP client to vLLM's /score endpoint. Returns 0-1 probability scores
 (not unbounded logits like the previous Nemotron VL reranker).
 """
 
@@ -27,7 +27,7 @@ def _get_client() -> httpx.Client:
 def rerank(query: str, candidates: list[dict]) -> list[dict]:
     """Rerank candidates by cross-encoder relevance score.
 
-    Qwen3-Reranker returns 0-1 probability scores via vLLM /v1/score.
+    Qwen3-Reranker returns 0-1 probability scores via vLLM /score.
 
     Args:
         query: The search query.
@@ -42,7 +42,7 @@ def rerank(query: str, candidates: list[dict]) -> list[dict]:
         return candidates
 
     texts = [c.get("text", "") for c in candidates]
-    response = _get_client().post("/v1/score", json={
+    response = _get_client().post("/score", json={
         "model": RERANKER_MODEL,
         "text_1": query,
         "text_2": texts,

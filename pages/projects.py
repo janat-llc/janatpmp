@@ -585,7 +585,7 @@ def build_page():
                 # Conversations + messages (from chat_operations)
                 try:
                     from db.chat_operations import list_conversations, get_messages
-                    convs = list_conversations(limit=0)
+                    convs = list_conversations(limit=9999, active_only=False)
                     conv_count = len(convs) if convs else 0
                     # Message count from stats doesn't exist — query directly
                     from db.operations import get_connection

@@ -295,9 +295,9 @@ def _needs_rag(message: str) -> bool:
     # Strip and lowercase for matching
     clean = message.strip().lower()
 
-    # Too short to be a knowledge query (under ~4 words)
+    # Too short to be a knowledge query (under 3 words)
     words = clean.split()
-    if len(words) < 4:
+    if len(words) < 3:
         return False
 
     # After removing stop words, is there enough substance?
@@ -338,6 +338,7 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
     try:
         from services.vector_store import search_all
         threshold = float(get_setting("rag_score_threshold") or RAG_SCORE_THRESHOLD)
+        rerank_threshold = float(get_setting("rag_rerank_threshold") or 0.3)
         max_chunks = int(get_setting("rag_max_chunks") or 10)
         # Fetch extra candidates — short stubs and low-quality hits will be
         # filtered out below, so we need headroom to still fill max_chunks.
@@ -422,7 +423,6 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
             if not is_fts:
                 rerank = r.get("rerank_score")
                 if rerank is not None:
-                    rerank_threshold = float(get_setting("rag_rerank_threshold") or 0.3)
                     if rerank < rerank_threshold:
                         candidate_info["reject_reason"] = f"rerank {rerank:.3f} < {rerank_threshold}"
                         rejected_scores.append(candidate_info)
@@ -650,24 +650,6 @@ def fetch_ollama_models(base_url: str = "") -> list[str]:
 def _tools_anthropic() -> list[dict]:
     """Return tool definitions in Anthropic's native format."""
     return TOOL_DEFINITIONS  # Already in Anthropic format
-
-
-# --- OpenAI / Ollama Tool Format ---
-
-def _tools_openai() -> list[dict]:
-    """Convert tool definitions to OpenAI function-calling format.
-    Used by Ollama (OpenAI-compatible API)."""
-    tools = []
-    for t in TOOL_DEFINITIONS:
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": t["name"],
-                "description": t["description"],
-                "parameters": t["input_schema"],
-            },
-        })
-    return tools
 
 
 # --- Gemini Tool Format ---
@@ -971,6 +953,8 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
             text_parts.append(f"<think>{reasoning}</think>")
         if msg.content:
             text_parts.append(msg.content)
+        # No sanitizer for hallucinated tool JSON in text_parts — by design,
+        # broken behavior surfaces visibly rather than being silently stripped (R15).
         return text_parts, []  # Never return tool_calls — no tools for in-app chat
 
     def handle_tools(response, tool_calls, history):

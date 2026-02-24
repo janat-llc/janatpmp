@@ -10,7 +10,7 @@ from qdrant_client.models import PointStruct
 from db.operations import get_connection
 from services.embedding import embed_passages
 from services.vector_store import (
-    ensure_collections, point_exists, existing_point_ids, upsert_batch,
+    ensure_collections, existing_point_ids, upsert_batch,
     COLLECTION_DOCUMENTS, COLLECTION_MESSAGES,
 )
 

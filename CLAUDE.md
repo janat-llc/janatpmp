@@ -200,12 +200,13 @@ Chat at `/chat`). Admin tab has no settings — it's purely database administrat
 - `chat_model` — Model identifier string (default: "qwen3-vl:8b")
 - `chat_api_key` — Base64-encoded API key (obfuscation, NOT encryption)
 - `chat_base_url` — Override URL for Ollama
-- `ollama_num_ctx` — Context window size (default: 131072 — 128K tokens)
+- `ollama_num_ctx` — Context window size (default: 32768 — 32K tokens)
 - `ollama_keep_alive` — Model persistence (default: "-1" = permanent)
 - `janus_conversation_id` — Persistent Janus conversation hex ID
-- `janus_context_messages` — Sliding window size (default: 50 turns)
+- `janus_context_messages` — Sliding window size (default: 10 turns)
 - `claude_export_json_dir` — Path to Claude export directory (ingestion)
 - `rag_score_threshold`, `rag_max_chunks` — RAG retrieval tuning
+- `rag_rerank_threshold` — Cross-encoder relevance cutoff (default: 0.3, range 0.0-1.0)
 - `rag_synthesizer_provider`, `rag_synthesizer_model` — RAG synthesis backend
 
 **Settings flow:**
