@@ -150,6 +150,17 @@ def init_database():
                 migration_sql = migration_path.read_text(encoding="utf-8")
                 conn.executescript(migration_sql)
 
+        # Migration 0.8.0: chunks table for message/document chunking (R16)
+        # Unified chunks table, FTS5, CDC triggers, cdc_outbox CHECK update
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='0.8.0'"
+        )
+        if cursor.fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "0.8.0_chunks.sql"
+            if migration_path.exists():
+                migration_sql = migration_path.read_text(encoding="utf-8")
+                conn.executescript(migration_sql)
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

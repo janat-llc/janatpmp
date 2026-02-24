@@ -233,11 +233,34 @@ def _propagate_batch():
         msg_id = row["message_id"]
         quality = row["quality_score"]
 
-        # Read current salience from Qdrant
+        # R16: read chunk point_ids from chunks table
         try:
-            # Qdrant uses UUID format for message IDs
-            point_id = msg_id[:8] + "-" + msg_id[8:12] + "-" + msg_id[12:16] + "-" + msg_id[16:20] + "-" + msg_id[20:]
-            points = client.retrieve(COLLECTION_MESSAGES, ids=[point_id], with_payload=True)
+            with get_connection() as conn:
+                chunk_rows = conn.execute(
+                    "SELECT point_id FROM chunks "
+                    "WHERE entity_type='message' AND entity_id=?",
+                    (msg_id,),
+                ).fetchall()
+
+            if chunk_rows:
+                point_ids = [r["point_id"] for r in chunk_rows if r["point_id"]]
+            else:
+                # Legacy fallback for pre-R16 messages without chunks
+                point_ids = [
+                    msg_id[:8] + "-" + msg_id[8:12] + "-" + msg_id[12:16]
+                    + "-" + msg_id[16:20] + "-" + msg_id[20:]
+                ]
+
+            if not point_ids:
+                continue
+        except Exception:
+            continue
+
+        # Read current salience from first chunk (representative)
+        try:
+            points = client.retrieve(
+                COLLECTION_MESSAGES, ids=point_ids[:1], with_payload=True,
+            )
             if not points:
                 continue  # Not yet in Qdrant, skip
             current_salience = points[0].payload.get("salience", 0.5)
@@ -260,10 +283,11 @@ def _propagate_batch():
         new_salience = round(max(0.0, min(1.0, new_salience)), 4)
 
         try:
+            # R16: propagate salience to ALL chunk points of this message
             client.set_payload(
                 collection_name=COLLECTION_MESSAGES,
                 payload={"salience": new_salience},
-                points=[point_id],
+                points=point_ids,
             )
             update_message_metadata(message_id=msg_id, salience_synced=1)
             propagated += 1
@@ -396,23 +420,50 @@ def _prune_batch():
     pruned = 0
     for row in rows:
         msg_id = row["message_id"]
-        point_id = msg_id[:8] + "-" + msg_id[8:12] + "-" + msg_id[12:16] + "-" + msg_id[16:20] + "-" + msg_id[20:]
+
+        # R16: read all chunk point_ids for this message
+        try:
+            with get_connection() as conn:
+                chunk_rows = conn.execute(
+                    "SELECT point_id FROM chunks "
+                    "WHERE entity_type='message' AND entity_id=?",
+                    (msg_id,),
+                ).fetchall()
+
+            if chunk_rows:
+                point_ids = [r["point_id"] for r in chunk_rows if r["point_id"]]
+            else:
+                # Legacy fallback for pre-R16 messages without chunks
+                point_ids = [
+                    msg_id[:8] + "-" + msg_id[8:12] + "-" + msg_id[12:16]
+                    + "-" + msg_id[16:20] + "-" + msg_id[20:]
+                ]
+
+            if not point_ids:
+                continue
+        except Exception:
+            continue
 
         try:
-            points = client.retrieve(COLLECTION_MESSAGES, ids=[point_id], with_payload=True)
+            # R16 atomic message pruning: only prune if ALL chunks are dead-weight.
+            # Never prune individual chunks — orphan coverage gaps degrade RAG coherence.
+            points = client.retrieve(
+                COLLECTION_MESSAGES, ids=point_ids, with_payload=True,
+            )
             if not points:
                 continue
 
-            payload = points[0].payload
-            salience = payload.get("salience", 0.5)
-            last_retrieved = payload.get("last_retrieved")
+            all_dead = all(
+                p.payload.get("salience", 0.5) < 0.1
+                and not p.payload.get("last_retrieved")
+                for p in points
+            )
 
-            # All three Qdrant conditions must be true
-            if salience < 0.1 and not last_retrieved:
+            if all_dead:
                 from qdrant_client.models import PointIdsList
                 client.delete(
                     collection_name=COLLECTION_MESSAGES,
-                    points_selector=PointIdsList(points=[point_id]),
+                    points_selector=PointIdsList(points=point_ids),
                 )
                 pruned += 1
         except Exception as e:

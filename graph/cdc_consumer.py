@@ -154,6 +154,26 @@ def _handle_message_metadata(op: str, entity_id: str, payload: dict) -> None:
         graph_service.create_edge("MessageMetadata", entity_id, "Message", msg_id, "DESCRIBES")
 
 
+def _handle_chunk(op: str, entity_id: str, payload: dict) -> None:
+    """R16: Sync chunk nodes to Neo4j with PART_OF edges."""
+    if op == "DELETE":
+        graph_service.delete_node("Chunk", entity_id)
+        return
+    props = {
+        "entity_type": payload.get("entity_type", ""),
+        "entity_id": payload.get("entity_id", ""),
+        "chunk_index": payload.get("chunk_index"),
+        "position": payload.get("position", ""),
+    }
+    graph_service.upsert_node("Chunk", entity_id, props)
+    # PART_OF edge to parent (Message or Document)
+    parent_id = payload.get("entity_id", "")
+    parent_type = payload.get("entity_type", "")
+    if parent_id and parent_type:
+        parent_label = "Message" if parent_type == "message" else "Document"
+        graph_service.create_edge("Chunk", entity_id, parent_label, parent_id, "PART_OF")
+
+
 def _handle_relationship(op: str, entity_id: str, payload: dict) -> None:
     """Map SQLite relationship records to Neo4j edges."""
     if op == "DELETE":
@@ -188,6 +208,7 @@ _HANDLERS = {
     "message": _handle_message,
     "domain": _handle_domain,
     "message_metadata": _handle_message_metadata,
+    "chunk": _handle_chunk,
     "relationship": _handle_relationship,
 }
 

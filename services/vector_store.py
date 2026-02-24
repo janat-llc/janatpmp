@@ -212,6 +212,25 @@ def upsert_message(message_id: str, text: str, metadata: dict):
     )
 
 
+def upsert_point(collection: str, point_id: str, vector: list[float], payload: dict):
+    """Upsert a single pre-embedded point into a collection.
+
+    Used by the on-write pipeline where chunks are pre-embedded in batch
+    but upserted individually with distinct point IDs.
+
+    Args:
+        collection: Target Qdrant collection name.
+        point_id: Unique point identifier (message_id or message_id_cNNN).
+        vector: Pre-computed embedding vector.
+        payload: Metadata dict for the point.
+    """
+    client = _get_client()
+    client.upsert(
+        collection_name=collection,
+        points=[PointStruct(id=point_id, vector=vector, payload=payload)],
+    )
+
+
 def upsert_batch(collection: str, points: list[PointStruct]):
     """Upsert a batch of pre-embedded points into a collection.
 

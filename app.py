@@ -47,8 +47,12 @@ from services.vector_store import (
     recreate_collections,
 )
 from services.bulk_embed import (
+    chunk_all_messages, chunk_all_documents,
     embed_all_documents, embed_all_messages, embed_all_domains,
     embed_all_items, embed_all_tasks,
+)
+from db.chunk_operations import (
+    get_chunks, get_chunk_stats, search_chunks, delete_chunks,
 )
 from graph.graph_service import graph_query, graph_neighbors, graph_stats
 from graph.cdc_consumer import backfill_graph
@@ -150,6 +154,8 @@ with gr.Blocks(title="JANATPMP") as demo:
     # RAG pipeline (R9: ATLAS two-stage search + embedding)
     gr.api(vector_search)
     gr.api(vector_search_all)
+    gr.api(chunk_all_messages)
+    gr.api(chunk_all_documents)
     gr.api(embed_all_documents)
     gr.api(embed_all_messages)
     gr.api(embed_all_domains)
@@ -160,6 +166,12 @@ with gr.Blocks(title="JANATPMP") as demo:
     # Content ingestion (Phase 6A)
     gr.api(ingest_google_ai_conversations)
     gr.api(ingest_markdown_documents)
+
+    # Chunk operations (R16)
+    gr.api(get_chunks)
+    gr.api(get_chunk_stats)
+    gr.api(search_chunks)
+    gr.api(delete_chunks)
 
     # Knowledge graph (R13: Neo4j)
     gr.api(graph_query)

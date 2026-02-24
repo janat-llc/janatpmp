@@ -597,6 +597,21 @@ def build_page():
                 gr.Markdown(f"**Conversations:** {conv_count:,}", key="admin-stat-convs")
                 gr.Markdown(f"**Messages:** {msg_count:,}", key="admin-stat-msgs")
 
+                # R16: chunk stats
+                try:
+                    from db.operations import get_connection as _gc
+                    with _gc() as conn:
+                        chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+                        embedded_count = conn.execute(
+                            "SELECT COUNT(*) FROM chunks WHERE embedded_at IS NOT NULL"
+                        ).fetchone()[0]
+                except Exception:
+                    chunk_count, embedded_count = 0, 0
+                gr.Markdown(
+                    f"**Chunks:** {chunk_count:,} ({embedded_count:,} embedded)",
+                    key="admin-stat-chunks",
+                )
+
                 gr.Markdown("---")
                 gr.Markdown("[Chat Settings](/chat)", key="admin-settings-link")
 

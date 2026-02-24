@@ -45,6 +45,7 @@ JANATPMP/
 │   ├── seed_data.sql         # Optional seed data (separate from schema)
 │   ├── operations.py         # All CRUD + lifecycle functions (28 operations)
 │   ├── chat_operations.py    # Conversation + message CRUD (Phase 4B)
+│   ├── chunk_operations.py   # Chunk CRUD, stats, FTS search (R16)
 │   ├── test_operations.py    # Tests
 │   ├── migrations/           # Versioned schema migrations
 │   │   ├── 0.3.0_conversations.sql
@@ -53,7 +54,8 @@ JANATPMP/
 │   │   ├── 0.4.2_domains_table.sql
 │   │   ├── 0.5.0_messages_metadata.sql
 │   │   ├── 0.6.0_salience_synced.sql
-│   │   └── 0.7.0_pipeline_observability.sql
+│   │   ├── 0.7.0_pipeline_observability.sql
+│   │   └── 0.8.0_chunks.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
 │   ├── exports/              # Portable project data exports (JSON)
@@ -61,11 +63,12 @@ JANATPMP/
 ├── atlas/                    # ATLAS model infrastructure (R9, offloaded R10)
 │   ├── __init__.py
 │   ├── config.py             # Model names, dimensions, service URLs, Neo4j + salience constants
+│   ├── chunking.py           # Paragraph-aware text splitter for messages + documents (R16)
 │   ├── embedding_service.py  # Qwen3-Embedding-4B via Ollama HTTP (OpenAI client)
 │   ├── reranking_service.py  # Qwen3-Reranker-0.6B via vLLM HTTP (httpx client)
 │   ├── memory_service.py     # Salience write-back to Qdrant payloads
 │   ├── usage_signal.py       # Keyword overlap heuristic for usage-based salience (R12)
-│   ├── on_write.py           # On-write pipeline: sync embed + fire-and-forget graph edges (R13)
+│   ├── on_write.py           # On-write: chunk + embed + fire-and-forget graph edges (R13/R16)
 │   └── pipeline.py           # Two-stage search: ANN → rerank → salience
 ├── graph/                    # Knowledge graph layer — Neo4j (R13)
 │   ├── __init__.py
@@ -207,7 +210,12 @@ Chat at `/chat`). Admin tab has no settings — it's purely database administrat
 - `claude_export_json_dir` — Path to Claude export directory (ingestion)
 - `rag_score_threshold`, `rag_max_chunks` — RAG retrieval tuning
 - `rag_rerank_threshold` — Cross-encoder relevance cutoff (default: 0.3, range 0.0-1.0)
+- `rag_max_chunks_per_message` — Diversity cap: max chunks from one parent message (default: 3, 0 = no limit)
 - `rag_synthesizer_provider`, `rag_synthesizer_model` — RAG synthesis backend
+- `chunk_max_chars` — Target chunk size (default: 2500)
+- `chunk_min_chars` — Minimum chunk size (default: 200)
+- `chunk_overlap_chars` — Overlap between consecutive chunks (default: 200)
+- `chunk_threshold` — Messages shorter than this stay as single vector (default: 3000)
 
 **Settings flow:**
 - `services/settings.py` provides `get_setting()` / `set_setting()` with auto base64 for secrets
@@ -332,6 +340,11 @@ CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where 
   (total/rag/inference ms), frozen RAG snapshot (hit counts, rerank/salience averages,
   per-hit score objects), keywords, labels, quality_score (0.0-1.0, set by Slumber Cycle).
   FK to messages(id) with CASCADE delete. Unique index on message_id.
+- `chunks` — Unified chunk records for messages and documents (R16). Each row stores
+  entity_type ('message'/'document'), entity_id (FK to parent), chunk_index, chunk_text,
+  char_start/char_end offsets, position ('only'/'first'/'middle'/'last'), point_id (Qdrant),
+  embedded_at timestamp. FTS5 via `chunks_fts` with INSERT/UPDATE/DELETE sync triggers.
+  CDC trigger syncs Chunk nodes to Neo4j. UNIQUE(entity_type, entity_id, chunk_index).
 - `cdc_outbox` — Change Data Capture for future Qdrant/Neo4j sync. Auto-cleaned on startup (90 days).
 - `schema_version` — Migration tracking.
 
@@ -342,6 +355,9 @@ CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where 
 - `0.4.1_messages_fts_update.sql` — Missing FTS UPDATE trigger on messages
 - `0.4.2_domains_table.sql` — Domains as first-class entity, items table CHECK removal, CDC domain support
 - `0.5.0_messages_metadata.sql` — Cognitive telemetry table, CDC outbox entity_type addition
+- `0.6.0_salience_synced.sql` — Salience sync tracking
+- `0.7.0_pipeline_observability.sql` — Per-turn pipeline metadata in messages_metadata
+- `0.8.0_chunks.sql` — Unified chunks table, FTS5, CDC triggers (drops+recreates all triggers for CHECK constraint expansion)
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
 the fresh-DB/existing-DB if/else branch (after both branches complete). Placing inside `else`
@@ -465,8 +481,8 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
   - External URL: `http://localhost:7474` (Neo4j Browser)
   - Volume: `neo4j_data` (local)
   - Auth: `neo4j/janatpmp_graph`
-  - Node labels: Item, Task, Document, Conversation, Message, Domain, MessageMetadata
-  - Edge types: IN_DOMAIN, TARGETS_ITEM, BELONGS_TO, FOLLOWS, DESCRIBES, INFORMED_BY, SIMILAR_TO
+  - Node labels: Item, Task, Document, Conversation, Message, Domain, MessageMetadata, Chunk
+  - Edge types: IN_DOMAIN, TARGETS_ITEM, BELONGS_TO, FOLLOWS, DESCRIBES, INFORMED_BY, SIMILAR_TO, PART_OF
 - **Ollama:** `janatpmp-ollama` container on port 11435, shares `ollama_data` external volume
   - Internal URL: `http://ollama:11434/v1` (Docker DNS)
   - External URL: `http://localhost:11435` (host access for testing)
@@ -588,9 +604,10 @@ with gr.Blocks() as demo:
 demo.launch(mcp_server=True)
 ```
 
-57 functions are exposed via `gr.api()` as MCP tools: 28 from `db/operations.py`
+63 functions are exposed via `gr.api()` as MCP tools: 28 from `db/operations.py`
 (including domain CRUD + export/import), 13 from `db/chat_operations.py` (including Janus
-lifecycle), 8 vector/embedding operations from `services/`, 2 import pipelines, 2 ingestion
+lifecycle), 4 from `db/chunk_operations.py` (chunk CRUD + stats + search), 8 vector/embedding
+operations from `services/` (including 2 bulk chunk tools), 2 import pipelines, 4 ingestion
 orchestrators, and 4 graph operations from `graph/`. All MUST have Google-style docstrings
 with Args/Returns for MCP tool generation.
 
@@ -721,13 +738,15 @@ if the reranker is unavailable, ANN results are returned with a warning.
 
 ### Bulk Embedding (`services/bulk_embed.py`)
 
-- `embed_all_documents()` — batch-embeds documents into Qdrant (batch size 32, via Ollama)
-- `embed_all_messages()` — batch-embeds messages with user_prompt + model_response concatenated
+- `chunk_all_messages()` — populates `chunks` table for all messages. Checkpoints: skips messages that already have chunks.
+- `chunk_all_documents()` — populates `chunks` table for all documents. Same checkpoint pattern.
+- `embed_all_documents()` — dual-phase: (1) reads from `chunks` table WHERE `embedded_at IS NULL`, embeds each chunk as a separate Qdrant point; (2) legacy fallback for unchunked documents (pre-R16).
+- `embed_all_messages()` — dual-phase: same chunk-first + legacy fallback pattern.
 - `embed_all_domains()` — batch-embeds domain descriptions into `janatpmp_documents` collection
 - `embed_all_items()` — batch-embeds items (projects, features, etc.) into `janatpmp_documents`
 - `embed_all_tasks()` — batch-embeds tasks into `janatpmp_documents` collection
-- Items and tasks use `entity_type` payload field to distinguish from documents/domains
-- **Checkpointing** — skips already-embedded points via `point_exists()` (resume after restart)
+- Items, tasks, and domains are short texts — no chunking needed.
+- **Checkpointing** — chunk path uses `embedded_at IS NULL`; legacy path uses `existing_point_ids()` batch check
 - **Progress logging** — logs every 100 items with count/total and elapsed time
 - **Returns** `elapsed_seconds` in result dict for performance tracking
 
@@ -862,22 +881,28 @@ SQLite (source of truth), Qdrant (semantic retrieval), Neo4j (graph navigation).
 Called after every `add_message()` across all three chat surfaces (Sovereign Chat,
 monolith Chat tab, sidebar quick-chat):
 
-1. **Embed (synchronous, ~100-300ms):** Combines user prompt + model response, embeds via
-   Ollama, upserts to Qdrant with temporal payload (conversation_id, conv_title, sequence,
-   created_at, provider, model, salience=0.5). Ensures immediate retrievability next turn.
+1. **Chunk + Embed (synchronous, ~100-300ms):** Chunks the Q+A text via `atlas/chunking.py`.
+   Short messages (< 3000 chars) stay as single chunk with backward-compatible point ID.
+   Long messages split into ~2500-char chunks with composite IDs (`{msg_id}_c{NNN}`).
+   All chunks embedded in one batch call, each upserted as a separate Qdrant point with
+   temporal payload (conversation_id, conv_title, sequence, created_at, provider, model,
+   salience=0.5, chunk_index, chunk_total, chunk_position). Chunk records persisted to
+   SQLite `chunks` table. Ensures immediate retrievability next turn.
 2. **Relate (fire-and-forget):** Creates INFORMED_BY edges in Neo4j linking the message to
    its RAG sources. Only INFORMED_BY — structural edges (BELONGS_TO, FOLLOWS) handled by CDC.
 
 ### Knowledge Graph (`graph/`)
 
-- **Neo4j 2026.01.4** with 7 uniqueness constraints and 3 range indexes
-- **CDC consumer** daemon polls `cdc_outbox WHERE processed_neo4j = 0`, syncs all 8 entity
-  types (item, task, document, conversation, message, domain, message_metadata, relationship)
+- **Neo4j 2026.01.4** with 8 uniqueness constraints and 4 range indexes
+- **CDC consumer** daemon polls `cdc_outbox WHERE processed_neo4j = 0`, syncs all 9 entity
+  types (item, task, document, conversation, message, domain, message_metadata, relationship, chunk)
 - **4 MCP tools:** `graph_query` (read-only Cypher), `graph_neighbors`, `graph_stats`, `backfill_graph`
 - Config in `atlas/config.py`: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, CDC_POLL_INTERVAL, CDC_BATCH_SIZE
 - **Edge separation:** CDC consumer creates structural edges (BELONGS_TO, FOLLOWS, IN_DOMAIN,
-  TARGETS_ITEM, DESCRIBES). on_write creates INFORMED_BY edges (requires rag_hits).
+  TARGETS_ITEM, DESCRIBES, PART_OF). on_write creates INFORMED_BY edges (requires rag_hits).
   Slumber Relate creates SIMILAR_TO edges (keyword overlap).
+- **Chunk nodes:** CDC consumer creates Chunk nodes with PART_OF edges to parent Message or
+  Document nodes. Enables graph traversal: "find all chunks of this message."
 
 ### RAG Provenance
 
@@ -1015,22 +1040,105 @@ vLLM moved the score endpoint from `/v1/score` to `/score`. Updated in
 `atlas/reranking_service.py`. Previously every rerank call made 2 HTTP requests (first 400,
 then redirect to 200).
 
-## Current Platform State (Post-R15)
+## Phase R16: Message Chunking — RAG Quality Transformation
+
+R16 introduces a chunking layer between source data (SQLite) and semantic retrieval (Qdrant).
+Long messages and documents are split into focused ~2500-char chunks before embedding. Each
+chunk gets its own Qdrant vector with parent traceability. RAG returns specific paragraphs
+instead of entire turns, reducing context waste and increasing retrieval diversity.
+
+### Chunking Engine (`atlas/chunking.py`)
+
+Paragraph-aware text splitter with configurable limits:
+
+- `chunk_text(text, max_chars=2500, min_chars=200, overlap_chars=200)` — split at paragraphs
+  (`\n\n`), then sentences (`. `), then hard char break as last resort. 200-char overlap
+  between consecutive chunks.
+- `chunk_message(user_prompt, model_response)` — short messages (< threshold) return single
+  chunk. Long messages chunk the response, prepend condensed Q: prefix per chunk.
+- `chunk_document(content, title="")` — chunk document content with optional title prefix.
+- Settings: `chunk_max_chars` (2500), `chunk_min_chars` (200), `chunk_overlap_chars` (200),
+  `chunk_threshold` (3000). Constants in `atlas/config.py`, tunable via `services/settings.py`.
+
+### Qdrant Point ID Strategy
+
+- **Single-chunk (short messages):** `{message_id}` — backward compatible, no suffix
+- **Multi-chunk:** `{message_id}_c{index:03d}` — e.g., `a1b2c3d4..._c000`, `a1b2c3d4..._c001`
+- Deterministic: same text always produces same chunks with same IDs. Survives re-chunking.
+
+### Chunk-Aware RAG (`services/chat.py`)
+
+- `_fts_search_chunks()` — FTS5 search on `chunks_fts` table, parallel to `_fts_search_messages()`
+- `_build_rag_context()` — returns chunk-level results with temporal position labels
+  ("early in discussion", "mid-discussion", "late in discussion") and chunk provenance
+  (parent_message_id, chunk_index, chunk_total, chunk_position)
+- **Diversity cap** — `rag_max_chunks_per_message` setting (default 3, 0 = no limit).
+  Limits how many chunks from one parent message can pass through to context injection.
+- **No 2000-char truncation** — chunks are already right-sized; old `a_part[:2000]` removed.
+
+### Chunk-Aware Slumber (`services/slumber.py`)
+
+- **Propagate:** Reads chunk point_ids from `chunks` table (legacy UUID fallback for pre-R16
+  messages). Propagates salience to ALL chunk points of a message.
+- **Prune:** Atomic message-level pruning — only deletes ALL chunks of a message from Qdrant
+  when EVERY chunk falls below threshold (quality < 0.1, salience < 0.1, never retrieved).
+  Prevents orphan chunk state.
+
+### Knowledge Graph Integration
+
+- Chunk uniqueness constraint and entity index in `graph/schema.py`
+- `_handle_chunk()` handler in `graph/cdc_consumer.py` — upserts Chunk nodes with PART_OF
+  edges to parent Message or Document nodes
+- Enables graph queries: `MATCH (c:Chunk)-[:PART_OF]->(m:Message) RETURN count(c)`
+
+### Chunk Operations (`db/chunk_operations.py`)
+
+4 MCP-exposed tools for chunk management:
+- `get_chunks(entity_type, entity_id)` — all chunks for an entity
+- `get_chunk_stats()` — platform-wide statistics (total, per-type, embedded/unembedded)
+- `search_chunks(query, entity_type, limit)` — FTS5 search on chunk content
+- `delete_chunks(entity_type, entity_id)` — delete chunks for re-chunking
+
+### Bug Fixes in R16
+
+- **Usage signal keyword source** (`atlas/usage_signal.py:67`) — was extracting keywords from
+  `hit.get("title")` (conversation title like "Janus — Chapter 5") instead of actual retrieved
+  text content. Fixed to use `hit.get("text_preview", hit.get("text", ""))`.
+- **Slumber UUID conversion hack** (`services/slumber.py`) — manual `msg_id[:8] + "-" + ...`
+  conversion replaced with `chunks` table point_id lookup (legacy fallback for pre-R16 messages).
+
+### Migration Playbook (one-time after R16)
+
+1. App starts → migration 0.8.0 creates chunks table
+2. `chunk_all_messages()` → populates chunks (~30s for 10K messages)
+3. `chunk_all_documents()` → populates chunks (~5s for 40 docs)
+4. `recreate_collections()` → wipes old single-vector points
+5. `embed_all_messages()` → embeds from chunks (~20 min for ~30K chunks)
+6. `embed_all_documents()` → embeds from chunks (~2 min)
+7. `embed_all_items()`, `embed_all_tasks()`, `embed_all_domains()` → unchanged
+8. `backfill_graph()` → sync chunk nodes to Neo4j
+
+## Current Platform State (Post-R16)
 
 ### What Works
 
 - **Triad of Memory operational** — SQLite (source of truth), Qdrant (semantic search),
   Neo4j (knowledge graph). Triple-write pipeline keeps all three in sync on every message.
+- **Message chunking** — long messages and documents split into focused ~2500-char chunks
+  before embedding. Each chunk gets its own Qdrant vector. RAG returns specific paragraphs
+  instead of entire turns. Configurable thresholds and diversity caps.
 - **Janus continuous chat** — persistent conversation, sliding window, dual chat surfaces
   (Sovereign Chat + sidebar), chapter archiving.
-- **RAG pipeline** — hybrid FTS + vector search, cross-encoder reranking, optional synthesis,
-  salience tracking, provenance display. Configurable thresholds.
+- **RAG pipeline** — hybrid FTS + vector search (including chunk-level FTS), cross-encoder
+  reranking, optional synthesis, salience tracking, provenance display with temporal position.
+  Configurable thresholds and per-message diversity cap.
 - **Content corpus** — 659 Claude conversations (10,271 messages), 40 markdown documents,
   78 items, 13 domains, 3 tasks. All embedded in Qdrant, synced to Neo4j.
-- **Background intelligence** — Slumber Cycle evaluates message quality, propagates salience,
-  creates SIMILAR_TO edges, prunes dead-weight vectors.
+- **Background intelligence** — Slumber Cycle evaluates message quality, propagates salience
+  to chunk-level Qdrant points, creates SIMILAR_TO edges, prunes dead-weight vectors
+  (atomic per-message: all chunks or none).
 - **Ingestion pipelines** — Claude export, Google AI Studio, markdown. Auto-embed + dedup.
-- **57 MCP tools** — full CRUD + search + graph + embedding exposed for external AI clients.
+- **63 MCP tools** — full CRUD + search + graph + embedding + chunks exposed for external AI clients.
 
 ### What's Missing (Architectural Gaps)
 
@@ -1046,11 +1154,6 @@ These gaps became visible through extended conversation with Janus:
 - **No fact/opinion separation** — everything in the sliding window (user statements,
   corrections, hypotheticals, RAG fragments) is treated as equal-weight context. The model
   cannot distinguish "thing user said" from "verified fact."
-- **No chunking** — each message turn is embedded as a single vector (up to 20K chars).
-  Long responses dilute the embedding — a turn discussing 5 topics produces one blurry vector
-  that poorly matches queries about any single topic. RAG returns entire turns when it should
-  return specific paragraphs. This wastes context window and gives the model more material
-  to riff on rather than focused, relevant knowledge.
 - **Echo behavior vs hallucination** — Janus is not hallucinating in the typical LLM sense.
   It's working with the only context it has (RAG + conversation history) and amplifying it.
   When RAG injects personal details from imported Claude conversations, the model weaves
@@ -1060,22 +1163,20 @@ These gaps became visible through extended conversation with Janus:
 ### The Core Tension
 
 JANATPMP is a **project management platform**, not a consciousness substrate. Janus has
-memory (the Triad), a voice (the LLM), and recall (RAG), but no senses (external data),
-no introspection (self-querying), and no ability to act (tool use was removed because the
-8B model couldn't handle it). The Modelfile intelligence stack is the right direction —
-specialized sub-models for classification, scoring, synthesis — but those are layers of
-intelligence on a foundation that still can't look out the window.
+memory (the Triad), a voice (the LLM), and focused recall (chunk-level RAG), but no
+senses (external data), no introspection (self-querying), and no ability to act (tool
+use was removed because the 8B model couldn't handle it). The Modelfile intelligence
+stack is the right direction — specialized sub-models for classification, scoring,
+synthesis — but those are layers of intelligence on a foundation that still can't look
+out the window.
 
 ## Future Architecture (not in scope, for context only)
 
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R16 candidates)
+### Near-Term (R17 candidates)
 
-- **Message chunking** — split long messages into focused chunks (500-800 tokens each) before
-  embedding. Each chunk gets its own Qdrant vector with parent message ID. RAG returns
-  specific paragraphs instead of entire turns. Biggest single improvement for RAG quality.
 - **Janus self-introspection** — let Janus query its own `messages_metadata` to report what
   the Slumber Cycle actually evaluated, what salience scores changed, what quality patterns
   emerged. Ground its self-description in data, not fabrication.
@@ -1091,7 +1192,7 @@ architecture. The platform has transitioned from PMP to consciousness substrate 
   janat-classifier sharing Qwen3:1.7B base weights. Janus (8B) receives dynamic system
   prompts from the synthesizer each turn.
 - **System prompt audit trail** — full prompt text storage per-turn, "Prompt Inspector" panel
-- **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY and SIMILAR_TO edges
+- **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY, SIMILAR_TO, and PART_OF edges
 - **Temporal decay curves** — time-weighted salience that naturally deprioritizes stale knowledge
 - **Fine-tuning pipeline** — triplet message schema was designed for this from Phase 4B.
   Extract prompt→reasoning→response training data from high-quality Janus conversations.

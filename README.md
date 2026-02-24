@@ -3,7 +3,7 @@
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
 ![Gradio 6.6.0](https://img.shields.io/badge/Gradio-6.6.0-orange?logo=gradio&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-57%20Tools-blueviolet)
+![MCP](https://img.shields.io/badge/MCP-63%20Tools-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![Neo4j](https://img.shields.io/badge/Neo4j-2026.01.4-008CC1?logo=neo4j&logoColor=white)
 
@@ -42,7 +42,7 @@ graph TB
 
 ```mermaid
 graph TB
-    MCP[MCP Tools<br/>57 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
+    MCP[MCP Tools<br/>63 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
     UI[Gradio UI] --> DB
     API[REST API] --> DB
     DB --> SQLite[(SQLite)]
@@ -57,9 +57,10 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 
 ## Features
 
-- **57 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, Janus lifecycle, backups)
-- **Triple-write pipeline** — every message fans out to SQLite, Qdrant, and Neo4j synchronously; immediately retrievable on the next turn
-- **Knowledge graph** — Neo4j with 7 entity types, CDC consumer for structural edges, INFORMED_BY provenance tracing, SIMILAR_TO cross-conversation linking
+- **63 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, chunks, Janus lifecycle, backups)
+- **Message chunking** — long messages and documents are split into focused ~2500-char chunks before embedding; each chunk gets its own Qdrant vector with parent traceability; RAG returns specific paragraphs instead of entire turns; paragraph-aware splitting with configurable thresholds
+- **Triple-write pipeline** — every message is chunked, then each chunk fans out to SQLite, Qdrant, and Neo4j synchronously; immediately retrievable on the next turn
+- **Knowledge graph** — Neo4j with 8 entity types (including Chunk), CDC consumer for structural edges, INFORMED_BY provenance tracing, SIMILAR_TO cross-conversation linking, PART_OF chunk→parent edges
 - **Janus continuous chat** — one persistent conversation from platform birth, shared across Dashboard sidebar and Sovereign Chat; sliding window sends last N turns to LLM while RAG handles historical context
 - **Sovereign Chat** — dedicated chat page (`/chat`) with real-time metrics sidebar: RAG provenance, latency breakdown, token counts, salience scores
 - **Multi-provider chat** with triplet message persistence (Anthropic, Gemini, Ollama/local models)
@@ -77,7 +78,7 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Dynamic model discovery** — Ollama models fetched live via `/api/tags`, no hardcoded model lists
 - **Project / Task / Document management** with typed relationships and hierarchy
 - **Claude conversation import** — ingest Claude export JSON into a searchable triplet schema
-- **Full-text search** via SQLite FTS5 across items, documents, and conversation messages
+- **Full-text search** via SQLite FTS5 across items, documents, conversation messages, and chunks
 - **Hybrid multipage UI** — monolith dashboard (`/`) with dual collapsible sidebars + Sovereign Chat (`/chat`) via `demo.route()`
 - **Auto-context injection** — every chat message receives a live snapshot of active projects and pending tasks
 - **Change Data Capture** outbox with background Neo4j sync consumer
@@ -185,14 +186,16 @@ JANATPMP/
 │   ├── schema.sql             # Database DDL
 │   ├── operations.py          # 28 CRUD + lifecycle functions
 │   ├── chat_operations.py     # Conversation + message + metadata CRUD
-│   └── migrations/            # Versioned schema migrations (0.3.0–0.6.0)
+│   ├── chunk_operations.py    # Chunk CRUD, stats, FTS search (R16)
+│   └── migrations/            # Versioned schema migrations (0.3.0–0.8.0)
 ├── atlas/                     # ATLAS — HTTP client layer for model services
 │   ├── config.py              # Service URLs, model identifiers, Neo4j + salience constants
+│   ├── chunking.py            # Paragraph-aware text splitter for messages + documents (R16)
 │   ├── embedding_service.py   # Qwen3-Embedding-4B via Ollama /v1/embeddings
 │   ├── reranking_service.py   # Qwen3-Reranker-0.6B via vLLM /v1/score
 │   ├── memory_service.py      # Salience write-back to Qdrant (retrieval + usage signals)
 │   ├── usage_signal.py        # Keyword overlap heuristic for usage-based salience (R12)
-│   ├── on_write.py            # Triple-write: sync embed + fire-and-forget graph edges (R13)
+│   ├── on_write.py            # On-write: chunk + embed + fire-and-forget graph edges (R13/R16)
 │   └── pipeline.py            # Two-stage search orchestrator
 ├── graph/                     # Knowledge graph layer — Neo4j (R13)
 │   ├── schema.py              # Idempotent Neo4j constraints + indexes
@@ -219,7 +222,7 @@ JANATPMP/
 
 ## MCP Integration
 
-JANATPMP exposes **57 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
+JANATPMP exposes **63 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
 
 ```
 http://localhost:7860/gradio_api/mcp/sse
@@ -239,6 +242,7 @@ Full API documentation is available at `/gradio_api/docs` while the server is ru
 | Conversations | `create_conversation`, `list_conversations`, `search_conversations`, `add_message`, `get_messages`, ... | Chat history with triplet schema |
 | Janus | `get_or_create_janus_conversation`, `archive_janus_conversation` | Persistent conversation lifecycle, chapter archiving |
 | Telemetry | `add_message_metadata`, `get_message_metadata` | Per-turn timing, RAG snapshots, quality scores |
+| Chunks | `chunk_all_messages`, `chunk_all_documents`, `get_chunks`, `get_chunk_stats`, `search_chunks`, `delete_chunks` | Populate/search/manage chunk records for messages and documents |
 | Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains`, `embed_all_items`, `embed_all_tasks`, `recreate_collections` | ATLAS two-stage search, bulk embedding, collection management |
 | Graph | `graph_query`, `graph_neighbors`, `graph_stats`, `backfill_graph` | Read-only Cypher queries, node traversal, graph statistics, CDC backfill |
 | System | `get_stats`, `get_schema_info`, `backup_database`, `restore_database`, `list_backups`, `reset_database`, `export_platform_data`, `import_platform_data` | Database administration, portable export/import |
@@ -304,7 +308,7 @@ Both sidebars collapse independently on mobile, leaving center content full-widt
 
 ## Database Schema
 
-Ten core tables with FTS5 full-text search and a CDC outbox synced to Neo4j:
+Eleven core tables with FTS5 full-text search and a CDC outbox synced to Neo4j:
 
 - **domains** — First-class organizational entity. 13 seeded domains (5 active, 8 inactive). Managed via MCP — no code deploys needed to add new domains.
 - **items** — Projects, features, books, chapters. Hierarchical via `parent_id`. Domain validated against `domains` table.
@@ -313,6 +317,7 @@ Ten core tables with FTS5 full-text search and a CDC outbox synced to Neo4j:
 - **relationships** — Universal typed connector between any two entities (items, tasks, documents, conversations).
 - **conversations** — Chat sessions from any source (platform, Claude export, imported). Per-session model/provider config.
 - **messages** — Triplet schema: `user_prompt` + `model_reasoning` + `model_response`. Designed for fine-tuning data extraction. NULL reasoning = thinking not captured/not applicable.
+- **chunks** — Unified chunk records for messages and documents (R16). Each chunk stores text, character offsets, position (`only`/`first`/`middle`/`last`), Qdrant point_id, and embedded_at timestamp. FTS5 enabled via `chunks_fts`. CDC triggers sync Chunk nodes to Neo4j.
 - **messages_metadata** — Cognitive telemetry companion to messages. Per-turn timing (total/RAG/inference ms), frozen RAG snapshots, keywords, quality scores (0.0-1.0, populated by Slumber Cycle).
 - **settings** — Key-value config with base64 obfuscation for secrets.
 - **cdc_outbox** — Change Data Capture with background Neo4j sync via CDC consumer daemon.
@@ -346,11 +351,12 @@ feature/phase{X}-{description}  # legacy naming
 
 ## Future
 
-JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **Janus continuous chat** is live (R14), and every message fans out to all three stores via the triple-write pipeline. Planned next steps:
+JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), and every message fans out to all three stores via the triple-write pipeline. Planned next steps:
 
-- **Intelligent intake pipeline** — content-hash-aware incremental sync, freshness detection, automated embedding after ingestion
+- **Janus self-introspection** — let Janus query its own `messages_metadata` to ground self-description in data
+- **External data grounding** — weather, time-of-day awareness, basic world knowledge for small talk anchoring
 - **Ollama Modelfiles pipeline** — specialized models (synthesizer, scorer, consolidator, classifier) sharing base weights for dynamic system prompt generation
-- **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY and SIMILAR_TO edges
+- **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY, SIMILAR_TO, and PART_OF edges
 - **Temporal decay curves** — time-weighted salience that naturally deprioritizes stale knowledge
 
 ---

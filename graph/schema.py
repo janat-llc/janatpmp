@@ -21,12 +21,14 @@ def init_graph_schema(driver) -> None:
         "CREATE CONSTRAINT message_id IF NOT EXISTS FOR (n:Message) REQUIRE n.id IS UNIQUE",
         "CREATE CONSTRAINT domain_id IF NOT EXISTS FOR (n:Domain) REQUIRE n.id IS UNIQUE",
         "CREATE CONSTRAINT message_metadata_id IF NOT EXISTS FOR (n:MessageMetadata) REQUIRE n.id IS UNIQUE",
+        "CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (n:Chunk) REQUIRE n.id IS UNIQUE",
     ]
 
     indexes = [
         "CREATE INDEX message_conv IF NOT EXISTS FOR (m:Message) ON (m.conversation_id)",
         "CREATE INDEX item_domain IF NOT EXISTS FOR (i:Item) ON (i.domain)",
         "CREATE INDEX message_sequence IF NOT EXISTS FOR (m:Message) ON (m.sequence)",
+        "CREATE INDEX chunk_entity IF NOT EXISTS FOR (c:Chunk) ON (c.entity_id)",
     ]
 
     with driver.session() as session:

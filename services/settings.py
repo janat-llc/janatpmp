@@ -136,6 +136,13 @@ SETTINGS_REGISTRY = {
     "rag_synthesizer_model": ("qwen3:1.7b", False, "rag", None),
     "rag_synthesizer_api_key": ("", True, "rag", None),
 
+    # Chunking (R16)
+    "chunk_max_chars":            ("2500", False, "rag", _validate_positive_int),
+    "chunk_min_chars":            ("200",  False, "rag", _validate_positive_int),
+    "chunk_overlap_chars":        ("200",  False, "rag", _validate_positive_int),
+    "chunk_threshold":            ("3000", False, "rag", _validate_positive_int),
+    "rag_max_chunks_per_message": ("3",    False, "rag", _validate_positive_int),
+
     # System
     "log_level":            ("INFO", False, "system", _validate_log_level),
     "log_retention_days":   ("30", False, "system", _validate_positive_int),

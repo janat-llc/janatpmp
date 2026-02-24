@@ -25,6 +25,12 @@ EMBEDDING_DIM = 2560  # Qwen3-Embedding-4B (Matryoshka: up to 2560)
 # --- Text limits ---
 MAX_TEXT_CHARS = 20_000  # Pre-filter before sending to embed API
 
+# --- Chunking parameters ---
+CHUNK_MAX_CHARS = 2500       # Target max chunk size (~600 tokens for Qwen3)
+CHUNK_MIN_CHARS = 200        # Floor — avoid tiny fragment vectors
+CHUNK_OVERLAP_CHARS = 200    # Overlap between consecutive chunks
+CHUNK_THRESHOLD = 3000       # Messages/docs under this stay single-vector
+
 # --- Salience parameters ---
 SALIENCE_BOOST_RATE = 0.05   # How much a rerank score nudges salience per retrieval
 SALIENCE_DEFAULT = 0.5       # Starting salience for new entries

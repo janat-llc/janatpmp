@@ -42,13 +42,12 @@ def _extract_keywords(text: str, top_n: int = 20) -> set[str]:
 def compute_usage_signal(rag_scores: list[dict], model_response: str) -> list[dict]:
     """For each RAG hit, estimate how much the model actually used it.
 
-    Heuristic: extract keywords from each chunk's text (stored in title field
-    of the score dict), count how many appear in the model response. Normalize
-    to 0.0-1.0.
+    Heuristic: extract keywords from each hit's retrieved text content,
+    count how many appear in the model response. Normalize to 0.0-1.0.
 
     Args:
         rag_scores: List of per-hit score dicts from RAG metrics. Each has
-            source, title, rerank_score, salience, ann_score.
+            source, title, text_preview, rerank_score, salience, ann_score.
         model_response: The model's clean response text.
 
     Returns:
@@ -64,13 +63,16 @@ def compute_usage_signal(rag_scores: list[dict], model_response: str) -> list[di
 
     results = []
     for hit in rag_scores:
-        title = hit.get("title", "")
+        # R16 fix: extract keywords from actual retrieved text, not conversation title.
+        # Pre-R16 used hit["title"] (conversation name like "Janus — Chapter 5")
+        # which made keyword overlap nearly useless.
+        hit_text = hit.get("text_preview", hit.get("text", ""))
         source = hit.get("source", "unknown")
-        if not title:
+        if not hit_text:
             results.append({**hit, "usage_score": 0.0})
             continue
 
-        hit_keywords = _extract_keywords(title, top_n=15)
+        hit_keywords = _extract_keywords(hit_text, top_n=15)
         if not hit_keywords:
             results.append({**hit, "usage_score": 0.0})
             continue

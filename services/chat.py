@@ -279,6 +279,69 @@ def _fts_search_messages(query: str, limit: int = 10) -> list[dict]:
     return results
 
 
+def _fts_search_chunks(query: str, limit: int = 10) -> list[dict]:
+    """Keyword search on chunks via SQLite FTS5.
+
+    R16: Searches the chunks_fts table for chunk-level keyword matches.
+    Returns results in the same dict format as Qdrant search_all() so they
+    can be merged into the same candidate pipeline.
+    """
+    from db.operations import get_connection
+    import re
+
+    results = []
+    try:
+        raw_terms = re.sub(r'[^\w\s]', '', query).split()
+        meaningful = [t for t in raw_terms if t.lower() not in _FTS_STOP_WORDS and len(t) > 1]
+        if not meaningful:
+            return []
+
+        expanded = []
+        for t in meaningful:
+            if re.match(r'^\d+$', t):
+                expanded.append(f'("{t}" OR "{t.zfill(4)}" OR "{t.zfill(5)}")')
+            else:
+                expanded.append(f'"{t}"')
+
+        fts_query = " AND ".join(expanded)
+
+        with get_connection() as conn:
+            rows = conn.execute("""
+                SELECT c.point_id as id, c.chunk_text as text,
+                       c.entity_id, c.chunk_index, c.position,
+                       c.entity_type,
+                       m.conversation_id, conv.title as conv_title,
+                       m.created_at
+                FROM chunks c
+                JOIN chunks_fts fts ON fts.id = c.id
+                LEFT JOIN messages m ON c.entity_type = 'message' AND c.entity_id = m.id
+                LEFT JOIN conversations conv ON m.conversation_id = conv.id
+                WHERE chunks_fts MATCH ?
+                AND c.point_id IS NOT NULL
+                ORDER BY rank
+                LIMIT ?
+            """, (fts_query, limit)).fetchall()
+
+        for row in rows:
+            source = "messages" if row["entity_type"] == "message" else "documents"
+            results.append({
+                "id": row["id"],
+                "text": row["text"],
+                "score": 0.0,
+                "source_collection": source,
+                "conversation_id": row["conversation_id"] or "",
+                "conv_title": row["conv_title"] or "",
+                "created_at": row["created_at"] or "",
+                "parent_message_id": row["entity_id"] if row["entity_type"] == "message" else "",
+                "chunk_index": row["chunk_index"],
+                "chunk_position": row["position"],
+                "_fts_match": True,
+            })
+    except Exception as e:
+        logger.debug("FTS chunk search failed: %s", e)
+    return results
+
+
 def _needs_rag(message: str) -> bool:
     """Decide whether a message warrants RAG retrieval.
 
@@ -340,6 +403,8 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
         threshold = float(get_setting("rag_score_threshold") or RAG_SCORE_THRESHOLD)
         rerank_threshold = float(get_setting("rag_rerank_threshold") or 0.3)
         max_chunks = int(get_setting("rag_max_chunks") or 10)
+        # R16: diversity cap — max chunks from same parent message (0 = no limit)
+        max_per_message = int(get_setting("rag_max_chunks_per_message") or 3)
         # Fetch extra candidates — short stubs and low-quality hits will be
         # filtered out below, so we need headroom to still fill max_chunks.
         results = search_all(user_message, limit=max_chunks * 3)
@@ -349,9 +414,11 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
         # misses. FTS results go FIRST — they matched by exact keyword,
         # which is a strong signal that vector similarity can't replicate.
         fts_results = _fts_search_messages(user_message, limit=max_chunks)
+        # R16: also search chunk-level FTS for focused paragraph matches
+        fts_chunk_results = _fts_search_chunks(user_message, limit=max_chunks)
         seen_ids = set()
         merged = []
-        for fts_r in fts_results:
+        for fts_r in fts_results + fts_chunk_results:
             fid = fts_r["id"]
             if fid not in seen_ids:
                 merged.append(fts_r)
@@ -402,6 +469,11 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
                 "source_conversation_title": r.get("conv_title", ""),
                 "created_at": r.get("created_at", ""),
                 "fts_match": r.get("_fts_match", False),
+                # R16 chunk metadata
+                "parent_message_id": r.get("parent_message_id", ""),
+                "chunk_index": r.get("chunk_index"),
+                "chunk_total": r.get("chunk_total"),
+                "chunk_position": r.get("chunk_position", ""),
             }
 
             # Filter 1: Minimum text length — reject short stubs (domain
@@ -440,14 +512,51 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
                 rejected_scores.append(candidate_info)
                 continue
 
-            # Inject the A (response) portion with brief Q context,
-            # not the raw "Q: ... A: ..." which wastes context on the question
+            # R16: diversity cap — limit chunks from same parent message
+            if max_per_message > 0:
+                parent_id = r.get("parent_message_id", r.get("id", ""))
+                parent_count = sum(
+                    1 for s in used_scores
+                    if s.get("parent_message_id", s.get("id", "")) == parent_id
+                )
+                if parent_count >= max_per_message:
+                    candidate_info["reject_reason"] = (
+                        f"diversity cap ({parent_count}/{max_per_message} "
+                        f"from same message)"
+                    )
+                    rejected_scores.append(candidate_info)
+                    continue
+
+            # R16: chunks are already right-sized (~2500 chars), no truncation needed.
+            # Build attribution with temporal position for chunk-aware context.
+            chunk_pos = r.get("chunk_position", "")
+            chunk_idx = r.get("chunk_index")
+            chunk_total = r.get("chunk_total")
+            pos_label = {
+                "first": "early in discussion",
+                "middle": "mid-discussion",
+                "last": "late in discussion",
+            }.get(chunk_pos, "")
+
+            # Build attribution line
+            attr_parts = [f"[{source}]"]
+            if title:
+                attr_parts.append(f'"{title}"')
+            if pos_label:
+                attr_parts.append(f"({pos_label}")
+                if chunk_idx is not None and chunk_total and chunk_total > 1:
+                    attr_parts[-1] += f", chunk {chunk_idx + 1}/{chunk_total})"
+                else:
+                    attr_parts[-1] += ")"
+            attribution = " ".join(attr_parts)
+
+            # Inject the A (response) portion with brief Q context
             if q_part and a_part != full_text:
                 q_summary = q_part[:100] + ("..." if len(q_part) > 100 else "")
-                inject_text = f"(asked: {q_summary})\n{a_part[:2000]}"
+                inject_text = f"(asked: {q_summary})\n{a_part}"
             else:
-                inject_text = full_text[:2000]
-            context_parts.append(f"[{source}] {title}: {inject_text}")
+                inject_text = full_text
+            context_parts.append(f"{attribution}: {inject_text}")
             used_scores.append(candidate_info)
 
         metrics["hits_used"] = len(used_scores)

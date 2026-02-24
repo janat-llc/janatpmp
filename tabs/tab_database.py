@@ -269,13 +269,34 @@ def build_database_tab(conversations_state=None, admin_refresh=None):
         # Vector Store (Qdrant)
         with gr.Accordion("Vector Store (Qdrant)", open=False):
             gr.Markdown("Embed entities into Qdrant for semantic search and RAG.")
+            gr.Markdown(
+                "**R16 Chunking:** Run chunking first to split long messages/documents "
+                "into focused chunks, then embed. Short texts stay as single vectors."
+            )
+            with gr.Row():
+                chunk_msgs_btn = gr.Button("Chunk All Messages", variant="secondary")
+                chunk_docs_btn = gr.Button("Chunk All Documents", variant="secondary")
             with gr.Row():
                 embed_docs_btn = gr.Button("Embed All Documents", variant="primary")
                 embed_msgs_btn = gr.Button("Embed All Messages", variant="primary")
             with gr.Row():
                 embed_items_btn = gr.Button("Embed All Items", variant="primary")
                 embed_tasks_btn = gr.Button("Embed All Tasks", variant="primary")
-            embed_status = gr.JSON(label="Embedding Status", value={})
+            embed_status = gr.JSON(label="Embedding / Chunking Status", value={})
+
+            def _chunk_msgs():
+                try:
+                    from services.bulk_embed import chunk_all_messages
+                    return chunk_all_messages()
+                except Exception as e:
+                    return {"error": str(e)}
+
+            def _chunk_docs():
+                try:
+                    from services.bulk_embed import chunk_all_documents
+                    return chunk_all_documents()
+                except Exception as e:
+                    return {"error": str(e)}
 
             def _embed_docs():
                 try:
@@ -305,6 +326,8 @@ def build_database_tab(conversations_state=None, admin_refresh=None):
                 except Exception as e:
                     return {"error": str(e)}
 
+            chunk_msgs_btn.click(_chunk_msgs, outputs=[embed_status], api_visibility="private")
+            chunk_docs_btn.click(_chunk_docs, outputs=[embed_status], api_visibility="private")
             embed_docs_btn.click(_embed_docs, outputs=[embed_status], api_visibility="private")
             embed_msgs_btn.click(_embed_msgs, outputs=[embed_status], api_visibility="private")
             embed_items_btn.click(_embed_items, outputs=[embed_status], api_visibility="private")
