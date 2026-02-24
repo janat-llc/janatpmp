@@ -194,23 +194,19 @@ def get_temporal_context(
 
 
 def format_temporal_prompt(ctx: dict) -> str:
-    """Format temporal context as natural language for system prompt injection.
+    """Format temporal context as compact lines for system prompt context block.
 
     Args:
         ctx: Dict from get_temporal_context().
 
     Returns:
-        Multi-line string suitable for injection into system prompt.
+        Two-line string: Time line + Location line, dash-prefixed.
     """
     low_f, high_f = ctx["temp_range_f"]
-    low_c, high_c = ctx["temp_range_c"]
-
+    # Strip day name from date_formatted since we already have day_of_week
+    date_part = ctx["date_formatted"].split(", ", 1)[1] if ", " in ctx["date_formatted"] else ctx["date_formatted"]
     lines = [
-        f"It is {ctx['date_formatted']}, {ctx['time_of_day']}.",
-        f"You are in {ctx['location_name']}.",
-        f"The sun rose at {ctx['sunrise']} and will set at {ctx['sunset']}"
-        f" (~{ctx['daylight_hours']} hours of daylight).",
-        f"It is {ctx['season']} — typical temperatures today range"
-        f" from {low_f}\u00b0F to {high_f}\u00b0F ({low_c}\u00b0C to {high_c}\u00b0C).",
+        f"\u2014 Time: {ctx['day_of_week']} {ctx['time_of_day']}, {date_part}",
+        f"\u2014 Location: {ctx['location_name']} ({ctx['season']}, ~{low_f}-{high_f}\u00b0F, sunrise {ctx['sunrise']}, sunset {ctx['sunset']})",
     ]
     return "\n".join(lines)

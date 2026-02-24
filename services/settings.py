@@ -178,10 +178,17 @@ SETTINGS_REGISTRY = {
     "slumber_evaluator":       ("heuristic", False, "system", None),
     "slumber_prune_age_days":  ("7",   False, "system", _validate_positive_int),
 
-    # Persona (R18)
-    "user_name":        ("Mat", False, "persona", None),
-    "user_bio":         ("", False, "persona", None),
-    "user_preferences": ("", False, "persona", None),
+    # Persona (R18 structured schema)
+    "user_full_name":       ("", False, "persona", None),
+    "user_preferred_name":  ("Mat", False, "persona", None),
+    "user_birthdate":       ("", False, "persona", None),
+    "user_family":          ("[]", False, "persona", None),
+    "user_employer":        ("", False, "persona", None),
+    "user_title":           ("", False, "persona", None),
+    "user_health_notes":    ("", False, "persona", None),
+    "user_interests":       ("", False, "persona", None),
+    "user_values":          ("", False, "persona", None),
+    "user_bio":             ("", False, "persona", None),
 }
 
 # Backward-compat alias
@@ -236,9 +243,22 @@ def init_settings():
                 (new_value, key, old_value)
             )
 
+        # Migrate user_name → user_preferred_name (R18 persona schema)
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'user_name'"
+        ).fetchone()
+        if row and row[0]:
+            conn.execute(
+                "INSERT OR IGNORE INTO settings (key, value, is_secret) "
+                "VALUES ('user_preferred_name', ?, 0)",
+                (row[0],)
+            )
+
         # Remove defunct settings
         conn.execute("DELETE FROM settings WHERE key = 'ingestion_quest_dir'")
         conn.execute("DELETE FROM settings WHERE key = 'claude_export_db_path'")
+        conn.execute("DELETE FROM settings WHERE key = 'user_name'")
+        conn.execute("DELETE FROM settings WHERE key = 'user_preferences'")
 
         for key, (default_value, is_secret, _cat, _val) in SETTINGS_REGISTRY.items():
             stored = default_value

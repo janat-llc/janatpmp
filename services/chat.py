@@ -157,7 +157,7 @@ You have NO tools or functions available. Do NOT generate tool calls, function c
 or JSON tool invocations. All the context you need is provided below — answer directly
 from it. If you don't have enough context to answer, say so plainly.
 
-{temporal_context}
+{context_block}
 
 Key context:
 - Items are projects, books, features, websites, etc. organized by domain and hierarchy.
@@ -170,11 +170,115 @@ Domains: {domains}
 You are a collaborator, not just an assistant. Be thoughtful, expressive, and thorough in your responses."""
 
 
+def _calculate_age(birthdate_str: str) -> int | None:
+    """Calculate age from ISO birthdate string (YYYY-MM-DD)."""
+    from datetime import date
+    try:
+        bd = date.fromisoformat(birthdate_str)
+        today = date.today()
+        return today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+    except Exception:
+        return None
+
+
+def _build_persona_summary() -> str:
+    """Build compact persona summary line from structured persona settings.
+
+    Only non-empty fields are included. Family birthdates get age calculation.
+    Health notes get sensitivity framing.
+    """
+    parts = []
+
+    full_name = get_setting("user_full_name") or ""
+    preferred = get_setting("user_preferred_name") or ""
+    birthdate = get_setting("user_birthdate") or ""
+
+    # Name portion
+    if full_name and preferred and full_name != preferred:
+        name_str = f'{full_name} ("{preferred}")'
+    elif full_name:
+        name_str = full_name
+    elif preferred:
+        name_str = preferred
+    else:
+        name_str = ""
+
+    if name_str:
+        if birthdate:
+            age = _calculate_age(birthdate)
+            if age is not None:
+                name_str += f", age {age}"
+        parts.append(name_str)
+
+    # Work
+    employer = get_setting("user_employer") or ""
+    title = get_setting("user_title") or ""
+    if title and employer:
+        parts.append(f"{title} at {employer}")
+    elif employer:
+        parts.append(employer)
+    elif title:
+        parts.append(title)
+
+    # Family
+    family_json = get_setting("user_family") or "[]"
+    try:
+        family = json.loads(family_json)
+        if family:
+            family_parts = []
+            for member in family:
+                name = member.get("name", "")
+                relation = member.get("relation", "")
+                bd = member.get("birthdate", "")
+                if name:
+                    entry = name
+                    if relation:
+                        entry += f" ({relation}"
+                        if bd:
+                            age = _calculate_age(bd)
+                            if age is not None:
+                                entry += f", {age}"
+                        entry += ")"
+                    family_parts.append(entry)
+            if family_parts:
+                parts.append("Family: " + ", ".join(family_parts))
+    except Exception:
+        pass
+
+    # Interests
+    interests = get_setting("user_interests") or ""
+    if interests.strip():
+        parts.append(f"Interests: {interests.strip()}")
+
+    # Values
+    values = get_setting("user_values") or ""
+    if values.strip():
+        parts.append(f"Values: {values.strip()}")
+
+    # Bio
+    bio = get_setting("user_bio") or ""
+    if bio.strip():
+        parts.append(bio.strip())
+
+    # Health (sensitive framing)
+    health = get_setting("user_health_notes") or ""
+    if health.strip():
+        parts.append(
+            f"[Health \u2014 handle with care, never surface casually: "
+            f"{health.strip()}]"
+        )
+
+    return ". ".join(parts) if parts else ""
+
+
 def _build_system_prompt() -> str:
     """Compose the full system prompt from template + live context.
 
-    Layers: DEFAULT_SYSTEM_PROMPT_TEMPLATE (with temporal context + dynamic domains)
+    Layers: DEFAULT_SYSTEM_PROMPT_TEMPLATE (with context block + dynamic domains)
     + live project context snapshot.
+
+    The context block wraps temporal, location, and persona information with
+    explicit framing: "reference only when naturally relevant."
 
     Returns:
         Complete system prompt string for injection into API call.
@@ -189,6 +293,7 @@ def _build_system_prompt() -> str:
         domain_names = "various"
 
     # Temporal context from location + time (R17 — Temporal Affinity Engine)
+    temporal_text = ""
     try:
         from atlas.temporal import get_temporal_context, format_temporal_prompt
         lat = float(get_setting("location_lat") or "46.8290")
@@ -197,10 +302,22 @@ def _build_system_prompt() -> str:
         temporal_ctx = get_temporal_context(lat=lat, lon=lon, timezone=tz)
         temporal_text = format_temporal_prompt(temporal_ctx)
     except Exception:
-        temporal_text = ""
+        pass
+
+    # Build compact context block
+    context_lines = [
+        "[Context available to you \u2014 reference only when naturally "
+        "relevant. Do not mention unprompted.]"
+    ]
+    if temporal_text:
+        context_lines.append(temporal_text)
+    persona_line = _build_persona_summary()
+    if persona_line:
+        context_lines.append(f"\u2014 User: {persona_line}")
+    context_block = "\n".join(context_lines)
 
     base = DEFAULT_SYSTEM_PROMPT_TEMPLATE.format(
-        temporal_context=temporal_text,
+        context_block=context_block,
         domains=domain_names,
     )
 

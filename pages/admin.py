@@ -16,7 +16,9 @@ Deep link hook (future, not implemented):
   /admin?tab=settings&category=rag → navigate directly to RAG settings
 """
 
+import json
 import logging
+from datetime import date
 import gradio as gr
 import pandas as pd
 from db.operations import (
@@ -27,6 +29,16 @@ from services.settings import get_setting, set_setting, get_settings_by_category
 from shared.chat_sidebar import build_chat_sidebar, wire_chat_sidebar
 
 logger = logging.getLogger(__name__)
+
+
+def _calculate_age(birthdate_str: str) -> int | None:
+    """Calculate age from ISO birthdate string (YYYY-MM-DD)."""
+    try:
+        bd = date.fromisoformat(birthdate_str)
+        today = date.today()
+        return today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +52,6 @@ SETTING_CATEGORIES = [
     ("ingestion", "Ingestion Paths"),
     ("export", "Export"),
     ("system", "System"),
-    ("persona", "Persona"),
 ]
 
 # Keys that are internal / not user-editable
@@ -211,79 +222,183 @@ def build_admin_page():
         # TAB 2: Persona
         # ---------------------------------------------------------------
         with gr.Tab("Persona") as persona_tab:
+            # Load initial family from settings
+            _init_family = []
+            try:
+                _init_family = json.loads(
+                    get_setting("user_family") or "[]"
+                )
+            except Exception:
+                pass
+            family_state = gr.State(_init_family)
+
+            gr.Markdown("### User Persona")
+            gr.Markdown(
+                "Configure what Janus knows about you. Only non-empty "
+                "fields appear in the system prompt context block."
+            )
+
+            # --- Identity ---
+            gr.Markdown("#### Identity")
             with gr.Row():
-                # --- Left panel: identity summary ---
-                with gr.Column(scale=1, min_width=220):
-                    gr.Markdown("### Identity")
+                persona_full_name = gr.Textbox(
+                    label="Full Name",
+                    value=get_setting("user_full_name") or "",
+                    placeholder="e.g. Mat Gallagher",
+                    interactive=True, scale=2,
+                )
+                persona_preferred = gr.Textbox(
+                    label="Preferred Name",
+                    value=get_setting("user_preferred_name") or "Mat",
+                    interactive=True, scale=1,
+                )
+                persona_birthdate = gr.Textbox(
+                    label="Birthdate (YYYY-MM-DD)",
+                    value=get_setting("user_birthdate") or "",
+                    placeholder="1985-06-15",
+                    interactive=True, scale=1,
+                )
 
-                    @gr.render(inputs=[active_tab])
-                    def render_persona_sidebar(_tab):
-                        name = get_setting("user_name") or "Mat"
-                        loc = get_setting("location_name") or "Unknown"
-                        tz = get_setting("location_tz") or "Unknown"
-                        gr.Markdown(
-                            f"**{name}**\n\n"
-                            f"{loc}\n\n"
-                            f"Timezone: {tz}",
-                            key="persona-card",
-                        )
+            # --- Location ---
+            gr.Markdown("#### Location")
+            persona_location = gr.Textbox(
+                label="Full Address",
+                value=get_setting("location_name") or "",
+                interactive=True,
+            )
+            with gr.Row():
+                persona_lat = gr.Textbox(
+                    label="Latitude",
+                    value=get_setting("location_lat") or "",
+                    interactive=True,
+                )
+                persona_lon = gr.Textbox(
+                    label="Longitude",
+                    value=get_setting("location_lon") or "",
+                    interactive=True,
+                )
+                persona_tz = gr.Textbox(
+                    label="Timezone (IANA)",
+                    value=get_setting("location_tz") or "",
+                    interactive=True,
+                )
 
-                # --- Right panel: persona editor ---
-                with gr.Column(scale=3):
-                    gr.Markdown("### User Persona")
+            # --- Family ---
+            gr.Markdown("#### Family")
+
+            @gr.render(inputs=[family_state])
+            def render_family(members):
+                if not members:
                     gr.Markdown(
-                        "Configure what Janus knows about you. These details "
-                        "are available to the system prompt and temporal engine."
+                        "*No family members added.*", key="fam-empty"
                     )
-
-                    persona_name = gr.Textbox(
-                        label="Name",
-                        value=get_setting("user_name") or "Mat",
-                        interactive=True,
-                    )
-                    persona_location = gr.Textbox(
-                        label="Location (full address)",
-                        value=get_setting("location_name") or "",
-                        interactive=True,
-                    )
-                    with gr.Row():
-                        persona_lat = gr.Textbox(
-                            label="Latitude",
-                            value=get_setting("location_lat") or "",
-                            interactive=True,
+                for i, member in enumerate(members):
+                    name = member.get("name", "")
+                    relation = member.get("relation", "")
+                    bd = member.get("birthdate", "")
+                    age_str = ""
+                    if bd:
+                        age = _calculate_age(bd)
+                        if age is not None:
+                            age_str = f" (age {age})"
+                    with gr.Row(key=f"fam-{i}"):
+                        gr.Markdown(
+                            f"**{name}** \u2014 {relation}{age_str}"
+                            + (f", born {bd}" if bd else ""),
+                            key=f"fam-text-{i}",
                         )
-                        persona_lon = gr.Textbox(
-                            label="Longitude",
-                            value=get_setting("location_lon") or "",
-                            interactive=True,
-                        )
-                        persona_tz = gr.Textbox(
-                            label="Timezone (IANA)",
-                            value=get_setting("location_tz") or "",
-                            interactive=True,
+                        rm_btn = gr.Button(
+                            "Remove", variant="stop", size="sm",
+                            scale=0, key=f"fam-rm-{i}",
                         )
 
-                    persona_bio = gr.Textbox(
-                        label="What should Janus know about you?",
-                        value=get_setting("user_bio") or "",
-                        lines=5,
-                        placeholder=(
-                            "Tell Janus about yourself — your work, interests, "
-                            "communication preferences, context that helps..."
-                        ),
-                        interactive=True,
-                    )
+                        def _remove(idx=i, cur=members):
+                            updated = list(cur)
+                            del updated[idx]
+                            return updated
 
-                    # Future: R19 Intent Router contract language configured here
-                    # "You can express intentions and the platform will act on your behalf"
+                        rm_btn.click(
+                            _remove, outputs=[family_state],
+                            api_visibility="private",
+                            key=f"fam-rm-click-{i}",
+                        )
 
-                    with gr.Row():
-                        persona_save_btn = gr.Button(
-                            "Save Persona", variant="primary"
-                        )
-                        persona_status = gr.Textbox(
-                            show_label=False, interactive=False, scale=2
-                        )
+            with gr.Row():
+                fam_name_input = gr.Textbox(
+                    label="Name", scale=2, interactive=True,
+                )
+                fam_rel_input = gr.Dropdown(
+                    label="Relation",
+                    choices=[
+                        "spouse", "child", "parent", "sibling", "other",
+                    ],
+                    value="spouse", allow_custom_value=True,
+                    scale=1, interactive=True,
+                )
+                fam_bd_input = gr.Textbox(
+                    label="Birthdate (YYYY-MM-DD)", scale=1,
+                    interactive=True,
+                )
+                fam_add_btn = gr.Button(
+                    "Add", variant="primary", size="sm", scale=0,
+                )
+
+            # --- Work ---
+            gr.Markdown("#### Work")
+            with gr.Row():
+                persona_employer = gr.Textbox(
+                    label="Employer",
+                    value=get_setting("user_employer") or "",
+                    interactive=True,
+                )
+                persona_title = gr.Textbox(
+                    label="Title / Role",
+                    value=get_setting("user_title") or "",
+                    interactive=True,
+                )
+
+            # --- Health ---
+            gr.Markdown("#### Health")
+            gr.Markdown(
+                "*Sensitive \u2014 included in prompt with framing: "
+                '"handle with care, never surface casually."*'
+            )
+            persona_health = gr.Textbox(
+                label="Health Notes",
+                value=get_setting("user_health_notes") or "",
+                lines=2, interactive=True,
+            )
+
+            # --- Interests & Values ---
+            gr.Markdown("#### Interests & Values")
+            persona_interests = gr.Textbox(
+                label="Interests",
+                value=get_setting("user_interests") or "",
+                placeholder="consciousness architecture, AI, literature...",
+                interactive=True,
+            )
+            persona_values = gr.Textbox(
+                label="Values",
+                value=get_setting("user_values") or "",
+                placeholder="sovereignty, craftsmanship, honesty...",
+                interactive=True,
+            )
+
+            # --- Bio ---
+            gr.Markdown("#### Bio")
+            persona_bio = gr.Textbox(
+                label="Anything else Janus should know?",
+                value=get_setting("user_bio") or "",
+                lines=3, interactive=True,
+            )
+
+            with gr.Row():
+                persona_save_btn = gr.Button(
+                    "Save Persona", variant="primary"
+                )
+                persona_status = gr.Textbox(
+                    show_label=False, interactive=False, scale=2
+                )
 
         # ---------------------------------------------------------------
         # TAB 3: Operations
@@ -455,11 +570,29 @@ def build_admin_page():
 
             elif tab == "Persona":
                 gr.Markdown("### Identity")
-                name = get_setting("user_name") or "Mat"
+                full_name = get_setting("user_full_name") or ""
+                preferred = get_setting("user_preferred_name") or "Mat"
+                display_name = full_name or preferred
+                employer = get_setting("user_employer") or ""
+                title = get_setting("user_title") or ""
                 loc = get_setting("location_name") or "Unknown"
                 tz = get_setting("location_tz") or "Unknown"
+
+                work_line = ""
+                if title and employer:
+                    work_line = f"{title} at {employer}"
+                elif title:
+                    work_line = title
+                elif employer:
+                    work_line = employer
+
+                card_parts = [f"**{display_name}**"]
+                if work_line:
+                    card_parts.append(work_line)
+                card_parts.append(loc)
+                card_parts.append(f"Timezone: {tz}")
                 gr.Markdown(
-                    f"**{name}**\n\n{loc}\n\nTimezone: {tz}",
+                    "\n\n".join(card_parts),
                     key="sidebar-persona-card",
                 )
 
@@ -485,20 +618,52 @@ def build_admin_page():
         lambda: "Operations", outputs=[active_tab], api_visibility="private"
     )
 
+    # --- Family add ---
+    def _add_family_member(name, relation, birthdate, current_family):
+        if not name or not name.strip():
+            return current_family, "", "spouse", ""
+        new = {
+            "name": name.strip(),
+            "relation": relation or "spouse",
+            "birthdate": birthdate.strip() if birthdate else "",
+        }
+        return current_family + [new], "", "spouse", ""
+
+    fam_add_btn.click(
+        _add_family_member,
+        inputs=[fam_name_input, fam_rel_input, fam_bd_input, family_state],
+        outputs=[family_state, fam_name_input, fam_rel_input, fam_bd_input],
+        api_visibility="private",
+    )
+
     # --- Persona save ---
-    def _save_persona(name, location, lat, lon, tz, bio):
+    def _save_persona(
+        full_name, preferred, birthdate, location, lat, lon, tz,
+        employer, title, health, interests, values, bio, family,
+    ):
         errors = []
         for key, val in [
-            ("user_name", name),
+            ("user_full_name", full_name),
+            ("user_preferred_name", preferred),
+            ("user_birthdate", birthdate),
             ("location_name", location),
             ("location_lat", lat),
             ("location_lon", lon),
             ("location_tz", tz),
+            ("user_employer", employer),
+            ("user_title", title),
+            ("user_health_notes", health),
+            ("user_interests", interests),
+            ("user_values", values),
             ("user_bio", bio),
         ]:
             err = set_setting(key, val.strip() if val else "")
             if err:
                 errors.append(f"{key}: {err}")
+        # Save family as JSON
+        err = set_setting("user_family", json.dumps(family or []))
+        if err:
+            errors.append(f"user_family: {err}")
         if errors:
             return "Errors: " + "; ".join(errors)
         return "Persona saved."
@@ -506,9 +671,11 @@ def build_admin_page():
     persona_save_btn.click(
         _save_persona,
         inputs=[
-            persona_name, persona_location,
-            persona_lat, persona_lon, persona_tz,
-            persona_bio,
+            persona_full_name, persona_preferred, persona_birthdate,
+            persona_location, persona_lat, persona_lon, persona_tz,
+            persona_employer, persona_title,
+            persona_health, persona_interests, persona_values,
+            persona_bio, family_state,
         ],
         outputs=[persona_status],
         api_visibility="private",
