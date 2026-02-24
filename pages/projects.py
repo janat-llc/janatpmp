@@ -612,6 +612,16 @@ def build_page():
                     key="admin-stat-chunks",
                 )
 
+                # R17: file registry count
+                try:
+                    with _gc() as conn:
+                        file_count = conn.execute(
+                            "SELECT COUNT(*) FROM file_registry"
+                        ).fetchone()[0]
+                except Exception:
+                    file_count = 0
+                gr.Markdown(f"**Files Tracked:** {file_count:,}", key="admin-stat-files")
+
                 gr.Markdown("---")
                 gr.Markdown("[Chat Settings](/chat)", key="admin-settings-link")
 

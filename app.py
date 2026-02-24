@@ -54,6 +54,11 @@ from services.bulk_embed import (
 from db.chunk_operations import (
     get_chunks, get_chunk_stats, search_chunks, delete_chunks,
 )
+from db.file_registry_ops import (
+    get_file_registry_stats, list_registered_files, search_file_registry,
+)
+from services.auto_ingest import get_ingestion_progress
+from atlas.temporal import get_temporal_context
 from graph.graph_service import graph_query, graph_neighbors, graph_stats
 from graph.cdc_consumer import backfill_graph
 from pages.projects import build_page
@@ -75,6 +80,14 @@ try:
     ensure_collections()
 except Exception:
     logger.warning("Qdrant not available -- vector search disabled")
+
+# Startup auto-ingest: scan configured directories for new files (R17)
+try:
+    from services.auto_ingest import scan_and_ingest
+    ingest_result = scan_and_ingest(auto_embed=True, source="startup")
+    logger.info("Startup auto-ingest: %s", ingest_result)
+except Exception as e:
+    logger.warning("Startup auto-ingest failed: %s", e)
 
 # Start Slumber Cycle (background cognitive telemetry evaluation)
 from services.slumber import start_slumber
@@ -178,6 +191,13 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.api(graph_neighbors)
     gr.api(graph_stats)
     gr.api(backfill_graph)
+
+    # File registry + auto-ingestion + temporal context (R17)
+    gr.api(get_file_registry_stats)
+    gr.api(list_registered_files)
+    gr.api(search_file_registry)
+    gr.api(get_ingestion_progress)
+    gr.api(get_temporal_context)
 
 # --- Sovereign Chat route (outside main Blocks context) ---
 with demo.route("Chat", "/chat"):

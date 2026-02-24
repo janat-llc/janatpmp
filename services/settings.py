@@ -82,6 +82,24 @@ def _validate_float_0_1(value: str) -> str | None:
     return None
 
 
+def _validate_float(value: str) -> str | None:
+    """Validate that value is any float (including negative).
+
+    Args:
+        value: String to validate.
+
+    Returns:
+        Error message string if invalid, None if valid.
+    """
+    if not value:
+        return None
+    try:
+        float(value)
+    except ValueError:
+        return f"Must be a number, got '{value}'"
+    return None
+
+
 def _validate_log_level(value: str) -> str | None:
     """Validate Python logging level name.
 
@@ -142,6 +160,12 @@ SETTINGS_REGISTRY = {
     "chunk_overlap_chars":        ("200",  False, "rag", _validate_positive_int),
     "chunk_threshold":            ("3000", False, "rag", _validate_positive_int),
     "rag_max_chunks_per_message": ("3",    False, "rag", _validate_positive_int),
+
+    # System — Location (R17 Temporal Affinity Engine)
+    "location_lat":         ("46.8290", False, "system", _validate_float),
+    "location_lon":         ("-96.8540", False, "system", _validate_float),
+    "location_name":        ("3351 Washington Street South, Fargo, ND 58104", False, "system", None),
+    "location_tz":          ("America/Chicago", False, "system", None),
 
     # System
     "log_level":            ("INFO", False, "system", _validate_log_level),

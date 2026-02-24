@@ -157,6 +157,8 @@ You have NO tools or functions available. Do NOT generate tool calls, function c
 or JSON tool invocations. All the context you need is provided below — answer directly
 from it. If you don't have enough context to answer, say so plainly.
 
+{temporal_context}
+
 Key context:
 - Items are projects, books, features, websites, etc. organized by domain and hierarchy.
 - Tasks are work items assigned to agents, Claude, Mat, Janus, or unassigned.
@@ -171,7 +173,7 @@ You are a collaborator, not just an assistant. Be thoughtful, expressive, and th
 def _build_system_prompt() -> str:
     """Compose the full system prompt from template + live context.
 
-    Layers: DEFAULT_SYSTEM_PROMPT_TEMPLATE (with dynamic domains)
+    Layers: DEFAULT_SYSTEM_PROMPT_TEMPLATE (with temporal context + dynamic domains)
     + live project context snapshot.
 
     Returns:
@@ -186,7 +188,21 @@ def _build_system_prompt() -> str:
     except Exception:
         domain_names = "various"
 
-    base = DEFAULT_SYSTEM_PROMPT_TEMPLATE.format(domains=domain_names)
+    # Temporal context from location + time (R17 — Temporal Affinity Engine)
+    try:
+        from atlas.temporal import get_temporal_context, format_temporal_prompt
+        lat = float(get_setting("location_lat") or "46.8290")
+        lon = float(get_setting("location_lon") or "-96.8540")
+        tz = get_setting("location_tz") or "America/Chicago"
+        temporal_ctx = get_temporal_context(lat=lat, lon=lon, timezone=tz)
+        temporal_text = format_temporal_prompt(temporal_ctx)
+    except Exception:
+        temporal_text = ""
+
+    base = DEFAULT_SYSTEM_PROMPT_TEMPLATE.format(
+        temporal_context=temporal_text,
+        domains=domain_names,
+    )
 
     context = get_context_snapshot()
     if context:
@@ -340,6 +356,44 @@ def _fts_search_chunks(query: str, limit: int = 10) -> list[dict]:
     except Exception as e:
         logger.debug("FTS chunk search failed: %s", e)
     return results
+
+
+def _format_relative_time(iso_ts: str) -> str:
+    """Convert ISO timestamp to human-readable relative time.
+
+    '2025-11-15T...' → '3 months ago'
+    '2026-02-23T...' → 'yesterday'
+    '2026-02-24T...' → 'today'
+    """
+    if not iso_ts:
+        return ""
+    try:
+        from datetime import datetime, timezone
+        # Parse ISO timestamp (handle both 'T' separator and space)
+        ts_str = iso_ts.replace("T", " ").split(".")[0]
+        dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        now = datetime.now()
+        delta = now - dt
+        days = delta.days
+
+        if days < 0:
+            return ""
+        if days == 0:
+            return "today"
+        if days == 1:
+            return "yesterday"
+        if days < 7:
+            return f"{days} days ago"
+        if days < 30:
+            weeks = days // 7
+            return f"{weeks} week{'s' if weeks > 1 else ''} ago"
+        if days < 365:
+            months = days // 30
+            return f"{months} month{'s' if months > 1 else ''} ago"
+        years = days // 365
+        return f"{years} year{'s' if years > 1 else ''} ago"
+    except Exception:
+        return ""
 
 
 def _needs_rag(message: str) -> bool:
@@ -538,6 +592,13 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
                 "last": "late in discussion",
             }.get(chunk_pos, "")
 
+            # R17: relative time label from created_at timestamp
+            # NOTE: Temporal labels are display-only for R17. Temporal weighting
+            # (recent conversations scoring higher on ambiguous queries) is deferred
+            # to the Intelligent Pipeline sprint. This is a future hook, not a gap.
+            created_at = r.get("created_at", "")
+            age_label = _format_relative_time(created_at) if created_at else ""
+
             # Build attribution line
             attr_parts = [f"[{source}]"]
             if title:
@@ -545,9 +606,18 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
             if pos_label:
                 attr_parts.append(f"({pos_label}")
                 if chunk_idx is not None and chunk_total and chunk_total > 1:
-                    attr_parts[-1] += f", chunk {chunk_idx + 1}/{chunk_total})"
+                    attr_parts[-1] += f", chunk {chunk_idx + 1}/{chunk_total}"
+                    if age_label:
+                        attr_parts[-1] += f", {age_label})"
+                    else:
+                        attr_parts[-1] += ")"
                 else:
-                    attr_parts[-1] += ")"
+                    if age_label:
+                        attr_parts[-1] += f", {age_label})"
+                    else:
+                        attr_parts[-1] += ")"
+            elif age_label:
+                attr_parts.append(f"({age_label})")
             attribution = " ".join(attr_parts)
 
             # Inject the A (response) portion with brief Q context

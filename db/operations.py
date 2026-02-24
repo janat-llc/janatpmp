@@ -161,6 +161,24 @@ def init_database():
                 migration_sql = migration_path.read_text(encoding="utf-8")
                 conn.executescript(migration_sql)
 
+        # Migration 0.9.0: file_registry for auto-ingestion (R17)
+        # Requires 0.8.0 — guard against running on incomplete schema
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='0.8.0'"
+        )
+        if cursor.fetchone() is None:
+            logger.warning("Migration 0.8.0 not found — skipping 0.9.0")
+        else:
+            cursor = conn.execute(
+                "SELECT version FROM schema_version WHERE version='0.9.0'"
+            )
+            if cursor.fetchone() is None:
+                migration_path = Path(__file__).parent / "migrations" / "0.9.0_file_registry.sql"
+                if migration_path.exists():
+                    migration_sql = migration_path.read_text(encoding="utf-8")
+                    conn.executescript(migration_sql)
+                    logger.info("Applied migration 0.9.0: file_registry")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

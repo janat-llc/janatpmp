@@ -3,7 +3,7 @@
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
 ![Gradio 6.6.0](https://img.shields.io/badge/Gradio-6.6.0-orange?logo=gradio&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-63%20Tools-blueviolet)
+![MCP](https://img.shields.io/badge/MCP-68%20Tools-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![Neo4j](https://img.shields.io/badge/Neo4j-2026.01.4-008CC1?logo=neo4j&logoColor=white)
 
@@ -42,7 +42,7 @@ graph TB
 
 ```mermaid
 graph TB
-    MCP[MCP Tools<br/>63 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
+    MCP[MCP Tools<br/>68 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
     UI[Gradio UI] --> DB
     API[REST API] --> DB
     DB --> SQLite[(SQLite)]
@@ -57,7 +57,7 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 
 ## Features
 
-- **63 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, chunks, Janus lifecycle, backups)
+- **68 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, chunks, Janus lifecycle, backups, file registry, temporal context)
 - **Message chunking** — long messages and documents are split into focused ~2500-char chunks before embedding; each chunk gets its own Qdrant vector with parent traceability; RAG returns specific paragraphs instead of entire turns; paragraph-aware splitting with configurable thresholds
 - **Triple-write pipeline** — every message is chunked, then each chunk fans out to SQLite, Qdrant, and Neo4j synchronously; immediately retrievable on the next turn
 - **Knowledge graph** — Neo4j with 8 entity types (including Chunk), CDC consumer for structural edges, INFORMED_BY provenance tracing, SIMILAR_TO cross-conversation linking, PART_OF chunk→parent edges
@@ -70,7 +70,9 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Usage-based salience** — keyword overlap heuristic estimates which RAG hits the model actually used, feeding salience boosts/decays back to Qdrant
 - **RAG pipeline** — Qwen3-Embedding-4B embeddings (2560-dim, Matryoshka) via Ollama, injected into chat context per-message
 - **Cognitive telemetry** — per-turn timing, frozen RAG snapshots, and token counts persisted to `messages_metadata` for longitudinal analysis
-- **Slumber Cycle** — 4-stage background daemon (Evaluate, Propagate, Relate, Prune) evaluates quality, bridges quality to Qdrant salience, creates cross-conversation graph edges, and removes dead-weight vectors
+- **Temporal Affinity Engine** — Janus knows current time, date, season, sunrise/sunset, and approximate temperature; pure-function solar calculations + NOAA climate normals; injected into every system prompt; RAG results carry relative time labels
+- **Auto-ingestion** — startup + Slumber scanner walks configured directories, discovers new files by SHA-256 hash, ingests automatically without manual button clicks; file registry tracks processed files; real-time progress tracking through all phases
+- **Slumber Cycle** — 5-stage background daemon (Ingest, Evaluate, Propagate, Relate, Prune) discovers new files, evaluates quality, bridges quality to Qdrant salience, creates cross-conversation graph edges, and removes dead-weight vectors
 - **Content ingestion** — parsers for Claude exports, Google AI Studio, markdown, and text with SHA-256 deduplication
 - **Portable project export/import** — versioned JSON export of domains, items, tasks, relationships for surviving platform resets
 - **Unified backup/restore** — SQLite + Qdrant snapshots + Neo4j graph export in timestamped directories
@@ -187,7 +189,8 @@ JANATPMP/
 │   ├── operations.py          # 28 CRUD + lifecycle functions
 │   ├── chat_operations.py     # Conversation + message + metadata CRUD
 │   ├── chunk_operations.py    # Chunk CRUD, stats, FTS search (R16)
-│   └── migrations/            # Versioned schema migrations (0.3.0–0.8.0)
+│   ├── file_registry_ops.py   # File registry MCP tools (R17)
+│   └── migrations/            # Versioned schema migrations (0.3.0–0.9.0)
 ├── atlas/                     # ATLAS — HTTP client layer for model services
 │   ├── config.py              # Service URLs, model identifiers, Neo4j + salience constants
 │   ├── chunking.py            # Paragraph-aware text splitter for messages + documents (R16)
@@ -196,7 +199,8 @@ JANATPMP/
 │   ├── memory_service.py      # Salience write-back to Qdrant (retrieval + usage signals)
 │   ├── usage_signal.py        # Keyword overlap heuristic for usage-based salience (R12)
 │   ├── on_write.py            # On-write: chunk + embed + fire-and-forget graph edges (R13/R16)
-│   └── pipeline.py            # Two-stage search orchestrator
+│   ├── pipeline.py            # Two-stage search orchestrator
+│   └── temporal.py            # Temporal Affinity Engine — time/location grounding (R17)
 ├── graph/                     # Knowledge graph layer — Neo4j (R13)
 │   ├── schema.py              # Idempotent Neo4j constraints + indexes
 │   ├── graph_service.py       # Neo4j CRUD + MCP tools (query, neighbors, stats)
@@ -205,8 +209,9 @@ JANATPMP/
 │   ├── log_config.py          # SQLite log handler + setup_logging()
 │   ├── chat.py                # Multi-provider chat with tool use + thinking mode
 │   ├── turn_timer.py          # Thread-local TurnTimer context manager (R12)
-│   ├── slumber.py             # Slumber Cycle — 4-stage background daemon (R12+R13)
+│   ├── slumber.py             # Slumber Cycle — 5-stage background daemon (R12+R13+R17)
 │   ├── settings.py            # Settings registry with validation
+│   ├── auto_ingest.py         # Startup + Slumber auto-ingestion scanner (R17)
 │   ├── claude_import.py       # Claude JSON → triplet messages
 │   ├── embedding.py           # Thin shim → atlas/embedding_service.py
 │   ├── vector_store.py        # Qdrant ops + two-stage search pipeline
@@ -222,7 +227,7 @@ JANATPMP/
 
 ## MCP Integration
 
-JANATPMP exposes **63 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
+JANATPMP exposes **68 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
 
 ```
 http://localhost:7860/gradio_api/mcp/sse
@@ -247,6 +252,8 @@ Full API documentation is available at `/gradio_api/docs` while the server is ru
 | Graph | `graph_query`, `graph_neighbors`, `graph_stats`, `backfill_graph` | Read-only Cypher queries, node traversal, graph statistics, CDC backfill |
 | System | `get_stats`, `get_schema_info`, `backup_database`, `restore_database`, `list_backups`, `reset_database`, `export_platform_data`, `import_platform_data` | Database administration, portable export/import |
 | Import | `import_conversations_json`, `import_conversations_directory`, `ingest_google_ai_conversations`, `ingest_markdown_documents` | Claude, Google AI Studio, and markdown ingestion |
+| File Registry | `get_file_registry_stats`, `list_registered_files`, `search_file_registry` | Auto-ingestion file tracking (R17) |
+| Temporal | `get_temporal_context`, `get_ingestion_progress` | Time/location grounding, ingestion progress (R17) |
 
 All tools are auto-generated from Python docstrings — no separate API definition layer.
 
@@ -308,7 +315,7 @@ Both sidebars collapse independently on mobile, leaving center content full-widt
 
 ## Database Schema
 
-Eleven core tables with FTS5 full-text search and a CDC outbox synced to Neo4j:
+Twelve core tables with FTS5 full-text search and a CDC outbox synced to Neo4j:
 
 - **domains** — First-class organizational entity. 13 seeded domains (5 active, 8 inactive). Managed via MCP — no code deploys needed to add new domains.
 - **items** — Projects, features, books, chapters. Hierarchical via `parent_id`. Domain validated against `domains` table.
@@ -319,6 +326,7 @@ Eleven core tables with FTS5 full-text search and a CDC outbox synced to Neo4j:
 - **messages** — Triplet schema: `user_prompt` + `model_reasoning` + `model_response`. Designed for fine-tuning data extraction. NULL reasoning = thinking not captured/not applicable.
 - **chunks** — Unified chunk records for messages and documents (R16). Each chunk stores text, character offsets, position (`only`/`first`/`middle`/`last`), Qdrant point_id, and embedded_at timestamp. FTS5 enabled via `chunks_fts`. CDC triggers sync Chunk nodes to Neo4j.
 - **messages_metadata** — Cognitive telemetry companion to messages. Per-turn timing (total/RAG/inference ms), frozen RAG snapshots, keywords, quality scores (0.0-1.0, populated by Slumber Cycle).
+- **file_registry** — Tracks ingested files by path + SHA-256 hash. Operational metadata for auto-ingestion scanner (R17). No CDC participation.
 - **settings** — Key-value config with base64 obfuscation for secrets.
 - **cdc_outbox** — Change Data Capture with background Neo4j sync via CDC consumer daemon.
 
@@ -351,10 +359,9 @@ feature/phase{X}-{description}  # legacy naming
 
 ## Future
 
-JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), and every message fans out to all three stores via the triple-write pipeline. Planned next steps:
+JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), and **auto-ingestion** removes manual import friction (R17). Planned next steps:
 
 - **Janus self-introspection** — let Janus query its own `messages_metadata` to ground self-description in data
-- **External data grounding** — weather, time-of-day awareness, basic world knowledge for small talk anchoring
 - **Ollama Modelfiles pipeline** — specialized models (synthesizer, scorer, consolidator, classifier) sharing base weights for dynamic system prompt generation
 - **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY, SIMILAR_TO, and PART_OF edges
 - **Temporal decay curves** — time-weighted salience that naturally deprioritizes stale knowledge

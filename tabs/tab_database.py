@@ -266,6 +266,65 @@ def build_database_tab(conversations_state=None, admin_refresh=None):
                 outputs=[ingestion_result], api_visibility="private",
             )
 
+        # Auto-Ingestion (R17)
+        with gr.Accordion("Auto-Ingestion", open=False):
+            gr.Markdown(
+                "Scan configured directories for new files. Runs automatically "
+                "at startup and during Slumber idle cycles."
+            )
+            scan_btn = gr.Button("Scan & Ingest Now", variant="primary")
+            scan_result = gr.JSON(label="Scan Result", value={})
+
+            gr.Markdown("### File Registry")
+
+            def _load_registry_stats():
+                try:
+                    from db.file_registry_ops import get_file_registry_stats
+                    return get_file_registry_stats()
+                except Exception:
+                    return {}
+
+            def _load_recent_files():
+                try:
+                    from db.file_registry_ops import list_registered_files
+                    import pandas as pd
+                    files = list_registered_files(limit=20)
+                    if not files:
+                        return pd.DataFrame()
+                    return pd.DataFrame([{
+                        "filename": f["filename"],
+                        "type": f["ingestion_type"],
+                        "status": f["status"],
+                        "entities": f["entity_count"],
+                        "ingested": f["ingested_at"],
+                    } for f in files])
+                except Exception:
+                    import pandas as pd
+                    return pd.DataFrame()
+
+            registry_stats = gr.JSON(label="Registry Stats", value=_load_registry_stats())
+            registry_table = gr.DataFrame(
+                label="Recent Files", value=_load_recent_files(), interactive=False,
+            )
+
+            def _run_scan():
+                try:
+                    from services.auto_ingest import scan_and_ingest
+                    return scan_and_ingest(auto_embed=True, source="manual")
+                except Exception as e:
+                    return {"error": str(e)}
+
+            def _refresh_registry():
+                return _load_registry_stats(), _load_recent_files()
+
+            scan_click = scan_btn.click(
+                _run_scan, outputs=[scan_result], api_visibility="private",
+            )
+            scan_click.then(
+                _refresh_registry, outputs=[registry_stats, registry_table],
+                api_visibility="private",
+            )
+
         # Vector Store (Qdrant)
         with gr.Accordion("Vector Store (Qdrant)", open=False):
             gr.Markdown("Embed entities into Qdrant for semantic search and RAG.")
@@ -412,6 +471,7 @@ def build_database_tab(conversations_state=None, admin_refresh=None):
             for click_event in [
                 backup_click, restore_click, reset_click,
                 ingest_claude_click, ingest_google_click, ingest_markdown_click,
+                scan_click,
             ]:
                 click_event.then(
                     _bump, inputs=[admin_refresh], outputs=[admin_refresh],

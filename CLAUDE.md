@@ -46,6 +46,7 @@ JANATPMP/
 │   ├── operations.py         # All CRUD + lifecycle functions (28 operations)
 │   ├── chat_operations.py    # Conversation + message CRUD (Phase 4B)
 │   ├── chunk_operations.py   # Chunk CRUD, stats, FTS search (R16)
+│   ├── file_registry_ops.py  # File registry MCP tools (R17)
 │   ├── test_operations.py    # Tests
 │   ├── migrations/           # Versioned schema migrations
 │   │   ├── 0.3.0_conversations.sql
@@ -55,7 +56,8 @@ JANATPMP/
 │   │   ├── 0.5.0_messages_metadata.sql
 │   │   ├── 0.6.0_salience_synced.sql
 │   │   ├── 0.7.0_pipeline_observability.sql
-│   │   └── 0.8.0_chunks.sql
+│   │   ├── 0.8.0_chunks.sql
+│   │   └── 0.9.0_file_registry.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
 │   ├── exports/              # Portable project data exports (JSON)
@@ -69,7 +71,8 @@ JANATPMP/
 │   ├── memory_service.py     # Salience write-back to Qdrant payloads
 │   ├── usage_signal.py       # Keyword overlap heuristic for usage-based salience (R12)
 │   ├── on_write.py           # On-write: chunk + embed + fire-and-forget graph edges (R13/R16)
-│   └── pipeline.py           # Two-stage search: ANN → rerank → salience
+│   ├── pipeline.py           # Two-stage search: ANN → rerank → salience
+│   └── temporal.py           # Temporal Affinity Engine — time/location context (R17)
 ├── graph/                    # Knowledge graph layer — Neo4j (R13)
 │   ├── __init__.py
 │   ├── schema.py             # Idempotent Neo4j constraints + indexes
@@ -86,6 +89,7 @@ JANATPMP/
 │   ├── vector_store.py       # Qdrant vector DB + two-stage search pipeline
 │   ├── bulk_embed.py         # Batch embed via Ollama with progress & checkpointing
 │   ├── settings.py           # Settings registry with validation and categories
+│   ├── auto_ingest.py        # Startup + Slumber auto-ingestion scanner (R17)
 │   └── ingestion/            # Content ingestion parsers (Phase 6A)
 │       ├── __init__.py
 │       ├── google_ai_studio.py  # Google AI Studio chunkedPrompt parser
@@ -216,6 +220,9 @@ Chat at `/chat`). Admin tab has no settings — it's purely database administrat
 - `chunk_min_chars` — Minimum chunk size (default: 200)
 - `chunk_overlap_chars` — Overlap between consecutive chunks (default: 200)
 - `chunk_threshold` — Messages shorter than this stay as single vector (default: 3000)
+- `location_lat`, `location_lon` — Geographic coordinates for temporal engine (default: Fargo, ND)
+- `location_name` — Full address for temporal grounding display
+- `location_tz` — IANA timezone (default: America/Chicago)
 
 **Settings flow:**
 - `services/settings.py` provides `get_setting()` / `set_setting()` with auto base64 for secrets
@@ -345,6 +352,11 @@ CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where 
   char_start/char_end offsets, position ('only'/'first'/'middle'/'last'), point_id (Qdrant),
   embedded_at timestamp. FTS5 via `chunks_fts` with INSERT/UPDATE/DELETE sync triggers.
   CDC trigger syncs Chunk nodes to Neo4j. UNIQUE(entity_type, entity_id, chunk_index).
+- `file_registry` — Tracks ingested files by path + SHA-256 content hash (R17). Operational
+  metadata — no CDC participation. Columns: file_path (UNIQUE), filename, content_hash,
+  file_size, ingestion_type ('claude'/'google_ai'/'markdown'), entity_type, entity_count,
+  status ('ingested'/'failed'/'skipped'), error_message, ingested_at. Used by auto-ingestion
+  scanner to skip already-processed files and detect content changes.
 - `cdc_outbox` — Change Data Capture for future Qdrant/Neo4j sync. Auto-cleaned on startup (90 days).
 - `schema_version` — Migration tracking.
 
@@ -358,6 +370,7 @@ CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where 
 - `0.6.0_salience_synced.sql` — Salience sync tracking
 - `0.7.0_pipeline_observability.sql` — Per-turn pipeline metadata in messages_metadata
 - `0.8.0_chunks.sql` — Unified chunks table, FTS5, CDC triggers (drops+recreates all triggers for CHECK constraint expansion)
+- `0.9.0_file_registry.sql` — File registry for auto-ingestion tracking (R17, no CDC — operational metadata)
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
 the fresh-DB/existing-DB if/else branch (after both branches complete). Placing inside `else`
@@ -604,12 +617,13 @@ with gr.Blocks() as demo:
 demo.launch(mcp_server=True)
 ```
 
-63 functions are exposed via `gr.api()` as MCP tools: 28 from `db/operations.py`
+68 functions are exposed via `gr.api()` as MCP tools: 28 from `db/operations.py`
 (including domain CRUD + export/import), 13 from `db/chat_operations.py` (including Janus
-lifecycle), 4 from `db/chunk_operations.py` (chunk CRUD + stats + search), 8 vector/embedding
-operations from `services/` (including 2 bulk chunk tools), 2 import pipelines, 4 ingestion
-orchestrators, and 4 graph operations from `graph/`. All MUST have Google-style docstrings
-with Args/Returns for MCP tool generation.
+lifecycle), 4 from `db/chunk_operations.py` (chunk CRUD + stats + search), 3 from
+`db/file_registry_ops.py` (R17 file registry), 8 vector/embedding operations from `services/`
+(including 2 bulk chunk tools), 2 import pipelines, 4 ingestion orchestrators, 4 graph
+operations from `graph/`, and 2 from R17 (ingestion progress + temporal context). All MUST
+have Google-style docstrings with Args/Returns for MCP tool generation.
 
 ### Common Mistakes to Avoid
 
@@ -859,14 +873,17 @@ same tokenizer = consistent chars-per-token ratio). Fallback: ~4 chars/token est
 - `touch_activity()` called in all chat handlers to reset idle timer
 - Settings: `slumber_idle_threshold`, `slumber_batch_size`, `slumber_evaluator`, `slumber_prune_age_days`
 - Started at app boot in `app.py` via `start_slumber()`
-- Four sub-cycles run in sequence during each idle period:
+- Five sub-cycles run in sequence during each idle period:
 
 | Sub-cycle | Function | Purpose |
 |-----------|----------|---------|
+| Ingest | `_ingest_scan()` | Scan directories for new files, ingest + chunk + embed (R17) |
 | Evaluate | `_evaluate_batch()` | Score unscored messages via heuristic, extract TF keywords |
 | Propagate | `_propagate_batch()` | Bridge `quality_score` → Qdrant `salience` (decay garbage, boost quality) |
 | Relate | `_relate_batch()` | Create SIMILAR_TO edges in Neo4j via cross-conversation keyword overlap |
 | Prune | `_prune_batch()` | Remove dead-weight vectors from Qdrant (quality < 0.1, salience < 0.1, never retrieved, older than N days) |
+
+Ingest runs FIRST so newly ingested content gets full Slumber processing (evaluate, propagate, relate) in the same cycle.
 
 Propagate mapping: quality < 0.15 → ×0.3 hard decay; 0.15-0.4 → ×0.7 soft decay;
 0.4-0.7 → neutral; > 0.7 → +0.1 boost. Prune never deletes from SQLite — only Qdrant vectors.
@@ -1118,36 +1135,98 @@ Paragraph-aware text splitter with configurable limits:
 7. `embed_all_items()`, `embed_all_tasks()`, `embed_all_domains()` → unchanged
 8. `backfill_graph()` → sync chunk nodes to Neo4j
 
-## Current Platform State (Post-R16)
+## Phase R17: Temporal Affinity Engine + Auto-Ingestion
+
+R17 gives Janus its first senses — awareness of time, location, season, and daylight —
+and automates the ingestion pipeline so new files are discovered and processed without
+manual button clicks.
+
+### Temporal Affinity Engine (`atlas/temporal.py`)
+
+Pure-function module using only Python stdlib (`math`, `datetime`, `zoneinfo`). Takes
+current time + geographic coordinates, returns a temporal context dict with time-of-day,
+season, sunrise/sunset (~10-15 min accuracy via standard solar position equations),
+estimated temperature range (static monthly averages from NOAA climate normals for
+Fargo, ND), daylight hours, and greeting hint.
+
+- `get_temporal_context(lat, lon, timezone, now)` — returns full temporal dict
+- `format_temporal_prompt(ctx)` — formats as natural language for system prompt injection
+- Defaults: 46.8290°N, -96.8540°W (Mat's house), America/Chicago timezone
+- Constants in `atlas/config.py`: LOCATION_LAT, LOCATION_LON, LOCATION_NAME, LOCATION_TZ
+- Settings in `services/settings.py`: `location_lat`, `location_lon`, `location_name`, `location_tz`
+- Injected into `_build_system_prompt()` in `services/chat.py` via `{temporal_context}` placeholder
+- Relative time labels ("3 months ago", "yesterday") added to RAG context attribution
+
+### Auto-Ingestion Scanner (`services/auto_ingest.py`)
+
+Startup + Slumber file discovery and ingestion. Walks configured directories, compares
+against `file_registry` table, ingests new/changed files automatically. Source files
+never touched.
+
+- **Dedup:** Primary key is `file_path` (UNIQUE). Secondary check: `content_hash` (SHA-256).
+  Same hash → skip. Different hash → re-import (file modified). Path not found → new file.
+- **Hash-change safety:** If re-ingestion produces zero new entities (parser's UUID dedup
+  caught everything), silently update hash in registry. Don't count as "files ingested."
+- **Three scanners:** `_scan_claude_dir()` (conversations*.json), `_scan_google_ai_dir()`
+  (*.json), `_scan_markdown_dir()` (*.md, *.txt). Each calls the existing ingestion pipeline
+  with `auto_embed=False`, then runs chunk+embed as one pass at the end.
+- **Progress tracking:** Module-level `_current_progress` dict updated through ALL phases
+  (scanning, chunking, embedding). Exposed via `get_ingestion_progress()` MCP tool.
+- **Startup:** Wired into `app.py` after `ensure_collections()`, before `start_slumber()`.
+- **Slumber:** `_ingest_scan()` runs as FIRST sub-cycle (before evaluate) so newly ingested
+  content gets full Slumber processing in the same cycle.
+
+### File Registry (`db/migrations/0.9.0_file_registry.sql`)
+
+Operational metadata table — tracks which files have been ingested. No CDC participation
+(not content, not synced to Neo4j). Migration 0.9.0 requires 0.8.0 guard.
+
+### MCP Tools (5 new)
+
+- `get_temporal_context` — current temporal grounding context
+- `get_ingestion_progress` — real-time ingestion pipeline progress
+- `get_file_registry_stats` — file registry statistics
+- `list_registered_files` — browse ingested files with filters
+- `search_file_registry` — search files by filename pattern
+
+### Admin UI
+
+- **Auto-Ingestion accordion** in Admin tab: "Scan & Ingest Now" button, registry stats JSON,
+  recent files table. Wired to admin_refresh for sidebar stat updates.
+- **Files Tracked count** in Admin sidebar Database Overview.
+
+## Current Platform State (Post-R17)
 
 ### What Works
 
 - **Triad of Memory operational** — SQLite (source of truth), Qdrant (semantic search),
   Neo4j (knowledge graph). Triple-write pipeline keeps all three in sync on every message.
+- **Temporal grounding** — Janus knows current time, date, season, sunrise/sunset, approximate
+  temperature for Fargo, ND. System prompt includes temporal context every turn. RAG results
+  carry relative time labels ("3 months ago", "yesterday").
+- **Auto-ingestion** — files dropped into configured directories are automatically discovered
+  and processed at startup and during Slumber idle cycles. File registry tracks what's been
+  ingested by path + SHA-256 hash. Source files never touched.
 - **Message chunking** — long messages and documents split into focused ~2500-char chunks
   before embedding. Each chunk gets its own Qdrant vector. RAG returns specific paragraphs
   instead of entire turns. Configurable thresholds and diversity caps.
 - **Janus continuous chat** — persistent conversation, sliding window, dual chat surfaces
   (Sovereign Chat + sidebar), chapter archiving.
 - **RAG pipeline** — hybrid FTS + vector search (including chunk-level FTS), cross-encoder
-  reranking, optional synthesis, salience tracking, provenance display with temporal position.
-  Configurable thresholds and per-message diversity cap.
+  reranking, optional synthesis, salience tracking, provenance display with temporal position
+  and relative time labels. Configurable thresholds and per-message diversity cap.
 - **Content corpus** — 659 Claude conversations (10,271 messages), 40 markdown documents,
   78 items, 13 domains, 3 tasks. All embedded in Qdrant, synced to Neo4j.
-- **Background intelligence** — Slumber Cycle evaluates message quality, propagates salience
-  to chunk-level Qdrant points, creates SIMILAR_TO edges, prunes dead-weight vectors
-  (atomic per-message: all chunks or none).
+- **Background intelligence** — Slumber Cycle: ingest scan → evaluate → propagate → relate → prune.
+  New content auto-discovered and fully processed in a single idle cycle.
 - **Ingestion pipelines** — Claude export, Google AI Studio, markdown. Auto-embed + dedup.
-- **63 MCP tools** — full CRUD + search + graph + embedding + chunks exposed for external AI clients.
+  Auto-ingestion scanner for hands-free operation.
+- **68 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal exposed for external AI clients.
 
 ### What's Missing (Architectural Gaps)
 
 These gaps became visible through extended conversation with Janus:
 
-- **No external data sources** — Janus cannot check weather, time, news, or anything outside
-  the database. Small talk ("what's the weather?") produces echo behavior — the model
-  repeats and elaborates on whatever the user said, because it has no way to verify or
-  enrich with real-world data.
 - **No self-introspection** — Janus doesn't know what the Slumber Cycle actually did overnight.
   It could query `messages_metadata` for quality scores it evaluated, but it has no mechanism
   to do so. It describes its own processes in fabricated terms.
@@ -1159,30 +1238,32 @@ These gaps became visible through extended conversation with Janus:
   When RAG injects personal details from imported Claude conversations, the model weaves
   them into elaborate narratives because it has no grounding mechanism to distinguish
   memory retrieval from creative elaboration.
+- **No temporal weighting** — RAG treats all content equally regardless of age. Recent
+  conversations should score higher on ambiguous queries. Deferred to Intelligent Pipeline sprint.
 
 ### The Core Tension
 
 JANATPMP is a **project management platform**, not a consciousness substrate. Janus has
-memory (the Triad), a voice (the LLM), and focused recall (chunk-level RAG), but no
-senses (external data), no introspection (self-querying), and no ability to act (tool
-use was removed because the 8B model couldn't handle it). The Modelfile intelligence
-stack is the right direction — specialized sub-models for classification, scoring,
-synthesis — but those are layers of intelligence on a foundation that still can't look
-out the window.
+memory (the Triad), a voice (the LLM), focused recall (chunk-level RAG), and now senses
+(time, location, season via the Temporal Affinity Engine), but no introspection
+(self-querying) and no ability to act (tool use was removed because the 8B model
+couldn't handle it). The Modelfile intelligence stack is the right direction —
+specialized sub-models for classification, scoring, synthesis — but those are layers
+of intelligence on a foundation that still has limited world awareness.
 
 ## Future Architecture (not in scope, for context only)
 
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R17 candidates)
+### Near-Term (R18 candidates)
 
 - **Janus self-introspection** — let Janus query its own `messages_metadata` to report what
   the Slumber Cycle actually evaluated, what salience scores changed, what quality patterns
   emerged. Ground its self-description in data, not fabrication.
-- **External data grounding** — weather, time-of-day awareness, basic world knowledge.
-  Even simple signals (current time, "it's morning") give the model grounding anchors
-  that prevent echo behavior during small talk.
+- **Bootstrap Lifecycle** — CONFIGURING → SLEEPING → AWAKE state machine. Auto-ingestion
+  (R17) is the foundation; next step is detecting when initial ingestion is complete and
+  transitioning to active mode.
 - **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
   system-injected, or verified. Give the model metadata to distinguish recall from hearsay.
 

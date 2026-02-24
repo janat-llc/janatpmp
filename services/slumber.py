@@ -473,12 +473,33 @@ def _prune_batch():
         logger.info("Slumber prune: removed %d dead-weight vectors from Qdrant", pruned)
 
 
+def _ingest_scan():
+    """Sub-cycle 0 (runs first): Scan configured directories for new files.
+
+    Lightweight: only scans file listings and checks registry.
+    Full parsing + embedding only if new files are found.
+    Runs BEFORE evaluate so new content gets full Slumber processing.
+    """
+    from services.auto_ingest import scan_and_ingest
+    result = scan_and_ingest(auto_embed=True, source="slumber")
+    if result.get("files_ingested", 0) > 0:
+        logger.info("Slumber ingest scan: %s", result)
+
+
 def _slumber_cycle():
-    """Background thread: Evaluate → Propagate → Relate → Prune during idle."""
+    """Background thread: Ingest → Evaluate → Propagate → Relate → Prune during idle."""
     while True:
         time.sleep(CYCLE_INTERVAL_SECONDS)
         if not _is_idle():
             continue
+
+        # Sub-cycle 0: Ingest scan (new content → chunks → embeddings)
+        # Runs FIRST so newly ingested content gets full Slumber processing
+        # in the same cycle (evaluate, propagate, relate, prune).
+        try:
+            _ingest_scan()
+        except Exception as e:
+            logger.debug("Slumber ingest scan error: %s", e)
 
         # Sub-cycle 1: Evaluate (score unscored messages)
         try:

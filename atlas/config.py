@@ -1,4 +1,8 @@
-"""ATLAS configuration constants."""
+"""ATLAS configuration constants.
+
+Service URLs, model identifiers, vector dimensions, salience/rerank parameters,
+chunking parameters, and temporal engine defaults.
+"""
 
 # --- Service URLs (Docker internal DNS) ---
 # Embedding runs through Ollama's OpenAI-compatible API
@@ -43,6 +47,12 @@ RAG_MAX_CHUNKS_DEFAULT = 10  # Default max chunks injected (tunable via settings
 # --- Reranking parameters ---
 RERANK_CANDIDATES = 20  # ANN top-k before reranking
 RERANK_RETURN = 5        # Top-n returned after reranking
+
+# --- Temporal Engine defaults (R17) ---
+LOCATION_LAT = 46.8290       # Fargo, ND (Mat's house)
+LOCATION_LON = -96.8540
+LOCATION_NAME = "3351 Washington Street South, Fargo, ND 58104"
+LOCATION_TZ = "America/Chicago"
 
 # --- Qwen3 asymmetric query instruction ---
 QUERY_INSTRUCTION = (
