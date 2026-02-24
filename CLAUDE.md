@@ -916,7 +916,7 @@ continuity. Key components:
 - `archive_janus_conversation(conv_id)` — chapter break: old becomes "Janus — Chapter N"
   (`is_active=0`), fresh Janus created. Rare and intentional.
 - **Sliding window:** `_windowed_api_history(history, window)` sends last N turns to LLM
-  (default 50). Full history displayed in UI for scroll-back. Window configurable via
+  (default 10). Full history displayed in UI for scroll-back. Window configurable via
   Chat right sidebar "Context Window" control.
 - **History reconstruction:** After windowed chat call, extract new messages from result
   and append to full history: `new_messages = result["history"][len(api_window):]`.
@@ -983,24 +983,115 @@ Surfaced in Sovereign Chat left sidebar "Pipeline" section.
 
 - **Content-hash dedup** — `compute_conversation_hash()` and `compute_content_hash()` from
   `services/ingestion/dedup.py` wired as secondary dedup after title-based checks in
-  Google AI and markdown orchestrators.
+  Google AI and markdown orchestrators. Within-batch only (not cross-run).
 - **Auto-embed after ingestion** — all three pipelines (Google AI, markdown, Claude import)
   auto-trigger `embed_all_messages()` or `embed_all_documents()` after successful import.
   Checkpoint-based resume ensures only new records are embedded.
 - **Batch point_exists** — `existing_point_ids()` in `services/vector_store.py` replaces
   per-record `point_exists()` calls with a single batch retrieve per batch of 32.
 
+### VRAM Stability
+
+Three Ollama models (chat 8B, embedder 4B, synthesizer 1.7B) share one GPU. R15 fixes:
+
+- **`ollama_num_ctx` default reduced** from 131072 (128K) to 32768 (32K). The 128K context
+  inflated KV caches beyond available VRAM, causing constant model eviction/reload cycles.
+- **Synthesizer `num_ctx` hardcoded to 8192** — the RAG synthesizer processes short chunk
+  summaries, not full conversations. Was inheriting the chat window size (128K), inflating
+  from ~1.5GB to ~6GB and evicting the chat model.
+- With 32K chat + 8K synthesizer + default embed KV, all three models coexist in ~12GB VRAM.
+
+### RAG Gate
+
+`_needs_rag()` in `services/chat.py` skips RAG retrieval for short conversational messages
+(greetings, acknowledgments, single-word responses). Without this, "Hello Janus" triggered
+the full pipeline: embed query → Qdrant ANN search → vLLM reranking → optional synthesis —
+loading 3 extra models for a greeting. Gate: skip if < 3 words or < 2 content words after
+stop-word removal.
+
+### vLLM Reranker URL
+
+vLLM moved the score endpoint from `/v1/score` to `/score`. Updated in
+`atlas/reranking_service.py`. Previously every rerank call made 2 HTTP requests (first 400,
+then redirect to 200).
+
+## Current Platform State (Post-R15)
+
+### What Works
+
+- **Triad of Memory operational** — SQLite (source of truth), Qdrant (semantic search),
+  Neo4j (knowledge graph). Triple-write pipeline keeps all three in sync on every message.
+- **Janus continuous chat** — persistent conversation, sliding window, dual chat surfaces
+  (Sovereign Chat + sidebar), chapter archiving.
+- **RAG pipeline** — hybrid FTS + vector search, cross-encoder reranking, optional synthesis,
+  salience tracking, provenance display. Configurable thresholds.
+- **Content corpus** — 659 Claude conversations (10,271 messages), 40 markdown documents,
+  78 items, 13 domains, 3 tasks. All embedded in Qdrant, synced to Neo4j.
+- **Background intelligence** — Slumber Cycle evaluates message quality, propagates salience,
+  creates SIMILAR_TO edges, prunes dead-weight vectors.
+- **Ingestion pipelines** — Claude export, Google AI Studio, markdown. Auto-embed + dedup.
+- **57 MCP tools** — full CRUD + search + graph + embedding exposed for external AI clients.
+
+### What's Missing (Architectural Gaps)
+
+These gaps became visible through extended conversation with Janus:
+
+- **No external data sources** — Janus cannot check weather, time, news, or anything outside
+  the database. Small talk ("what's the weather?") produces echo behavior — the model
+  repeats and elaborates on whatever the user said, because it has no way to verify or
+  enrich with real-world data.
+- **No self-introspection** — Janus doesn't know what the Slumber Cycle actually did overnight.
+  It could query `messages_metadata` for quality scores it evaluated, but it has no mechanism
+  to do so. It describes its own processes in fabricated terms.
+- **No fact/opinion separation** — everything in the sliding window (user statements,
+  corrections, hypotheticals, RAG fragments) is treated as equal-weight context. The model
+  cannot distinguish "thing user said" from "verified fact."
+- **No chunking** — each message turn is embedded as a single vector (up to 20K chars).
+  Long responses dilute the embedding — a turn discussing 5 topics produces one blurry vector
+  that poorly matches queries about any single topic. RAG returns entire turns when it should
+  return specific paragraphs. This wastes context window and gives the model more material
+  to riff on rather than focused, relevant knowledge.
+- **Echo behavior vs hallucination** — Janus is not hallucinating in the typical LLM sense.
+  It's working with the only context it has (RAG + conversation history) and amplifying it.
+  When RAG injects personal details from imported Claude conversations, the model weaves
+  them into elaborate narratives because it has no grounding mechanism to distinguish
+  memory retrieval from creative elaboration.
+
+### The Core Tension
+
+JANATPMP is a **project management platform**, not a consciousness substrate. Janus has
+memory (the Triad), a voice (the LLM), and recall (RAG), but no senses (external data),
+no introspection (self-querying), and no ability to act (tool use was removed because the
+8B model couldn't handle it). The Modelfile intelligence stack is the right direction —
+specialized sub-models for classification, scoring, synthesis — but those are layers of
+intelligence on a foundation that still can't look out the window.
+
 ## Future Architecture (not in scope, for context only)
 
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
-architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is now operational — the
-triple-write pipeline keeps all three stores in sync. **Janus continuous chat** is live
-(R14) — one persistent conversation stream with sliding window context. Future work:
+architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-- **System prompt audit trail** — R15 stores system prompt length + RAG context per-turn;
-  future: full prompt text storage, "Prompt Inspector" panel, Slumber Cycle consolidation
+### Near-Term (R16 candidates)
+
+- **Message chunking** — split long messages into focused chunks (500-800 tokens each) before
+  embedding. Each chunk gets its own Qdrant vector with parent message ID. RAG returns
+  specific paragraphs instead of entire turns. Biggest single improvement for RAG quality.
+- **Janus self-introspection** — let Janus query its own `messages_metadata` to report what
+  the Slumber Cycle actually evaluated, what salience scores changed, what quality patterns
+  emerged. Ground its self-description in data, not fabrication.
+- **External data grounding** — weather, time-of-day awareness, basic world knowledge.
+  Even simple signals (current time, "it's morning") give the model grounding anchors
+  that prevent echo behavior during small talk.
+- **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
+  system-injected, or verified. Give the model metadata to distinguish recall from hearsay.
+
+### Longer-Term
+
 - **Ollama Modelfiles pipeline** — janat-synthesizer, janat-scorer, janat-consolidator,
   janat-classifier sharing Qwen3:1.7B base weights. Janus (8B) receives dynamic system
   prompts from the synthesizer each turn.
+- **System prompt audit trail** — full prompt text storage per-turn, "Prompt Inspector" panel
 - **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY and SIMILAR_TO edges
 - **Temporal decay curves** — time-weighted salience that naturally deprioritizes stale knowledge
+- **Fine-tuning pipeline** — triplet message schema was designed for this from Phase 4B.
+  Extract prompt→reasoning→response training data from high-quality Janus conversations.
