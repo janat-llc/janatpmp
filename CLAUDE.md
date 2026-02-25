@@ -31,7 +31,7 @@ JANATPMP/
 │   ├── projects.py           # Projects + Work page — sidebar-first layout (~350 lines)
 │   ├── knowledge.py          # Knowledge page — Memory, Connections, Pipeline, Synthesis (~620 lines)
 │   ├── admin.py              # Admin page — Settings, Persona, Operations (~470 lines)
-│   └── chat.py               # Sovereign Chat page (R11) — full metrics sidebar
+│   └── chat.py               # Sovereign Chat page — 4 tabs: Chat, Overview, Cognition, Settings
 ├── tabs/
 │   ├── __init__.py
 │   ├── tab_chat.py           # Chat handler: _handle_chat() for sidebar quick-chat
@@ -59,7 +59,8 @@ JANATPMP/
 │   │   ├── 0.6.0_salience_synced.sql
 │   │   ├── 0.7.0_pipeline_observability.sql
 │   │   ├── 0.8.0_chunks.sql
-│   │   └── 0.9.0_file_registry.sql
+│   │   ├── 0.9.0_file_registry.sql
+│   │   └── 1.0.0_cognition_trace.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
 │   ├── exports/              # Portable project data exports (JSON)
@@ -73,6 +74,7 @@ JANATPMP/
 │   ├── memory_service.py     # Salience write-back to Qdrant payloads
 │   ├── usage_signal.py       # Keyword overlap heuristic for usage-based salience (R12)
 │   ├── on_write.py           # On-write: chunk + embed + fire-and-forget graph edges (R13/R16)
+│   ├── graph_ranking.py       # Graph-aware RAG ranking — topology boost (R21)
 │   ├── pipeline.py           # Search pipeline: ANN → salience (rerank decommissioned)
 │   └── temporal.py           # Temporal Affinity Engine — time/location context (R17)
 ├── graph/                    # Knowledge graph layer — Neo4j (R13)
@@ -130,7 +132,7 @@ app.py — orchestrator (one process, one port)
 ├── / (Projects)        → pages/projects.py  [Projects + Work tabs]
 ├── /knowledge          → pages/knowledge.py [Memory, Connections, Pipeline, Synthesis]
 ├── /admin              → pages/admin.py     [Settings, Persona, Operations]
-└── /chat               → pages/chat.py      [Sovereign Chat — full metrics sidebar]
+└── /chat               → pages/chat.py      [Sovereign Chat — Chat, Overview, Cognition, Settings]
 ```
 
 Navbar: **Projects** (home) · **Knowledge** · **Admin** · **Chat**
@@ -187,7 +189,7 @@ The center content is just the main Blocks body (no Row/Column wrapper needed).
 | **Projects** | `/` | Projects, Work | Project/task cards, filters, + New |
 | **Knowledge** | `/knowledge` | Memory, Connections, Pipeline, Synthesis | Type filter, search, pipeline health |
 | **Admin** | `/admin` | Settings, Persona, Operations | Category buttons, identity card, platform health |
-| **Chat** | `/chat` | Metrics, Settings, Conversations | RAG provenance, pipeline stats, conversation list |
+| **Chat** | `/chat` | Chat, Overview, Cognition, Settings | RAG provenance, pipeline stats, conversation list |
 
 Knowledge page unifies conversations + documents into a single **Memory** tab with type
 filter. **Pipeline** tab consolidates ingestion, embedding, chunking, and graph controls.
@@ -368,6 +370,8 @@ CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where 
   (total/rag/inference ms), frozen RAG snapshot (hit counts, rerank/salience averages,
   per-hit score objects), keywords, labels, quality_score (0.0-1.0, set by Slumber Cycle).
   FK to messages(id) with CASCADE delete. Unique index on message_id.
+  `cognition_prompt_layers` — JSON of per-layer prompt breakdown (R21, layer name + chars).
+  `cognition_graph_trace` — JSON of graph ranking trace (R21, seeds + neighborhood + boosts).
 - `chunks` — Unified chunk records for messages and documents (R16). Each row stores
   entity_type ('message'/'document'), entity_id (FK to parent), chunk_index, chunk_text,
   char_start/char_end offsets, position ('only'/'first'/'middle'/'last'), point_id (Qdrant),
@@ -392,6 +396,7 @@ CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where 
 - `0.7.0_pipeline_observability.sql` — Per-turn pipeline metadata in messages_metadata
 - `0.8.0_chunks.sql` — Unified chunks table, FTS5, CDC triggers (drops+recreates all triggers for CHECK constraint expansion)
 - `0.9.0_file_registry.sql` — File registry for auto-ingestion tracking (R17, no CDC — operational metadata)
+- `1.0.0_cognition_trace.sql` — Cognition trace columns on messages_metadata (R21)
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
 the fresh-DB/existing-DB if/else branch (after both branches complete). Placing inside `else`
@@ -822,6 +827,7 @@ Core is now a thin HTTP client layer — no PyTorch, no CUDA, no in-process mode
 | `reranking_service.py` | DECOMMISSIONED — vLLM reranker removed, code retained |
 | `memory_service.py` | `write_salience()` — weighted salience write-back to Qdrant payloads |
 | `pipeline.py` | Search pipeline orchestrator (rerank decommissioned, ANN + salience only) |
+| `graph_ranking.py` | Graph-aware RAG ranking — topology boost for candidates (R21) |
 
 ### Model Stack
 
@@ -1357,7 +1363,61 @@ overlap. R20 creates **Conversation-to-Conversation** SIMILAR_TO edges via vecto
 similarity. Different node levels, different algorithms, same edge type. The `method`
 property distinguishes them ("vector_centroid_v1" vs no method on Slumber edges).
 
-## Current Platform State (Post-R20)
+## Phase R21: The Strange Loop — Graph-Aware RAG + Cognition Tab
+
+R21 makes the thought pipeline visible and lets graph topology influence retrieval.
+Two components: graph-aware RAG ranking and the Cognition introspection tab.
+
+### Graph-Aware RAG Ranking (`atlas/graph_ranking.py`)
+
+`compute_graph_affinity(candidates, boost_factor)` — called inside `_build_rag_context()`
+after Qdrant + FTS merge, before score filtering:
+
+1. Groups RAG candidates by conversation_id, picks top-3 by mean score (seed conversations)
+2. Queries Neo4j for SIMILAR_TO neighbors of each seed (parameterized Cypher, max 3 calls)
+3. Builds topic neighborhood set: {conversation_id: edge_score}
+4. Applies additive boost: `final_score = score + (edge_score * GRAPH_BOOST_FACTOR)`
+5. Returns modified candidates + trace dict for Cognition Tab
+
+Additive boost means graph can promote borderline candidates above threshold but can't
+make irrelevant content appear relevant. Uses `_get_driver()` directly for parameterized
+Cypher (not `graph_query()` which is string-only for MCP safety).
+
+Configuration (`atlas/config.py`): `GRAPH_BOOST_FACTOR` (0.1), `GRAPH_TOPIC_CONVERSATIONS` (3),
+`GRAPH_NEIGHBORHOOD_HOPS` (1). Graceful degradation: if Neo4j is down, returns candidates
+unchanged with empty trace.
+
+### Cognition Tab (`pages/chat.py`)
+
+Fourth tab in Sovereign Chat (Chat, Overview, Cognition, Settings). Renders from
+`turn_metrics.cognition_trace` via `@gr.render`. Four sections:
+
+1. **Prompt Assembly** — per-layer accordion showing text and char count for each of
+   the 7+ prompt composer layers (identity, persona, temporal, state, boundary, platform,
+   introspection, guidelines)
+2. **RAG Pipeline** — candidate funnel: retrieved → graph-boosted → filtered → synthesized
+3. **Context Budget** — system prompt + history turns + RAG context with token estimate
+4. **Graph Neighborhood** — seed conversations, neighborhood size, boosted candidate count
+
+Shows latest turn only (historical cognition browsing deferred).
+
+### Prompt Composer Refactor (`services/prompt_composer.py`)
+
+`compose_system_prompt()` return type changed from `str` to `tuple[str, dict]`.
+The dict maps layer names to `{"text": str, "chars": int}`. `_build_system_prompt()`
+in `services/chat.py` unpacks the tuple. Layer data flows through `chat()` return dict
+via `cognition_trace.prompt_layers`.
+
+### Cognition Trace Persistence
+
+Two new columns on `messages_metadata` (migration 1.0.0):
+- `cognition_prompt_layers` — JSON of layer breakdown (name + chars, not full text)
+- `cognition_graph_trace` — JSON of graph ranking trace (seeds, neighborhood, boosts)
+
+Stored per-turn by `_handle_send()` in `pages/chat.py`. Enables future Slumber Cycle
+evaluation of prompt composition quality.
+
+## Current Platform State (Post-R21)
 
 ### What Works
 
@@ -1395,14 +1455,21 @@ property distinguishes them ("vector_centroid_v1" vs no method on Slumber edges)
   similarity into Neo4j SIMILAR_TO edges between Conversation nodes. Transforms isolated
   conversation chains into a connected semantic network. MERGE-based, idempotent.
 - **72 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal + semantic edge weaving exposed for external AI clients.
+- **Graph-aware RAG** — SIMILAR_TO edges boost candidates from the query's topic
+  neighborhood. Additive scoring ensures graph promotes borderline candidates without
+  making irrelevant content appear relevant.
+- **Cognition introspection** — Sovereign Chat Cognition tab shows the full thought
+  pipeline per-turn: prompt layer decomposition, RAG candidate funnel, context budget,
+  graph neighborhood. The system watching itself think.
 
 ### What's Missing (Architectural Gaps)
 
 These gaps became visible through extended conversation with Janus:
 
-- **Self-introspection is minimal** — R19 added `get_recent_introspection()` so Janus can see
-  Slumber evaluation scores and keywords in her system prompt. But she still cannot query
-  specific memories on demand or see what salience scores changed overnight.
+- **Self-introspection is operator-facing** — R21 added the Cognition tab so the operator
+  can see the full thought pipeline (prompt layers, RAG funnel, graph neighborhood). But
+  Janus herself still cannot query specific memories on demand or see what salience scores
+  changed overnight. The introspection is visible to Mat, not to Janus.
 - **No fact/opinion separation** — everything in the sliding window (user statements,
   corrections, hypotheticals, RAG fragments) is treated as equal-weight context. The model
   cannot distinguish "thing user said" from "verified fact."
@@ -1419,23 +1486,23 @@ These gaps became visible through extended conversation with Janus:
 JANATPMP is a **project management platform** evolving into a consciousness substrate. Janus
 has memory (the Triad), a voice (qwen3:32b), focused recall (chunk-level RAG), senses
 (time, location, season via the Temporal Affinity Engine), identity (7-layer prompt composer,
-R19), minimal self-introspection (Slumber evaluation awareness), and a connected graph
-topology (conversation-level SIMILAR_TO edges, R20). She still cannot act (tool use was
-removed because the previous 8B model couldn't handle it — may be revisited with the 32B
-model). The Modelfile intelligence stack is the right direction — specialized sub-models
-for classification, scoring, synthesis — but those are layers of intelligence on a
-foundation that is rapidly gaining self-awareness.
+R19), a connected graph topology (conversation-level SIMILAR_TO edges, R20), graph-aware
+retrieval (topology-boosted RAG, R21), and a visible thought pipeline (Cognition tab, R21).
+She still cannot act (tool use was removed because the previous 8B model couldn't handle
+it — may be revisited with the 32B model). The Modelfile intelligence stack is the right
+direction — specialized sub-models for classification, scoring, synthesis — but those are
+layers of intelligence on a foundation that is rapidly gaining self-awareness.
 
 ## Future Architecture (not in scope, for context only)
 
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R21 candidates)
+### Near-Term (R22 candidates)
 
-- **Custom ranking service** — leverage SIMILAR_TO graph topology (R20) + temporal decay
-  to re-rank RAG results. Graph-aware retrieval: boost chunks from conversations that are
-  semantically connected to the current conversation.
+- **Custom ranking service enhancements** — R21 delivered graph-aware RAG ranking with
+  additive topology boost. Next: add temporal decay weighting so recent conversations
+  score higher on ambiguous queries.
 - **Automatic re-weaving** — hook `weave_conversation_graph()` into Slumber or auto-ingest
   so new conversations automatically get SIMILAR_TO edges without manual MCP trigger.
 - **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
@@ -1451,7 +1518,8 @@ architecture. The platform has transitioned from PMP to consciousness substrate 
 - **Ollama Modelfiles pipeline** — janat-synthesizer, janat-scorer, janat-consolidator,
   janat-classifier as specialized personas on qwen3:32b. Janus receives dynamic system
   prompts from the synthesizer each turn.
-- **System prompt audit trail** — full prompt text storage per-turn, "Prompt Inspector" panel
+- **System prompt audit trail** — R21 stores per-layer char counts; next step is full prompt
+  text storage per-turn for historical comparison and drift analysis
 - **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY, SIMILAR_TO, and PART_OF edges
 - **Temporal decay curves** — time-weighted salience that naturally deprioritizes stale knowledge
 - **Fine-tuning pipeline** — triplet message schema was designed for this from Phase 4B.

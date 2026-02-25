@@ -66,3 +66,8 @@ SEMANTIC_EDGE_MAX_NEIGHBORS = 5       # Max edges per conversation
 SEMANTIC_EDGE_SEARCH_CANDIDATES = 30  # ANN results before grouping
 SEMANTIC_EDGE_REPR_CHUNKS = 3         # Messages used for representative text
 SEMANTIC_EDGE_REPR_MAX_CHARS = 500    # Max chars per message in repr text
+
+# --- Graph-Aware RAG Ranking (R21: Strange Loop) ---
+GRAPH_BOOST_FACTOR = 0.1         # Score bonus = edge_score * GRAPH_BOOST_FACTOR
+GRAPH_TOPIC_CONVERSATIONS = 3    # Top-N source conversations to seed neighborhood
+GRAPH_NEIGHBORHOOD_HOPS = 1      # SIMILAR_TO traversal depth (1 = direct neighbors only)

@@ -353,6 +353,8 @@ def add_message_metadata(
     system_prompt_length: int = 0,
     rag_context_text: str = "",
     rag_synthesized: int = 0,
+    cognition_prompt_layers: str = "",
+    cognition_graph_trace: str = "",
 ) -> str:
     """Add metadata for a message (timing, RAG snapshot, labels, pipeline observability).
 
@@ -373,6 +375,8 @@ def add_message_metadata(
         system_prompt_length: Length of composed system prompt in chars
         rag_context_text: RAG context text injected into system prompt
         rag_synthesized: 1 if RAG context was synthesized, 0 if raw chunks
+        cognition_prompt_layers: JSON of prompt layer breakdown (R21)
+        cognition_graph_trace: JSON of graph ranking trace (R21)
 
     Returns:
         The ID of the created metadata record
@@ -385,14 +389,16 @@ def add_message_metadata(
                  rag_hit_count, rag_hits_used, rag_collections,
                  rag_avg_rerank, rag_avg_salience, rag_scores,
                  keywords, labels, quality_score,
-                 system_prompt_length, rag_context_text, rag_synthesized)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 system_prompt_length, rag_context_text, rag_synthesized,
+                 cognition_prompt_layers, cognition_graph_trace)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             message_id, latency_total_ms, latency_rag_ms, latency_inference_ms,
             rag_hit_count, rag_hits_used, rag_collections,
             rag_avg_rerank, rag_avg_salience, rag_scores,
             keywords, labels, quality_score,
             system_prompt_length, rag_context_text, rag_synthesized,
+            cognition_prompt_layers, cognition_graph_trace,
         ))
         conn.commit()
         cursor.execute("SELECT id FROM messages_metadata WHERE rowid = ?", (cursor.lastrowid,))

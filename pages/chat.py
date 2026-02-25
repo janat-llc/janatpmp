@@ -144,6 +144,7 @@ def _handle_send(message, history, conv_id, provider, model,
 
         # Persist cognitive telemetry metadata
         if msg_id:
+            cognition_trace = result.get("cognition_trace", {})
             add_message_metadata(
                 message_id=msg_id,
                 latency_total_ms=timings.get("total", 0),
@@ -158,6 +159,10 @@ def _handle_send(message, history, conv_id, provider, model,
                 system_prompt_length=result.get("system_prompt_length", 0),
                 rag_context_text=rag_metrics.get("context_text", ""),
                 rag_synthesized=1 if rag_metrics.get("synthesized") else 0,
+                cognition_prompt_layers=json.dumps(
+                    cognition_trace.get("prompt_layers", {})),
+                cognition_graph_trace=json.dumps(
+                    cognition_trace.get("graph_trace", {})),
             )
 
             # Usage signal: estimate which RAG hits the model actually used
@@ -206,6 +211,7 @@ def _handle_send(message, history, conv_id, provider, model,
             "cumulative_tokens": new_cum,
             "turn_count": metrics.get("turn_count", 0) + 1,
             "system_prompt_length": result.get("system_prompt_length", 0),
+            "cognition_trace": result.get("cognition_trace", {}),
         }
 
         return display_history, api_history, "", conv_id, new_metrics
@@ -669,6 +675,190 @@ def build_chat_page():
                             f"P {tok.get('prompt', 0):,} / R {tok.get('reasoning', 0):,} / O {tok.get('response', 0):,}",
                             key="ov-last-turn-summary",
                         )
+
+        # --- Cognition Tab (R21: Strange Loop — introspection surface) ---
+        with gr.Tab("Cognition"):
+            @gr.render(inputs=[turn_metrics])
+            def render_cognition(metrics):
+                trace = metrics.get("cognition_trace", {})
+                rag = metrics.get("rag_metrics", {})
+                spl = metrics.get("system_prompt_length", 0)
+
+                if not trace:
+                    gr.Markdown(
+                        "*Send a message to see the thought pipeline...*\n\n"
+                        "The Cognition tab shows how Janus assembles her thoughts: "
+                        "prompt layers, RAG candidate selection, graph topology, "
+                        "and context budget — the system watching itself think.",
+                        key="cog-empty",
+                    )
+                    return
+
+                prompt_layers = trace.get("prompt_layers", {})
+                graph_trace = trace.get("graph_trace", {})
+
+                # --- Section 1: Prompt Assembly ---
+                layer_count = len(prompt_layers)
+                total_chars = sum(
+                    v.get("chars", 0) for v in prompt_layers.values()
+                )
+                gr.Markdown(
+                    f"### Prompt Assembly\n"
+                    f"**{layer_count} layers** | {total_chars:,} chars total",
+                    key="cog-prompt-header",
+                )
+
+                layer_names = {
+                    "identity_core": "Identity Core",
+                    "bootstrap_caveat": "Bootstrap Caveat",
+                    "relational_context": "Relational Context",
+                    "temporal_grounding": "Temporal Grounding",
+                    "conversation_state": "Conversation State",
+                    "knowledge_boundary": "Knowledge Boundary",
+                    "platform_context": "Platform Context",
+                    "self_introspection": "Self-Introspection",
+                    "behavioral_guidelines": "Behavioral Guidelines",
+                }
+
+                for i, (key, layer) in enumerate(prompt_layers.items()):
+                    chars = layer.get("chars", 0)
+                    text = layer.get("text", "")
+                    label = layer_names.get(key, key.replace("_", " ").title())
+                    if text:
+                        with gr.Accordion(
+                            f"Layer {i + 1}: {label} ({chars:,} chars)",
+                            open=False,
+                            key=f"cog-layer-{key}",
+                        ):
+                            gr.Textbox(
+                                value=text,
+                                show_label=False,
+                                interactive=False,
+                                lines=min(20, max(3, text.count("\n") + 1)),
+                                max_lines=40,
+                                key=f"cog-layer-text-{key}",
+                            )
+
+                # --- Section 2: RAG Pipeline ---
+                hit_count = rag.get("hit_count", 0)
+                hits_used = rag.get("hits_used", 0)
+                rejected = len(rag.get("rejected", []))
+                boosted = graph_trace.get("candidates_boosted", 0)
+                query = trace.get("rag_query", "")
+                synthesized = rag.get("synthesized", False)
+
+                gr.Markdown("---", key="cog-rag-sep")
+                gr.Markdown("### RAG Pipeline", key="cog-rag-header")
+
+                if hit_count > 0:
+                    funnel_parts = [f"**{hit_count}** candidates retrieved"]
+                    if boosted > 0:
+                        funnel_parts.append(
+                            f"**{boosted}** graph-boosted"
+                        )
+                    funnel_parts.append(
+                        f"**{hits_used}** passed threshold"
+                    )
+                    if rejected > 0:
+                        funnel_parts.append(f"**{rejected}** rejected")
+                    if synthesized:
+                        funnel_parts.append("synthesized")
+
+                    gr.Markdown(
+                        " &rarr; ".join(funnel_parts),
+                        key="cog-rag-funnel",
+                    )
+                elif query:
+                    gr.Markdown(
+                        "*No RAG candidates for this query.*",
+                        key="cog-rag-none",
+                    )
+                else:
+                    gr.Markdown(
+                        "*RAG skipped (short/conversational message).*",
+                        key="cog-rag-skipped",
+                    )
+
+                if query:
+                    with gr.Accordion("Query", open=False, key="cog-rag-query"):
+                        gr.Textbox(
+                            value=query, show_label=False,
+                            interactive=False,
+                            lines=min(6, max(2, query.count("\n") + 1)),
+                            max_lines=12,
+                            key="cog-rag-query-text",
+                        )
+
+                # --- Section 3: Context Budget ---
+                history_turns = trace.get("history_turns_sent", 0)
+                rag_context_len = len(rag.get("context_text", ""))
+                total_context = spl + rag_context_len
+                est_tokens = total_context // 4
+
+                gr.Markdown("---", key="cog-budget-sep")
+                gr.Markdown("### Context Budget", key="cog-budget-header")
+                gr.Markdown(
+                    f"- System prompt: **{spl:,}** chars\n"
+                    f"- Conversation history: **{history_turns}** turns sent to LLM\n"
+                    f"- RAG context: **{rag_context_len:,}** chars\n"
+                    f"- **Estimated total: ~{total_context:,} chars "
+                    f"(~{est_tokens:,} tokens)**",
+                    key="cog-budget-breakdown",
+                )
+
+                # --- Section 4: Graph Neighborhood ---
+                if graph_trace and not graph_trace.get("error"):
+                    seeds = graph_trace.get("seed_conversations", [])
+                    n_size = graph_trace.get("neighborhood_size", 0)
+
+                    gr.Markdown("---", key="cog-graph-sep")
+                    gr.Markdown("### Graph Neighborhood", key="cog-graph-header")
+
+                    if seeds:
+                        seed_lines = []
+                        for s in seeds:
+                            title = s.get("title", s.get("id", "")[:12])
+                            ms = s.get("mean_score", 0)
+                            seed_lines.append(f"- {title} (score: {ms:.2f})")
+                        gr.Markdown(
+                            f"**Topic seeds** ({len(seeds)}):\n" +
+                            "\n".join(seed_lines),
+                            key="cog-graph-seeds",
+                        )
+
+                    gr.Markdown(
+                        f"Neighborhood: **{n_size}** conversations | "
+                        f"**{boosted}** candidates boosted",
+                        key="cog-graph-summary",
+                    )
+
+                    neighborhood = graph_trace.get("neighborhood", {})
+                    if neighborhood:
+                        with gr.Accordion(
+                            f"Neighborhood details ({n_size} conversations)",
+                            open=False,
+                            key="cog-graph-details",
+                        ):
+                            detail_lines = [
+                                f"- `{cid[:12]}...` (edge score: {score:.2f})"
+                                for cid, score in sorted(
+                                    neighborhood.items(),
+                                    key=lambda x: x[1],
+                                    reverse=True,
+                                )
+                            ]
+                            gr.Markdown(
+                                "\n".join(detail_lines),
+                                key="cog-graph-detail-text",
+                            )
+
+                elif graph_trace and graph_trace.get("error"):
+                    gr.Markdown("---", key="cog-graph-err-sep")
+                    gr.Markdown(
+                        f"### Graph Neighborhood\n"
+                        f"*{graph_trace['error']}*",
+                        key="cog-graph-error",
+                    )
 
         # --- Settings Tab (Platform / User level) ---
         with gr.Tab("Settings"):

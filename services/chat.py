@@ -170,7 +170,7 @@ Domains: {domains}
 You are a collaborator, not just an assistant. Be thoughtful, expressive, and thorough in your responses."""
 
 
-def _build_system_prompt(history: list[dict] = None) -> str:
+def _build_system_prompt(history: list[dict] = None) -> tuple[str, dict]:
     """Compose the full system prompt via the R19 prompt composer.
 
     Delegates to services/prompt_composer.py which assembles 7 layers:
@@ -181,7 +181,7 @@ def _build_system_prompt(history: list[dict] = None) -> str:
         history: Conversation history for turn count awareness.
 
     Returns:
-        Complete system prompt string for injection into API call.
+        Tuple of (system prompt string, layers dict with per-layer text and char counts).
     """
     from services.prompt_composer import compose_system_prompt
     return compose_system_prompt(history or [])
@@ -462,6 +462,15 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
 
         if not results:
             return "", metrics
+
+        # R21: Graph-aware ranking — boost candidates from topic neighborhood
+        try:
+            from atlas.graph_ranking import compute_graph_affinity
+            results, graph_trace = compute_graph_affinity(results)
+            metrics["graph_trace"] = graph_trace
+        except Exception as e:
+            logger.debug("Graph ranking unavailable: %s", e)
+            metrics["graph_trace"] = {}
 
         metrics["hit_count"] = len(results)
         metrics["collections_searched"] = list({r.get("source_collection", "unknown") for r in results})
@@ -1167,7 +1176,7 @@ def chat(message: str, history: list[dict],
         set_setting("janus_lifecycle_state", "awake")
         logger.info("Bootstrap: first chat message, state → awake")
 
-    system_prompt = _build_system_prompt(history)
+    system_prompt, prompt_layers = _build_system_prompt(history)
     if system_prompt_append and system_prompt_append.strip():
         system_prompt += f"\n\n{system_prompt_append.strip()}"
 
@@ -1179,6 +1188,7 @@ def chat(message: str, history: list[dict],
             "timings": dict(_EMPTY_TIMINGS),
             "provider": provider,
             "model": model,
+            "cognition_trace": {},
         }
 
     with TurnTimer() as timer:
@@ -1224,6 +1234,13 @@ def chat(message: str, history: list[dict],
                 "provider": provider,
                 "model": model,
                 "system_prompt_length": len(system_prompt),
+                # R21: Cognition trace for introspection surface
+                "cognition_trace": {
+                    "prompt_layers": prompt_layers,
+                    "graph_trace": rag_metrics.get("graph_trace", {}),
+                    "rag_query": message,
+                    "history_turns_sent": len(history) // 2,
+                },
             }
         except Exception as e:
             logger.error("Chat failed: provider=%s, model=%s — %s", provider, model, e)

@@ -84,6 +84,8 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Auto-context injection** — every chat message receives a live snapshot of active projects and pending tasks
 - **Janus identity architecture** — 7-layer prompt composer (R19): Identity Core, Relational Context, Temporal Grounding, Conversation State, Self-Knowledge Boundary, Platform Context, Self-Introspection; bootstrap lifecycle (configuring → sleeping → awake); auto-restore platform data on DB reset
 - **Semantic graph topology** — `weave_conversation_graph()` (R20) bridges Qdrant vector similarity into Neo4j SIMILAR_TO edges between Conversation nodes; transforms isolated conversation chains into a connected semantic network; MERGE-based, idempotent, ~55s for 344 conversations
+- **Graph-aware RAG ranking** — SIMILAR_TO edges from the knowledge graph boost RAG candidates from the query's topic neighborhood; additive scoring promotes borderline candidates without inflating irrelevant content (R21)
+- **Cognition tab** — Sovereign Chat introspection surface showing full thought pipeline per-turn: prompt layer decomposition, RAG candidate funnel with graph boost, context budget, graph neighborhood visualization (R21)
 - **Change Data Capture** outbox with background Neo4j sync consumer
 
 ---
@@ -175,7 +177,7 @@ JANATPMP/
 │   ├── projects.py            # Projects + Work page — sidebar-first layout (~350 lines)
 │   ├── knowledge.py           # Knowledge page — Memory, Connections, Pipeline, Synthesis
 │   ├── admin.py               # Admin page — Settings, Persona, Operations
-│   └── chat.py                # Sovereign Chat page with metrics sidebar (R11)
+│   └── chat.py                # Sovereign Chat — 4 tabs: Chat, Overview, Cognition, Settings
 ├── tabs/
 │   ├── tab_chat.py            # Chat handler: _handle_chat() for sidebar quick-chat
 │   └── tab_knowledge.py       # Knowledge page handlers (search, connections, conversation loading)
@@ -190,7 +192,7 @@ JANATPMP/
 │   ├── chat_operations.py     # Conversation + message + metadata CRUD
 │   ├── chunk_operations.py    # Chunk CRUD, stats, FTS search (R16)
 │   ├── file_registry_ops.py   # File registry MCP tools (R17)
-│   └── migrations/            # Versioned schema migrations (0.3.0–0.9.0)
+│   └── migrations/            # Versioned schema migrations (0.3.0–1.0.0)
 ├── atlas/                     # ATLAS — HTTP client layer for model services
 │   ├── config.py              # Service URLs, model identifiers, Neo4j + salience constants
 │   ├── chunking.py            # Paragraph-aware text splitter for messages + documents (R16)
@@ -199,6 +201,7 @@ JANATPMP/
 │   ├── memory_service.py      # Salience write-back to Qdrant (retrieval + usage signals)
 │   ├── usage_signal.py        # Keyword overlap heuristic for usage-based salience (R12)
 │   ├── on_write.py            # On-write: chunk + embed + fire-and-forget graph edges (R13/R16)
+│   ├── graph_ranking.py       # Graph-aware RAG ranking — topology boost (R21)
 │   ├── pipeline.py            # Two-stage search orchestrator
 │   └── temporal.py            # Temporal Affinity Engine — time/location grounding (R17)
 ├── graph/                     # Knowledge graph layer — Neo4j (R13)
@@ -412,9 +415,8 @@ feature/phase{X}-{description}  # legacy naming
 
 ## Future
 
-JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), **auto-ingestion** removes manual import friction (R17), **Janus identity architecture** gives her genuine selfhood (R19), and **semantic graph topology** connects conversations into a navigable network (R20). Planned next steps:
+JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), **auto-ingestion** removes manual import friction (R17), **Janus identity architecture** gives her genuine selfhood (R19), and **semantic graph topology** connects conversations into a navigable network (R20), **graph-aware RAG** closes the loop between graph and retrieval (R21), and the **Cognition tab** makes the thought pipeline permanently visible (R21). Planned next steps:
 
-- **Custom ranking service** — leverage SIMILAR_TO graph topology + temporal decay to re-rank RAG results
 - **Automatic re-weaving** — hook semantic edge generation into Slumber so new conversations auto-connect
 - **Synthesis tab** — Memory node review, evidence chains, source attribution (Knowledge page placeholder ready)
 - **Ollama Modelfiles pipeline** — specialized models (synthesizer, scorer, consolidator, classifier) sharing base weights for dynamic system prompt generation

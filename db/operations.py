@@ -179,6 +179,24 @@ def init_database():
                     conn.executescript(migration_sql)
                     logger.info("Applied migration 0.9.0: file_registry")
 
+        # Migration 1.0.0: cognition trace columns for R21 Strange Loop
+        # Requires 0.9.0 — guard against running on incomplete schema
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='0.9.0'"
+        )
+        if cursor.fetchone() is None:
+            logger.warning("Migration 0.9.0 not found — skipping 1.0.0")
+        else:
+            cursor = conn.execute(
+                "SELECT version FROM schema_version WHERE version='1.0.0'"
+            )
+            if cursor.fetchone() is None:
+                migration_path = Path(__file__).parent / "migrations" / "1.0.0_cognition_trace.sql"
+                if migration_path.exists():
+                    migration_sql = migration_path.read_text(encoding="utf-8")
+                    conn.executescript(migration_sql)
+                    logger.info("Applied migration 1.0.0: cognition_trace")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

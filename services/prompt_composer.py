@@ -233,7 +233,7 @@ def _build_introspection_context() -> str:
 # Main Composer
 # ---------------------------------------------------------------------------
 
-def compose_system_prompt(history: list[dict] | None = None) -> str:
+def compose_system_prompt(history: list[dict] | None = None) -> tuple[str, dict]:
     """Compose the full multi-layer system prompt for Janus.
 
     Assembles 7 layers: Identity Core, Relational Context, Temporal Grounding,
@@ -245,12 +245,19 @@ def compose_system_prompt(history: list[dict] | None = None) -> str:
             derive turn count for conversation state awareness.
 
     Returns:
-        Complete system prompt string. RAG context is appended separately
-        by _build_rag_context() in services/chat.py.
+        Tuple of (complete system prompt string, layers dict). Each layer entry
+        has keys 'text' (str) and 'chars' (int). RAG context is appended
+        separately by _build_rag_context() in services/chat.py.
     """
     from db.operations import get_context_snapshot, get_domains
 
     sections = []
+    layers = {}
+
+    def _add(name: str, text: str) -> None:
+        """Append a layer to both sections list and layers dict."""
+        sections.append(text)
+        layers[name] = {"text": text, "chars": len(text)}
 
     # --- Layer 1: Identity Core ---
     try:
@@ -259,52 +266,53 @@ def compose_system_prompt(history: list[dict] | None = None) -> str:
     except Exception:
         domain_names = "various"
 
-    sections.append(JANUS_IDENTITY.format(domains=domain_names))
+    _add("identity_core", JANUS_IDENTITY.format(domains=domain_names))
 
     # --- Bootstrap lifecycle caveat ---
     lifecycle_state = get_setting("janus_lifecycle_state") or "sleeping"
     if lifecycle_state == "configuring":
-        sections.append(
+        caveat = (
             "[You are still integrating memories from past conversations. "
             "Some context may be incomplete or missing. Be transparent about "
             "what you know vs. what you're uncertain about.]"
         )
+        _add("bootstrap_caveat", caveat)
 
     # --- Layer 2: Relational Context ---
     persona_line = _build_persona_summary()
     if persona_line:
-        sections.append(f"\u2014 About Mat: {persona_line}")
+        _add("relational_context", f"\u2014 About Mat: {persona_line}")
 
     # --- Layer 3: Temporal Grounding ---
     temporal = _build_temporal_context()
     if temporal:
-        sections.append(temporal)
+        _add("temporal_grounding", temporal)
 
     # --- Layer 4: Conversation State ---
     if history:
         turn_count = len([m for m in history if m.get("role") == "user"])
         if turn_count > 0:
-            sections.append(f"This is turn {turn_count + 1} of the current conversation.")
+            _add("conversation_state",
+                 f"This is turn {turn_count + 1} of the current conversation.")
 
     # --- Layer 5: Self-Knowledge Boundary ---
-    sections.append(KNOWLEDGE_BOUNDARY)
+    _add("knowledge_boundary", KNOWLEDGE_BOUNDARY)
 
     # --- Layer 6: Platform Context ---
     try:
         context = get_context_snapshot()
         if context:
-            sections.append(
-                f"Your awareness of the current project landscape:\n{context}"
-            )
+            _add("platform_context",
+                 f"Your awareness of the current project landscape:\n{context}")
     except Exception:
         pass
 
     # --- Layer 7: Self-Introspection ---
     introspection = _build_introspection_context()
     if introspection:
-        sections.append(introspection)
+        _add("self_introspection", introspection)
 
     # --- Behavioral Guidelines ---
-    sections.append(BEHAVIORAL_GUIDELINES)
+    _add("behavioral_guidelines", BEHAVIORAL_GUIDELINES)
 
-    return "\n\n".join(sections)
+    return "\n\n".join(sections), layers
