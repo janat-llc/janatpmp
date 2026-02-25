@@ -731,9 +731,9 @@ def build_chat_page():
                 value=_synth_provider,
                 label="Synthesizer Backend", interactive=True,
             )
-            _synth_model = get_setting("rag_synthesizer_model") or "qwen3:1.7b"
+            _synth_model = get_setting("rag_synthesizer_model") or "qwen3:32b"
             rag_synth_model = gr.Dropdown(
-                choices=["qwen3:1.7b", "qwen3:4b", "gemini-2.5-flash-lite", "gemini-2.0-flash"],
+                choices=["qwen3:32b", "gemini-2.5-flash-lite", "gemini-2.0-flash"],
                 value=_synth_model,
                 label="Synthesizer Model", interactive=True, allow_custom_value=True,
             )

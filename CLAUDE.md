@@ -15,10 +15,9 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 - **Gradio** 6.6.0 with MCP support (`gradio[mcp]==6.6.0`)
 - **SQLite3** for persistence (WAL mode, FTS5 full-text search)
 - **Pandas** for data display
-- **Qdrant** vector database (semantic search, 2560-dim cosine collections)
+- **Qdrant** vector database (semantic search, 1024-dim cosine collections)
 - **Neo4j** 2026.01.4 graph database (entity relationships, knowledge graph)
-- **Ollama** for chat LLM + embedding (Qwen3-Embedding-4B via `/v1/embeddings`)
-- **vLLM** sidecar for cross-encoder reranking (Qwen3-Reranker-0.6B via `/v1/score`)
+- **Ollama** for chat LLM + embedding (qwen3:32b chat, qwen3-embedding:0.6b via `/v1/embeddings`)
 
 ## Project Structure
 
@@ -69,12 +68,12 @@ JANATPMP/
 │   ├── __init__.py
 │   ├── config.py             # Model names, dimensions, service URLs, Neo4j + salience constants
 │   ├── chunking.py           # Paragraph-aware text splitter for messages + documents (R16)
-│   ├── embedding_service.py  # Qwen3-Embedding-4B via Ollama HTTP (OpenAI client)
-│   ├── reranking_service.py  # Qwen3-Reranker-0.6B via vLLM HTTP (httpx client)
+│   ├── embedding_service.py  # Qwen3-Embedding-0.6B via Ollama HTTP (OpenAI client)
+│   ├── reranking_service.py  # DECOMMISSIONED — vLLM reranker removed, rerank defaults to False
 │   ├── memory_service.py     # Salience write-back to Qdrant payloads
 │   ├── usage_signal.py       # Keyword overlap heuristic for usage-based salience (R12)
 │   ├── on_write.py           # On-write: chunk + embed + fire-and-forget graph edges (R13/R16)
-│   ├── pipeline.py           # Two-stage search: ANN → rerank → salience
+│   ├── pipeline.py           # Search pipeline: ANN → salience (rerank decommissioned)
 │   └── temporal.py           # Temporal Affinity Engine — time/location context (R17)
 ├── graph/                    # Knowledge graph layer — Neo4j (R13)
 │   ├── __init__.py
@@ -112,7 +111,7 @@ JANATPMP/
 ├── requirements.txt          # Python dependencies (pinned)
 ├── pyproject.toml            # Project metadata
 ├── Dockerfile                # Container image (Python 3.14-slim, no GPU)
-├── docker-compose.yml        # Container orchestration (core, ollama, vllm-rerank, qdrant, neo4j)
+├── docker-compose.yml        # Container orchestration (core, ollama, qdrant, neo4j)
 ├── Janat_Brand_Guide.md      # Brand colors, fonts, design system
 └── CLAUDE.md                 # This file
 ```
@@ -207,7 +206,7 @@ Persona settings (`user_name`, `user_bio`, `user_preferences`) are in **Admin ->
 
 **Settings table** (`settings` in SQLite) — key-value store for persistent configuration:
 - `chat_provider` — "ollama" (default), "anthropic", or "gemini"
-- `chat_model` — Model identifier string (default: "qwen3-vl:8b")
+- `chat_model` — Model identifier string (default: "qwen3:32b")
 - `chat_api_key` — Base64-encoded API key (obfuscation, NOT encryption)
 - `chat_base_url` — Override URL for Ollama
 - `ollama_num_ctx` — Context window size (default: 32768 — 32K tokens)
@@ -501,13 +500,13 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
 - **MCP:** Enabled via `GRADIO_MCP_SERVER=True` environment variable
 - **CMD:** `python app.py`
 - **Container names:** `janatpmp-core` (app), `janatpmp-ollama` (LLM + embed),
-  `janatpmp-vllm-rerank` (reranker), `janatpmp-qdrant` (vector DB), `janatpmp-neo4j` (graph DB)
-  - Core has NO GPU — all model inference offloaded to Ollama and vLLM sidecars
+  `janatpmp-qdrant` (vector DB), `janatpmp-neo4j` (graph DB) — 4 containers total
+  - Core has NO GPU — all model inference offloaded to Ollama sidecar
 - **Qdrant:** `janatpmp-qdrant` container on ports 6343:6333/6344:6334
   - Internal URL: `http://janatpmp-qdrant:6333` (Docker DNS)
   - External URL: `http://localhost:6343` (host access, dashboard at `/dashboard`)
   - Volume: `janatpmp_qdrant_data` (external)
-  - Collections: `janatpmp_documents` (2560-dim), `janatpmp_messages` (2560-dim)
+  - Collections: `janatpmp_documents` (1024-dim), `janatpmp_messages` (1024-dim)
   - Auto-recreates collections on dimension mismatch at startup
 - **Neo4j:** `janatpmp-neo4j` container on ports 7474 (browser) / 7687 (Bolt)
   - Internal URL: `bolt://janatpmp-neo4j:7687` (Docker DNS)
@@ -521,16 +520,13 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
   - External URL: `http://localhost:11435` (host access for testing)
   - GPU passthrough via NVIDIA Container Toolkit (~85% VRAM)
   - `OLLAMA_KEEP_ALIVE=-1` keeps models loaded permanently (no unload timeout)
-  - Chat model: qwen3-vl:8b (default, Janus), nemotron-3-nano:latest Q4_K_M also available
-  - Embedding model: Qwen3-Embedding-4B Q4_K_M GGUF (~2.5 GB) — used via `/v1/embeddings`
-  - RAG synthesizer: qwen3:1.7b — lightweight model for knowledge synthesis
+  - `OLLAMA_KV_CACHE_TYPE=q8_0` — quantized KV cache for reduced VRAM usage
+  - Chat model + RAG synthesizer: qwen3:32b (default, "Janus") — shared model, zero extra VRAM
+  - Embedding model: Qwen3-Embedding-0.6B (~0.6 GB) — used via `/v1/embeddings`
   - Ollama model list is fetched dynamically via `/api/tags` — no hardcoded model names
-- **vLLM Reranker:** `janatpmp-vllm-rerank` container on port 8002
-  - Internal URL: `http://janatpmp-vllm-rerank:8000` (Docker DNS)
-  - External URL: `http://localhost:8002` (host access for testing)
-  - Runs Qwen3-Reranker-0.6B FP16 (~1.7 GB) with `--runner pooling --convert classify`
-  - GPU passthrough via NVIDIA Container Toolkit (~10% VRAM)
-  - Volume: `huggingface_cache` (shared HF model cache)
+  - Only 2 models loaded: qwen3:32b (chat + synthesis) and qwen3-embedding:0.6b (embed)
+- **vLLM Reranker:** DECOMMISSIONED — container commented out in docker-compose.yml.
+  Reranking defaults to `rerank=False`. Code in `atlas/reranking_service.py` retained but unused.
 
 ## Gradio Development Patterns (CRITICAL — READ BEFORE WRITING UI CODE)
 
@@ -681,7 +677,7 @@ Every conversation turn stores three distinct artifacts:
 - **model_reasoning**: chain-of-thought / thinking tokens (e.g. `<think>` blocks from deepseek-r1)
 - **model_response**: the visible reply
 
-This enables fine-tuning Nemotron on its own reasoning patterns. Can extract prompt→reasoning,
+This enables future fine-tuning on reasoning patterns. Can extract prompt→reasoning,
 reasoning→response, or full triplets for different training objectives.
 
 ### Conversation Sources
@@ -720,7 +716,7 @@ Archived chapters appear in the Knowledge page (Memory tab). Archiving is rare a
 - Follows existing patterns: hex randomblob IDs, datetime('now'), FTS, CDC outbox triggers
 
 ### Tool Routing (Future — Noted, Not Solved)
-Some tool calls route to Nemotron locally, others to Claude (via MCP), others to Gemini.
+Some tool calls route to Janus locally, others to Claude (via MCP), others to Gemini.
 Schema captures routing data (tools_called JSON, per-turn provider/model snapshots).
 Tool toggles in right sidebar control availability per-session. Full routing is its own phase.
 
@@ -734,35 +730,31 @@ Tool toggles in right sidebar control availability per-session. Full routing is 
 
 ## Phase 5: RAG Pipeline (Complete, offloaded in R10)
 
-### Two-Stage Search Pipeline
+### Search Pipeline
 
-Search uses a two-stage retrieval pipeline orchestrated by `atlas/pipeline.py`:
+Search uses ANN retrieval orchestrated by `atlas/pipeline.py`:
 
 1. **ANN search** — Qdrant approximate nearest neighbor, top-20 candidates (configurable via `RERANK_CANDIDATES`)
-2. **Cross-encoder reranking** — Qwen3-Reranker-0.6B (via vLLM) rescores candidates by relevance (0-1 probability)
-3. **Salience write-back** — Rerank scores update `salience` metadata in Qdrant payloads
+2. **Salience write-back** — Scores update `salience` metadata in Qdrant payloads
 
-Both `search()` and `search_all()` in `services/vector_store.py` accept `rerank=True` (default).
-Set `rerank=False` for bulk operations or when the reranker is not needed. Graceful degradation:
-if the reranker is unavailable, ANN results are returned with a warning.
+Both `search()` and `search_all()` in `services/vector_store.py` accept `rerank=False` (default).
+Cross-encoder reranking (Qwen3-Reranker-0.6B via vLLM) was decommissioned — the vLLM container
+is commented out in docker-compose.yml. Code in `atlas/reranking_service.py` is retained but
+unused. ANN results are returned directly.
 
 ### Vector Search Architecture
 
-- **Qdrant** vector database with two collections: `janatpmp_documents` and `janatpmp_messages` (2560-dim cosine)
-- **Qwen3-Embedding-4B** via Ollama `/v1/embeddings` (2560-dim Matryoshka, asymmetric query/passage encoding)
+- **Qdrant** vector database with two collections: `janatpmp_documents` and `janatpmp_messages` (1024-dim cosine)
+- **Qwen3-Embedding-0.6B** via Ollama `/v1/embeddings` (1024-dim, asymmetric query/passage encoding)
   - Document encoding: `embed_texts(texts)` — no instruction prefix
   - Query encoding: `embed_query(query)` — prepends Qwen3 instruction prefix for asymmetric retrieval
-  - Client-side `[:EMBEDDING_DIM]` truncation for Matryoshka safety
-- **Qwen3-Reranker-0.6B** via vLLM `/v1/score` (cross-encoder, FP16)
-  - Scores query-document relevance as 0-1 probabilities
-  - Adds `rerank_score` field to results
-- **HuggingFace cache** shared via external Docker volume (`huggingface_cache`)
+  - Client-side `[:EMBEDDING_DIM]` truncation for safety
 - **Salience metadata** — Qdrant payloads track `salience` (weighted score) and `last_retrieved` (ISO timestamp)
 
 ### RAG Context Injection
 
 - `services/chat.py:_build_rag_context()` searches Qdrant on each user message
-- Results with rerank_score > 0.3 are injected into the system prompt as context
+- Results above the score threshold are injected into the system prompt as context
 - Graceful degradation: if Qdrant is down, chat works without RAG (try/except)
 - Cross-collection search via `vector_store.search_all()` searches both documents and messages
 
@@ -816,7 +808,7 @@ See `docs/INVENTORY_OLD_PARSERS.md` for old pipeline code analysis.
 **The line:** JANATPMP stores and retrieves. ATLAS remembers.
 
 R9 established the `atlas/` module as the model layer. R10 offloaded all GPU work
-from the core container to dedicated sidecars (Ollama for embedding, vLLM for reranking).
+from the core container to Ollama sidecar (vLLM reranker since decommissioned).
 Core is now a thin HTTP client layer — no PyTorch, no CUDA, no in-process models.
 
 ### ATLAS Module (`atlas/`)
@@ -824,31 +816,32 @@ Core is now a thin HTTP client layer — no PyTorch, no CUDA, no in-process mode
 | File | Purpose |
 | ---- | ------- |
 | `config.py` | Service URLs, model identifiers, vector dimensions, salience/rerank constants |
-| `embedding_service.py` | Qwen3-Embedding-4B via Ollama `/v1/embeddings` (OpenAI client) |
-| `reranking_service.py` | Qwen3-Reranker-0.6B via vLLM `/v1/score` (httpx client) |
+| `embedding_service.py` | Qwen3-Embedding-0.6B via Ollama `/v1/embeddings` (OpenAI client) |
+| `reranking_service.py` | DECOMMISSIONED — vLLM reranker removed, code retained |
 | `memory_service.py` | `write_salience()` — weighted salience write-back to Qdrant payloads |
-| `pipeline.py` | `rerank_and_write_salience()` — orchestrator for two-stage search |
+| `pipeline.py` | Search pipeline orchestrator (rerank decommissioned, ANN + salience only) |
 
 ### Model Stack
 
-- **Chat LLM:** qwen3-vl:8b via Ollama (default, "Janus"). nemotron-3-nano:latest also available.
-- **Embedder:** Qwen3-Embedding-4B Q4_K_M GGUF via Ollama (2560-dim Matryoshka)
-- **Reranker:** Qwen3-Reranker-0.6B FP16 via vLLM (0-1 probability scores)
-- **RAG Synthesizer:** qwen3:1.7b via Ollama (lightweight knowledge compression)
+- **Chat LLM:** qwen3:32b via Ollama (default, "Janus") with native `think=True` reasoning
+- **Embedder:** Qwen3-Embedding-0.6B via Ollama (1024-dim)
+- **Reranker:** DECOMMISSIONED — vLLM container removed, `rerank=False` default
+- **RAG Synthesizer:** qwen3:32b via Ollama (same model as chat — zero extra VRAM)
 - **Core container:** No GPU, no PyTorch — HTTP clients only (~500 MB image)
 
 ### Key Decisions
 
-- **Ollama for embedding:** Qwen3-Embedding-4B runs as an additional model in the existing
-  Ollama container. Ollama manages loading/unloading dynamically alongside the chat LLM.
+- **Ollama for embedding:** Qwen3-Embedding-0.6B runs as an additional model in the existing
+  Ollama container. Only 2 models loaded: qwen3:32b (chat + synthesis) and qwen3-embedding:0.6b.
   Accessed via OpenAI-compatible `/v1/embeddings` API using the `openai` Python package.
-- **vLLM sidecar for reranking:** Dedicated container running `--runner pooling --convert classify`
-  with `--hf-overrides` for Qwen3ForSequenceClassification architecture.
-  Lightweight (~1.7 GB VRAM at 10% gpu-memory-utilization). Uses httpx for `/v1/score` calls.
-- **Matryoshka truncation:** Client-side `[:EMBEDDING_DIM]` ensures correct 2560-dim output
-  even if Ollama ignores the `dimensions` parameter.
-- **Asymmetric encoding:** Qwen3-Embedding-4B uses instruction prefix for queries
+- **vLLM sidecar decommissioned:** Was running Qwen3-Reranker-0.6B. Container commented out
+  in docker-compose.yml. `rerank=False` is now the default. Code retained in
+  `atlas/reranking_service.py` but unused.
+- **Client-side truncation:** `[:EMBEDDING_DIM]` ensures correct 1024-dim output.
+- **Asymmetric encoding:** Qwen3-Embedding-0.6B uses instruction prefix for queries
   (`"Instruct: Given a query, retrieve relevant documents..."`) but plain text for passages.
+- **Shared chat + synthesizer model:** qwen3:32b serves both chat and RAG synthesis roles.
+  No separate synthesizer model needed — zero extra VRAM for synthesis.
 - **services/embedding.py as thin shim:** Preserves `embed_passages()` / `embed_query()`
   signatures for all downstream consumers. Atlas owns the model; services provides the interface.
 
@@ -856,14 +849,13 @@ Core is now a thin HTTP client layer — no PyTorch, no CUDA, no in-process mode
 
 | Component | Estimated VRAM |
 | --------- | -------------- |
-| Ollama — chat (qwen3-vl:8b) | ~6 GB |
-| Ollama — embed (Qwen3-Embedding-4B Q4_K_M) | ~2.5 GB |
-| Ollama — synthesizer (qwen3:1.7b) | ~1.5 GB |
-| vLLM — rerank (Qwen3-Reranker-0.6B FP16) | ~1.7 GB |
-| **Total** | **~11.7 GB** |
-| **Headroom** | **~20.3 GB** |
+| Ollama — chat + synthesizer (qwen3:32b Q4_K_M, q8_0 KV cache) | ~22 GB |
+| Ollama — embed (Qwen3-Embedding-0.6B) | ~0.6 GB |
+| **Total** | **~22.6 GB** |
+| **Headroom** | **~9.4 GB** |
 
-All GPU work is offloaded to sidecars. Core container uses zero VRAM.
+All GPU work is offloaded to Ollama sidecar. Core container uses zero VRAM.
+`OLLAMA_KV_CACHE_TYPE=q8_0` reduces KV cache memory for the 32B model.
 
 ## Phase R12: Cognitive Telemetry
 
@@ -1025,9 +1017,10 @@ R15 stabilizes the broken foundation before building intelligence layers.
 
 ### No Tools for In-App Chat
 
-The in-app Ollama chat model (Janus) no longer receives tool definitions. Qwen3-VL:8b
-was outputting tool call JSON inside `<think>` blocks when both `tools` and `think=True`
-were sent simultaneously. The fix: remove tools entirely from `_chat_ollama()`.
+The in-app Ollama chat model (Janus) no longer receives tool definitions. The previous
+model (Qwen3-VL:8b) was outputting tool call JSON inside `<think>` blocks when both
+`tools` and `think=True` were sent simultaneously. The fix: remove tools entirely from
+`_chat_ollama()`. This remains in effect with qwen3:32b.
 
 - **RAG provides retrieved knowledge**, `get_context_snapshot()` provides live project state
 - Tools are for **MCP clients** (Claude Desktop, etc.) via `gr.api()` in `app.py`
@@ -1065,28 +1058,27 @@ Surfaced in Sovereign Chat left sidebar "Pipeline" section.
 
 ### VRAM Stability
 
-Three Ollama models (chat 8B, embedder 4B, synthesizer 1.7B) share one GPU. R15 fixes:
+R15 fixes (written for the old 3-model stack, retained for historical context):
 
 - **`ollama_num_ctx` default reduced** from 131072 (128K) to 32768 (32K). The 128K context
   inflated KV caches beyond available VRAM, causing constant model eviction/reload cycles.
 - **Synthesizer `num_ctx` hardcoded to 8192** — the RAG synthesizer processes short chunk
-  summaries, not full conversations. Was inheriting the chat window size (128K), inflating
-  from ~1.5GB to ~6GB and evicting the chat model.
-- With 32K chat + 8K synthesizer + default embed KV, all three models coexist in ~12GB VRAM.
+  summaries, not full conversations.
+- Current stack: 2 models (qwen3:32b chat+synthesis, qwen3-embedding:0.6b) with
+  `OLLAMA_KV_CACHE_TYPE=q8_0` for reduced KV cache memory on the 32B model.
 
 ### RAG Gate
 
 `_needs_rag()` in `services/chat.py` skips RAG retrieval for short conversational messages
 (greetings, acknowledgments, single-word responses). Without this, "Hello Janus" triggered
-the full pipeline: embed query → Qdrant ANN search → vLLM reranking → optional synthesis —
-loading 3 extra models for a greeting. Gate: skip if < 3 words or < 2 content words after
-stop-word removal.
+the full pipeline: embed query → Qdrant ANN search → optional synthesis — loading extra
+models for a greeting. Gate: skip if < 3 words or < 2 content words after stop-word removal.
 
-### vLLM Reranker URL
+### vLLM Reranker URL (Historical)
 
 vLLM moved the score endpoint from `/v1/score` to `/score`. Updated in
-`atlas/reranking_service.py`. Previously every rerank call made 2 HTTP requests (first 400,
-then redirect to 200).
+`atlas/reranking_service.py`. This is now moot — the vLLM reranker container has been
+decommissioned and `rerank=False` is the default.
 
 ## Phase R16: Message Chunking — RAG Quality Transformation
 
@@ -1286,9 +1278,10 @@ is a future sprint.
   instead of entire turns. Configurable thresholds and diversity caps.
 - **Janus continuous chat** — persistent conversation, sliding window, dual chat surfaces
   (Sovereign Chat + sidebar), chapter archiving.
-- **RAG pipeline** — hybrid FTS + vector search (including chunk-level FTS), cross-encoder
-  reranking, optional synthesis, salience tracking, provenance display with temporal position
-  and relative time labels. Configurable thresholds and per-message diversity cap.
+- **RAG pipeline** — hybrid FTS + vector search (including chunk-level FTS), optional
+  synthesis, salience tracking, provenance display with temporal position and relative time
+  labels. Configurable thresholds and per-message diversity cap. Cross-encoder reranking
+  decommissioned (rerank=False default).
 - **Content corpus** — 659 Claude conversations (10,271 messages), 40 markdown documents,
   78 items, 13 domains, 3 tasks. All embedded in Qdrant, synced to Neo4j.
 - **Background intelligence** — Slumber Cycle: ingest scan → evaluate → propagate → relate → prune.
@@ -1321,12 +1314,13 @@ These gaps became visible through extended conversation with Janus:
 ### The Core Tension
 
 JANATPMP is a **project management platform**, not a consciousness substrate. Janus has
-memory (the Triad), a voice (the LLM), focused recall (chunk-level RAG), and now senses
+memory (the Triad), a voice (qwen3:32b), focused recall (chunk-level RAG), and now senses
 (time, location, season via the Temporal Affinity Engine), but no introspection
-(self-querying) and no ability to act (tool use was removed because the 8B model
-couldn't handle it). The Modelfile intelligence stack is the right direction —
-specialized sub-models for classification, scoring, synthesis — but those are layers
-of intelligence on a foundation that still has limited world awareness.
+(self-querying) and no ability to act (tool use was removed because the previous 8B model
+couldn't handle it — may be revisited with the 32B model). The Modelfile intelligence
+stack is the right direction — specialized sub-models for classification, scoring,
+synthesis — but those are layers of intelligence on a foundation that still has limited
+world awareness.
 
 ## Future Architecture (not in scope, for context only)
 
@@ -1350,7 +1344,7 @@ architecture. The platform has transitioned from PMP to consciousness substrate 
 ### Longer-Term
 
 - **Ollama Modelfiles pipeline** — janat-synthesizer, janat-scorer, janat-consolidator,
-  janat-classifier sharing Qwen3:1.7B base weights. Janus (8B) receives dynamic system
+  janat-classifier as specialized personas on qwen3:32b. Janus receives dynamic system
   prompts from the synthesizer each turn.
 - **System prompt audit trail** — full prompt text storage per-turn, "Prompt Inspector" panel
 - **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY, SIMILAR_TO, and PART_OF edges

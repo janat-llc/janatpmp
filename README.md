@@ -22,7 +22,7 @@ graph TB
     subgraph Docker Compose
         Core[JANATPMP Core<br/>Gradio 6.6.0<br/>No GPU · Port 7860]
         Ollama[Ollama<br/>Chat + Embedding<br/>GPU · Port 11435]
-        vLLM[vLLM Reranker<br/>Qwen3-Reranker-0.6B<br/>GPU · Port 8002]
+        vLLM[vLLM Reranker<br/>DECOMMISSIONED]
         Qdrant[Qdrant<br/>Vector Search<br/>Port 6343]
         Neo4j[Neo4j<br/>Knowledge Graph<br/>Port 7474]
     end
@@ -30,7 +30,6 @@ graph TB
     SQLite[(SQLite<br/>WAL + FTS5)]
     Core --> SQLite
     Core --> Ollama
-    Core --> vLLM
     Core --> Qdrant
     Core --> Neo4j
 
@@ -67,9 +66,9 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Multi-provider chat** with triplet message persistence (Anthropic, Gemini, Ollama/local models)
 - **Thinking mode** — chain-of-thought captured separately via Ollama `think=True`, stored as `model_reasoning` in triplet schema for future fine-tuning
 - **Reasoning token decomposition** — proportional split of completion tokens into reasoning vs response KPIs, even when providers don't report them separately
-- **ATLAS two-stage search** — ANN retrieval via Qdrant + cross-encoder reranking via vLLM sidecar with salience write-back
+- **ATLAS semantic search** — ANN retrieval via Qdrant with salience write-back (cross-encoder reranker decommissioned)
 - **Usage-based salience** — keyword overlap heuristic estimates which RAG hits the model actually used, feeding salience boosts/decays back to Qdrant
-- **RAG pipeline** — Qwen3-Embedding-4B embeddings (2560-dim, Matryoshka) via Ollama, injected into chat context per-message
+- **RAG pipeline** — Qwen3-Embedding-0.6B embeddings (1024-dim, Matryoshka) via Ollama, injected into chat context per-message
 - **Cognitive telemetry** — per-turn timing, frozen RAG snapshots, and token counts persisted to `messages_metadata` for longitudinal analysis
 - **Temporal Affinity Engine** — Janus knows current time, date, season, sunrise/sunset, and approximate temperature; pure-function solar calculations + NOAA climate normals; injected into every system prompt; RAG results carry relative time labels
 - **Auto-ingestion** — startup + Slumber scanner walks configured directories, discovers new files by SHA-256 hash, ingests automatically without manual button clicks; file registry tracks processed files; real-time progress tracking through all phases
@@ -94,26 +93,24 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 | Framework | Gradio 6.6.0 (Blocks + multipage routing, MCP server mode) |
 | Language | Python 3.14 |
 | Database | SQLite (WAL mode, FTS5 full-text search) |
-| Vector DB | Qdrant — semantic search over documents and messages (2560-dim cosine) |
+| Vector DB | Qdrant — semantic search over documents and messages (1024-dim cosine) |
 | Graph DB | Neo4j 2026.01.4 — knowledge graph with CDC sync + INFORMED_BY provenance |
-| Embeddings | Qwen3-Embedding-4B Q4_K_M via Ollama (2560-dim, Matryoshka) |
-| Reranking | Qwen3-Reranker-0.6B FP16 via vLLM sidecar (0-1 probability scores) |
-| Chat LLM | qwen3-vl:8b (Janus) via Ollama (with thinking mode, 128K context) |
-| RAG Synthesizer | qwen3:1.7b via Ollama (knowledge compression) |
-| Container | Docker Compose — 5 services: core (no GPU), Ollama (GPU), vLLM (GPU), Qdrant, Neo4j |
+| Embeddings | Qwen3-Embedding-0.6B via Ollama (1024-dim, Matryoshka) |
+| Chat LLM | qwen3:32b (Janus) via Ollama (with native thinking mode, 32K context) |
+| RAG Synthesizer | qwen3:32b via Ollama (shared model — zero additional VRAM) |
+| Container | Docker Compose — 4 services: core (no GPU), Ollama (GPU), Qdrant, Neo4j |
 | Data Display | Pandas DataFrames |
 
 ### GPU Budget (RTX 5090, 32 GB)
 
 | Service | Model | Est. VRAM |
 |---------|-------|-----------|
-| Ollama — chat | qwen3-vl:8b (Janus) | ~6 GB |
-| Ollama — embed | Qwen3-Embedding-4B Q4_K_M | ~2.5 GB |
-| Ollama — synth | qwen3:1.7b | ~1.5 GB |
-| vLLM — rerank | Qwen3-Reranker-0.6B FP16 | ~1.7 GB |
-| **Total** | | **~11.7 GB** |
+| Ollama — chat + synth | qwen3:32b Q4_K_M (Janus) | ~20 GB |
+| Ollama — embed | Qwen3-Embedding-0.6B | ~0.6 GB |
+| KV cache (q8_0, 32K) | — | ~3 GB |
+| **Total** | | **~23.6 GB** |
 
-Core container uses zero GPU — all model inference is offloaded to Ollama and vLLM sidecars.
+Core container uses zero GPU — all model inference is offloaded to Ollama sidecar.
 
 ---
 
@@ -123,7 +120,7 @@ Core container uses zero GPU — all model inference is offloaded to Ollama and 
 
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose
 - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) (for GPU-accelerated inference)
-- A `.env` file with `HF_TOKEN` (for vLLM to download the reranker model from HuggingFace)
+- A `.env` file with `HF_TOKEN` (for Ollama model access)
 
 ### Run
 
@@ -135,12 +132,9 @@ docker-compose up --build
 ### Pull Models (first run)
 
 ```bash
-docker exec janatpmp-ollama ollama pull qwen3-vl:8b
-docker exec janatpmp-ollama ollama pull qwen3-embedding:4b-q4_K_M
-docker exec janatpmp-ollama ollama pull qwen3:1.7b
+docker exec janatpmp-ollama ollama pull qwen3:32b
+docker exec janatpmp-ollama ollama pull qwen3-embedding:0.6b
 ```
-
-The vLLM reranker downloads its model automatically on first startup.
 
 Once running:
 
@@ -198,8 +192,8 @@ JANATPMP/
 ├── atlas/                     # ATLAS — HTTP client layer for model services
 │   ├── config.py              # Service URLs, model identifiers, Neo4j + salience constants
 │   ├── chunking.py            # Paragraph-aware text splitter for messages + documents (R16)
-│   ├── embedding_service.py   # Qwen3-Embedding-4B via Ollama /v1/embeddings
-│   ├── reranking_service.py   # Qwen3-Reranker-0.6B via vLLM /v1/score
+│   ├── embedding_service.py   # Qwen3-Embedding-0.6B via Ollama /v1/embeddings
+│   ├── reranking_service.py   # Cross-encoder reranker (DECOMMISSIONED)
 │   ├── memory_service.py      # Salience write-back to Qdrant (retrieval + usage signals)
 │   ├── usage_signal.py        # Keyword overlap heuristic for usage-based salience (R12)
 │   ├── on_write.py            # On-write: chunk + embed + fire-and-forget graph edges (R13/R16)
@@ -223,8 +217,7 @@ JANATPMP/
 │   ├── bulk_embed.py          # Batch embed via Ollama with checkpointing
 │   └── ingestion/             # Content ingestion parsers
 ├── Dockerfile                 # Python 3.14-slim (no PyTorch, no GPU)
-├── docker-compose.yml         # 5-container orchestration
-├── Janat_Brand_Guide.md       # Design system (colors, fonts)
+├── docker-compose.yml         # 4-container orchestration
 └── CLAUDE.md                  # Development guidelines for AI assistants
 ```
 
@@ -432,9 +425,8 @@ Built by **Mat Gallagher** — [Janat, LLC](https://janat.org) / [The Janat Init
 | | |
 |---|---|
 | UI Framework | [Gradio](https://gradio.app) 6.6.0 |
-| Chat LLM | [Ollama](https://ollama.ai) + Qwen3-VL:8B (Janus) |
-| Embeddings | [Qwen3-Embedding-4B](https://huggingface.co/Qwen/Qwen3-Embedding-4B) via Ollama |
-| Reranking | [Qwen3-Reranker-0.6B](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B) via vLLM |
+| Chat LLM | [Ollama](https://ollama.ai) + Qwen3:32B (Janus, with native thinking) |
+| Embeddings | [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) via Ollama |
 | Vector Search | [Qdrant](https://qdrant.tech) |
 | Knowledge Graph | [Neo4j](https://neo4j.com) 2026.01.4 |
 | Persistence | [SQLite](https://sqlite.org) |

@@ -13,7 +13,6 @@ services:
       - HF_TOKEN=${HF_TOKEN}
     depends_on:
       - ollama
-      - vllm-rerank
       - janatpmp-qdrant
       - neo4j
     restart: unless-stopped
@@ -36,6 +35,7 @@ services:
               capabilities: [gpu]
     environment:
       - OLLAMA_FLASH_ATTENTION=1
+      - OLLAMA_KV_CACHE_TYPE=q8_0
       - OLLAMA_NUM_GPU=999
       - OLLAMA_KEEP_ALIVE=-1
       - OLLAMA_MAX_LOADED_MODELS=3
@@ -43,32 +43,32 @@ services:
     networks:
       - janatpmp_network
 
-  vllm-rerank:
-    image: vllm/vllm-openai:latest
-    container_name: janatpmp-vllm-rerank
-    ports:
-      - "8002:8000"
-    volumes:
-      - huggingface_cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    environment:
-      - HF_TOKEN=${HF_TOKEN}
-    command: >
-      Qwen/Qwen3-Reranker-0.6B
-      --hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
-      --runner pooling
-      --convert classify
-      --max-model-len 8192
-      --gpu-memory-utilization 0.10
-    restart: unless-stopped
-    networks:
-      - janatpmp_network
+  # vllm-rerank: DECOMMISSIONED — Gemma migration (reranker disabled, not deleted)
+  #   image: vllm/vllm-openai:latest
+  #   container_name: janatpmp-vllm-rerank
+  #   ports:
+  #     - "8002:8000"
+  #   volumes:
+  #     - huggingface_cache:/root/.cache/huggingface
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   environment:
+  #     - HF_TOKEN=${HF_TOKEN}
+  #   command: >
+  #     Qwen/Qwen3-Reranker-0.6B
+  #     --hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+  #     --runner pooling
+  #     --convert classify
+  #     --max-model-len 8192
+  #     --gpu-memory-utilization 0.10
+  #   restart: unless-stopped
+  #   networks:
+  #     - janatpmp_network
 
   janatpmp-qdrant:
     image: qdrant/qdrant:latest

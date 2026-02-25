@@ -121,7 +121,7 @@ def _validate_log_level(value: str) -> str | None:
 SETTINGS_REGISTRY = {
     # Chat
     "chat_provider":        ("ollama", False, "chat", _validate_provider),
-    "chat_model":           ("qwen3-vl:8b", False, "chat", None),
+    "chat_model":           ("qwen3:32b", False, "chat", None),
     "chat_api_key":         ("", True, "chat", None),
     "chat_base_url":        ("http://ollama:11434/v1", False, "chat", None),
     "chat_system_prompt":   ("", False, "chat", None),
@@ -152,7 +152,7 @@ SETTINGS_REGISTRY = {
     "rag_rerank_threshold": ("0.3", False, "rag", _validate_float_0_1),
     "rag_max_chunks":       ("10", False, "rag", _validate_positive_int),
     "rag_synthesizer_provider": ("ollama", False, "rag", None),
-    "rag_synthesizer_model": ("qwen3:1.7b", False, "rag", None),
+    "rag_synthesizer_model": ("qwen3:32b", False, "rag", None),
     "rag_synthesizer_api_key": ("", True, "rag", None),
 
     # Chunking (R16)
@@ -226,6 +226,10 @@ def init_settings():
         ("chat_provider", "anthropic"),
         ("chat_model", "claude-sonnet-4-20250514"),
         ("chat_model", "nemotron-3-nano:latest"),
+        ("chat_model", "qwen3-vl:8b"),
+        ("chat_model", "gemma3:27b-it-qat"),
+        ("rag_synthesizer_model", "qwen3:1.7b"),
+        ("rag_synthesizer_model", "gemma3:1b"),
         ("ollama_num_ctx", "131072"),  # R15: 128K caused VRAM thrashing, 32K is plenty
         ("claude_export_json_dir", "/data/claude_export"),
         ("janus_context_messages", "50"),

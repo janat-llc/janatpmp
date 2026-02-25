@@ -284,7 +284,7 @@ def existing_point_ids(collection: str, ids: list[str]) -> set[str]:
 
 
 def search(query: str, collection: str = COLLECTION_DOCUMENTS,
-           limit: int = 5, rerank: bool = True) -> list[dict]:
+           limit: int = 5, rerank: bool = False) -> list[dict]:
     """Semantic search across a collection with optional reranking.
 
     Two-stage pipeline: ANN search produces candidates, then cross-encoder
@@ -336,7 +336,7 @@ def search(query: str, collection: str = COLLECTION_DOCUMENTS,
     return candidates
 
 
-def search_all(query: str, limit: int = 5, rerank: bool = True) -> list[dict]:
+def search_all(query: str, limit: int = 5, rerank: bool = False) -> list[dict]:
     """Search across ALL collections, merged and sorted by relevance.
 
     Two-stage pipeline applied per-collection, then merged. When reranking,

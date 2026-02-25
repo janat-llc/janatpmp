@@ -909,7 +909,7 @@ PROVIDER_PRESETS = {
     "ollama": {
         "name": "Ollama (Local)",
         "models": [],  # Populated dynamically via fetch_ollama_models()
-        "default_model": "nemotron-3-nano:latest",
+        "default_model": "qwen3:32b",
         "needs_api_key": False,
         "base_url": "http://ollama:11434/v1",
     },

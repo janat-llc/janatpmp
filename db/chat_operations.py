@@ -524,7 +524,7 @@ def get_or_create_janus_conversation() -> str:
 
     # Create fresh Janus conversation with current defaults
     provider = get_setting("chat_provider") or "ollama"
-    model = get_setting("chat_model") or "qwen3-vl:8b"
+    model = get_setting("chat_model") or "qwen3:32b"
     janus_id = create_conversation(
         provider=provider,
         model=model,
@@ -567,7 +567,7 @@ def archive_janus_conversation(janus_conv_id: str) -> str:
 
     # Create fresh Janus conversation
     provider = get_setting("chat_provider") or "ollama"
-    model = get_setting("chat_model") or "qwen3-vl:8b"
+    model = get_setting("chat_model") or "qwen3:32b"
     new_id = create_conversation(
         provider=provider,
         model=model,

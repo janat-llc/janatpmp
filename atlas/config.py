@@ -7,8 +7,8 @@ chunking parameters, and temporal engine defaults.
 # --- Service URLs (Docker internal DNS) ---
 # Embedding runs through Ollama's OpenAI-compatible API
 OLLAMA_EMBED_URL = "http://ollama:11434"
-# Reranking runs through dedicated vLLM sidecar
-VLLM_RERANK_URL = "http://janatpmp-vllm-rerank:8000"
+# Reranking via vLLM sidecar (DECOMMISSIONED — Gemma migration, kept for import compat)
+VLLM_RERANK_URL = "http://janatpmp-vllm-rerank:8000"  # Unused — rerank defaults to False
 # Neo4j graph database
 NEO4J_URI = "bolt://janatpmp-neo4j:7687"
 NEO4J_USER = "neo4j"
@@ -20,11 +20,11 @@ CDC_POLL_INTERVAL = 5    # Seconds between CDC polling cycles
 CDC_BATCH_SIZE = 50      # Max rows per poll
 
 # --- Model identifiers ---
-EMBEDDING_MODEL = "qwen3-embedding:4b-q4_K_M"
-RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"
+EMBEDDING_MODEL = "qwen3-embedding:0.6b"
+RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"  # DECOMMISSIONED — kept for import compat
 
 # --- Vector dimensions ---
-EMBEDDING_DIM = 2560  # Qwen3-Embedding-4B (Matryoshka: up to 2560)
+EMBEDDING_DIM = 1024  # Qwen3-Embedding-0.6B (1024-dim, Matryoshka support for smaller dims)
 
 # --- Text limits ---
 MAX_TEXT_CHARS = 20_000  # Pre-filter before sending to embed API
@@ -54,7 +54,7 @@ LOCATION_LON = -96.8540
 LOCATION_NAME = "3351 Washington Street South, Fargo, ND 58104"
 LOCATION_TZ = "America/Chicago"
 
-# --- Qwen3 asymmetric query instruction ---
+# --- Query instruction (Qwen3-Embedding asymmetric query prefix) ---
 QUERY_INSTRUCTION = (
     "Instruct: Given a query, retrieve relevant documents "
     "that answer the query\nQuery: "
