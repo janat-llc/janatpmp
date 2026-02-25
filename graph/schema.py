@@ -33,6 +33,8 @@ def init_graph_schema(driver) -> None:
         "CREATE INDEX message_sequence IF NOT EXISTS FOR (m:Message) ON (m.sequence)",
         "CREATE INDEX chunk_entity IF NOT EXISTS FOR (c:Chunk) ON (c.entity_id)",
         "CREATE INDEX conv_source IF NOT EXISTS FOR (n:Conversation) ON (n.source)",
+        # R20: Semantic edge score queries
+        "CREATE INDEX conv_similar_score IF NOT EXISTS FOR ()-[r:SIMILAR_TO]-() ON (r.score)",
     ]
 
     with driver.session() as session:

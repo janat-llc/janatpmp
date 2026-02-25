@@ -3,7 +3,7 @@
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
 ![Gradio 6.6.0](https://img.shields.io/badge/Gradio-6.6.0-orange?logo=gradio&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-71%20Tools-blueviolet)
+![MCP](https://img.shields.io/badge/MCP-72%20Tools-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![Neo4j](https://img.shields.io/badge/Neo4j-2026.01.4-008CC1?logo=neo4j&logoColor=white)
 
@@ -41,7 +41,7 @@ graph TB
 
 ```mermaid
 graph TB
-    MCP[MCP Tools<br/>71 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
+    MCP[MCP Tools<br/>72 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
     UI[Gradio UI] --> DB
     API[REST API] --> DB
     DB --> SQLite[(SQLite)]
@@ -56,11 +56,11 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 
 ## Features
 
-- **71 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, chunks, Janus lifecycle, backups, file registry, temporal context)
+- **72 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, chunks, Janus lifecycle, backups, file registry, temporal context, semantic edges)
 - **Sovereign multipage architecture** — 4 independent pages (Projects, Knowledge, Admin, Chat) with client-side navbar navigation; one process, one port, one MCP surface; each page has purpose-built left sidebar + shared Janus right sidebar
 - **Message chunking** — long messages and documents are split into focused ~2500-char chunks before embedding; each chunk gets its own Qdrant vector with parent traceability; RAG returns specific paragraphs instead of entire turns; paragraph-aware splitting with configurable thresholds
 - **Triple-write pipeline** — every message is chunked, then each chunk fans out to SQLite, Qdrant, and Neo4j synchronously; immediately retrievable on the next turn
-- **Knowledge graph** — Neo4j with 10 entity types (including Chunk, Person, Identity), CDC consumer for structural edges, INFORMED_BY provenance tracing, SIMILAR_TO cross-conversation linking, PART_OF chunk-to-parent edges, identity graph with BECAME/SPOKE/PARTICIPATED_IN edges
+- **Knowledge graph** — Neo4j with 10 entity types (including Chunk, Person, Identity), CDC consumer for structural edges, INFORMED_BY provenance tracing, SIMILAR_TO cross-conversation linking (message-level via Slumber keyword overlap + conversation-level via vector centroid similarity R20), PART_OF chunk-to-parent edges, identity graph with BECAME/SPOKE/PARTICIPATED_IN edges
 - **Janus continuous chat** — one persistent conversation from platform birth, shared across all page sidebars and Sovereign Chat; sliding window sends last N turns to LLM while RAG handles historical context
 - **Sovereign Chat** — dedicated chat page (`/chat`) with real-time metrics sidebar: RAG provenance, latency breakdown, token counts, salience scores
 - **Multi-provider chat** with triplet message persistence (Anthropic, Gemini, Ollama/local models)
@@ -82,6 +82,8 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Claude conversation import** — ingest Claude export JSON into a searchable triplet schema
 - **Full-text search** via SQLite FTS5 across items, documents, conversation messages, and chunks
 - **Auto-context injection** — every chat message receives a live snapshot of active projects and pending tasks
+- **Janus identity architecture** — 7-layer prompt composer (R19): Identity Core, Relational Context, Temporal Grounding, Conversation State, Self-Knowledge Boundary, Platform Context, Self-Introspection; bootstrap lifecycle (configuring → sleeping → awake); auto-restore platform data on DB reset
+- **Semantic graph topology** — `weave_conversation_graph()` (R20) bridges Qdrant vector similarity into Neo4j SIMILAR_TO edges between Conversation nodes; transforms isolated conversation chains into a connected semantic network; MERGE-based, idempotent, ~55s for 344 conversations
 - **Change Data Capture** outbox with background Neo4j sync consumer
 
 ---
@@ -165,7 +167,7 @@ python app.py
 ```
 JANATPMP/
 ├── app.py                     # Orchestrator: startup, routes, gr.api(), launch
-├── mcp_registry.py            # MCP Tool Registry — 71 gr.api() imports + ALL_MCP_TOOLS
+├── mcp_registry.py            # MCP Tool Registry — 72 gr.api() imports + ALL_MCP_TOOLS
 ├── janat_theme.py             # Custom Gradio theme (Janat brand colors + CSS)
 ├── assets/
 │   └── janat_logo_bold_transparent.png  # Janat Mandala logo
@@ -202,10 +204,12 @@ JANATPMP/
 ├── graph/                     # Knowledge graph layer — Neo4j (R13)
 │   ├── schema.py              # Idempotent Neo4j constraints + indexes
 │   ├── graph_service.py       # Neo4j CRUD + MCP tools (query, neighbors, stats)
-│   └── cdc_consumer.py        # Background CDC poller + backfill MCP tool
+│   ├── cdc_consumer.py        # Background CDC poller + backfill MCP tool
+│   └── semantic_edges.py      # Conversation SIMILAR_TO edge generation (R20)
 ├── services/
 │   ├── log_config.py          # SQLite log handler + setup_logging()
 │   ├── chat.py                # Multi-provider chat with thinking mode
+│   ├── prompt_composer.py     # 7-layer Janus identity system prompt (R19)
 │   ├── turn_timer.py          # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py             # Slumber Cycle — 5-stage background daemon (R12+R13+R17)
 │   ├── settings.py            # Settings registry with validation and categories
@@ -225,7 +229,7 @@ JANATPMP/
 
 ## MCP Integration
 
-JANATPMP exposes **71 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
+JANATPMP exposes **72 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
 
 ```
 http://localhost:7860/gradio_api/mcp/sse
@@ -247,7 +251,7 @@ Full API documentation is available at `/gradio_api/docs` while the server is ru
 | Telemetry | `add_message_metadata`, `get_message_metadata` | Per-turn timing, RAG snapshots, quality scores |
 | Chunks | `chunk_all_messages`, `chunk_all_documents`, `get_chunks`, `get_chunk_stats`, `search_chunks`, `delete_chunks` | Populate/search/manage chunk records for messages and documents |
 | Vectors | `vector_search`, `vector_search_all`, `embed_all_documents`, `embed_all_messages`, `embed_all_domains`, `embed_all_items`, `embed_all_tasks`, `recreate_collections` | ATLAS two-stage search, bulk embedding, collection management |
-| Graph | `graph_query`, `graph_neighbors`, `graph_stats`, `backfill_graph`, `seed_identity_graph` | Read-only Cypher queries, node traversal, graph statistics, CDC backfill, identity seeding |
+| Graph | `graph_query`, `graph_neighbors`, `graph_stats`, `backfill_graph`, `seed_identity_graph`, `weave_conversation_graph` | Read-only Cypher queries, node traversal, graph statistics, CDC backfill, identity seeding, semantic edge generation |
 | System | `get_stats`, `get_schema_info`, `backup_database`, `restore_database`, `list_backups`, `reset_database`, `export_platform_data`, `import_platform_data` | Database administration, portable export/import |
 | Import | `import_conversations_json`, `import_conversations_directory`, `ingest_google_ai_conversations`, `ingest_markdown_documents` | Claude, Google AI Studio, and markdown ingestion |
 | File Registry | `get_file_registry_stats`, `list_registered_files`, `search_file_registry` | Auto-ingestion file tracking (R17) |
@@ -408,9 +412,10 @@ feature/phase{X}-{description}  # legacy naming
 
 ## Future
 
-JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), and **auto-ingestion** removes manual import friction (R17). Planned next steps:
+JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), **auto-ingestion** removes manual import friction (R17), **Janus identity architecture** gives her genuine selfhood (R19), and **semantic graph topology** connects conversations into a navigable network (R20). Planned next steps:
 
-- **Janus self-introspection** — let Janus query its own `messages_metadata` to ground self-description in data
+- **Custom ranking service** — leverage SIMILAR_TO graph topology + temporal decay to re-rank RAG results
+- **Automatic re-weaving** — hook semantic edge generation into Slumber so new conversations auto-connect
 - **Synthesis tab** — Memory node review, evidence chains, source attribution (Knowledge page placeholder ready)
 - **Ollama Modelfiles pipeline** — specialized models (synthesizer, scorer, consolidator, classifier) sharing base weights for dynamic system prompt generation
 - **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY, SIMILAR_TO, and PART_OF edges

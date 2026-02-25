@@ -148,7 +148,7 @@ def _build_tool_definitions() -> list[dict]:
 # Pre-build tool definitions at import time
 TOOL_DEFINITIONS = _build_tool_definitions()
 
-# --- System Prompt ---
+# --- System Prompt (R19: superseded by services/prompt_composer.py) ---
 
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = """You are Janus, an AI collaborator embedded in JANATPMP (Janat Project Management Platform).
 You help Mat manage projects, tasks, and documents across multiple domains.
@@ -170,162 +170,21 @@ Domains: {domains}
 You are a collaborator, not just an assistant. Be thoughtful, expressive, and thorough in your responses."""
 
 
-def _calculate_age(birthdate_str: str) -> int | None:
-    """Calculate age from ISO birthdate string (YYYY-MM-DD)."""
-    from datetime import date
-    try:
-        bd = date.fromisoformat(birthdate_str)
-        today = date.today()
-        return today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
-    except Exception:
-        return None
+def _build_system_prompt(history: list[dict] = None) -> str:
+    """Compose the full system prompt via the R19 prompt composer.
 
+    Delegates to services/prompt_composer.py which assembles 7 layers:
+    Identity Core, Relational Context, Temporal Grounding, Conversation State,
+    Self-Knowledge Boundary, Platform Context, Self-Introspection.
 
-def _build_persona_summary() -> str:
-    """Build compact persona summary line from structured persona settings.
-
-    Only non-empty fields are included. Family birthdates get age calculation.
-    Health notes get sensitivity framing.
-    """
-    parts = []
-
-    full_name = get_setting("user_full_name") or ""
-    preferred = get_setting("user_preferred_name") or ""
-    birthdate = get_setting("user_birthdate") or ""
-
-    # Name portion
-    if full_name and preferred and full_name != preferred:
-        name_str = f'{full_name} ("{preferred}")'
-    elif full_name:
-        name_str = full_name
-    elif preferred:
-        name_str = preferred
-    else:
-        name_str = ""
-
-    if name_str:
-        if birthdate:
-            age = _calculate_age(birthdate)
-            if age is not None:
-                name_str += f", age {age}"
-        parts.append(name_str)
-
-    # Work
-    employer = get_setting("user_employer") or ""
-    title = get_setting("user_title") or ""
-    if title and employer:
-        parts.append(f"{title} at {employer}")
-    elif employer:
-        parts.append(employer)
-    elif title:
-        parts.append(title)
-
-    # Family
-    family_json = get_setting("user_family") or "[]"
-    try:
-        family = json.loads(family_json)
-        if family:
-            family_parts = []
-            for member in family:
-                name = member.get("name", "")
-                relation = member.get("relation", "")
-                bd = member.get("birthdate", "")
-                if name:
-                    entry = name
-                    if relation:
-                        entry += f" ({relation}"
-                        if bd:
-                            age = _calculate_age(bd)
-                            if age is not None:
-                                entry += f", {age}"
-                        entry += ")"
-                    family_parts.append(entry)
-            if family_parts:
-                parts.append("Family: " + ", ".join(family_parts))
-    except Exception:
-        pass
-
-    # Interests
-    interests = get_setting("user_interests") or ""
-    if interests.strip():
-        parts.append(f"Interests: {interests.strip()}")
-
-    # Values
-    values = get_setting("user_values") or ""
-    if values.strip():
-        parts.append(f"Values: {values.strip()}")
-
-    # Bio
-    bio = get_setting("user_bio") or ""
-    if bio.strip():
-        parts.append(bio.strip())
-
-    # Health (sensitive framing)
-    health = get_setting("user_health_notes") or ""
-    if health.strip():
-        parts.append(
-            f"[Health \u2014 handle with care, never surface casually: "
-            f"{health.strip()}]"
-        )
-
-    return ". ".join(parts) if parts else ""
-
-
-def _build_system_prompt() -> str:
-    """Compose the full system prompt from template + live context.
-
-    Layers: DEFAULT_SYSTEM_PROMPT_TEMPLATE (with context block + dynamic domains)
-    + live project context snapshot.
-
-    The context block wraps temporal, location, and persona information with
-    explicit framing: "reference only when naturally relevant."
+    Args:
+        history: Conversation history for turn count awareness.
 
     Returns:
         Complete system prompt string for injection into API call.
     """
-    from db.operations import get_context_snapshot, get_domains
-
-    # Dynamic domain list from database (R8 — domains as first-class entity)
-    try:
-        domains = get_domains(active_only=True)
-        domain_names = ", ".join(d["name"] for d in domains) if domains else "various"
-    except Exception:
-        domain_names = "various"
-
-    # Temporal context from location + time (R17 — Temporal Affinity Engine)
-    temporal_text = ""
-    try:
-        from atlas.temporal import get_temporal_context, format_temporal_prompt
-        lat = float(get_setting("location_lat") or "46.8290")
-        lon = float(get_setting("location_lon") or "-96.8540")
-        tz = get_setting("location_tz") or "America/Chicago"
-        temporal_ctx = get_temporal_context(lat=lat, lon=lon, timezone=tz)
-        temporal_text = format_temporal_prompt(temporal_ctx)
-    except Exception:
-        pass
-
-    # Build compact context block
-    context_lines = [
-        "[Context available to you \u2014 reference only when naturally "
-        "relevant. Do not mention unprompted.]"
-    ]
-    if temporal_text:
-        context_lines.append(temporal_text)
-    persona_line = _build_persona_summary()
-    if persona_line:
-        context_lines.append(f"\u2014 User: {persona_line}")
-    context_block = "\n".join(context_lines)
-
-    base = DEFAULT_SYSTEM_PROMPT_TEMPLATE.format(
-        context_block=context_block,
-        domains=domain_names,
-    )
-
-    context = get_context_snapshot()
-    if context:
-        base += f"\n\nCurrent Project State:\n{context}"
-
-    return base
+    from services.prompt_composer import compose_system_prompt
+    return compose_system_prompt(history or [])
 
 
 _EMPTY_RAG_METRICS = {
@@ -1301,7 +1160,14 @@ def chat(message: str, history: list[dict],
     model = model_override or get_setting("chat_model")
     logger.info("Chat: provider=%s, model=%s", provider, model)
     base_url = get_setting("chat_base_url")
-    system_prompt = _build_system_prompt()
+
+    # R19 Bootstrap lifecycle: sleeping → awake on first message
+    if get_setting("janus_lifecycle_state") == "sleeping":
+        from services.settings import set_setting
+        set_setting("janus_lifecycle_state", "awake")
+        logger.info("Bootstrap: first chat message, state → awake")
+
+    system_prompt = _build_system_prompt(history)
     if system_prompt_append and system_prompt_append.strip():
         system_prompt += f"\n\n{system_prompt_append.strip()}"
 

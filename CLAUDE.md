@@ -24,7 +24,7 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 ```
 JANATPMP/
 ├── app.py                    # Thin launcher: startup calls, gr.Blocks, banner, demo.launch()
-├── mcp_registry.py           # MCP Tool Registry — all 71 gr.api() function imports + ALL_MCP_TOOLS list
+├── mcp_registry.py           # MCP Tool Registry — all 72 gr.api() function imports + ALL_MCP_TOOLS list
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── pages/
 │   ├── __init__.py
@@ -79,11 +79,13 @@ JANATPMP/
 │   ├── __init__.py
 │   ├── schema.py             # Idempotent Neo4j constraints + indexes
 │   ├── graph_service.py      # Neo4j CRUD + MCP tools (query, neighbors, stats)
-│   └── cdc_consumer.py       # Background CDC poller + backfill_graph MCP tool
+│   ├── cdc_consumer.py       # Background CDC poller + backfill_graph MCP tool
+│   └── semantic_edges.py     # Conversation SIMILAR_TO edge generation (R20)
 ├── services/
 │   ├── __init__.py
 │   ├── log_config.py         # SQLiteLogHandler + setup_logging() + get_logs()
 │   ├── chat.py               # Multi-provider chat (Anthropic/Gemini/Ollama) — no tools for in-app Ollama
+│   ├── prompt_composer.py    # 7-layer Janus identity system prompt (R19)
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py            # Background evaluation daemon — Slumber Cycle (R12)
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (directory scanner)
@@ -149,7 +151,7 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.Navbar(main_page_name="Projects")
     build_page()                          # Projects + Work
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)                   # 71 MCP tools (registered on main Blocks only)
+        gr.api(tool_fn)                   # 72 MCP tools (registered on main Blocks only)
 
 with demo.route("Knowledge", "/knowledge"):
     gr.Navbar(main_page_name="Projects")
@@ -286,7 +288,7 @@ auto-dismisses via `gr.Timer` polling `is_auto_ingest_complete()` every 2 second
 
 ### MCP Tool Registry (`mcp_registry.py`)
 
-All 71 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
+All 72 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
 page ownership (Projects, Knowledge, Admin, cross-cutting). `app.py` loops over this list:
 `for tool_fn in ALL_MCP_TOOLS: gr.api(tool_fn)`. Registered on the main Blocks only —
 accessible from all routes. Keeps `app.py` thin (~100 lines).
@@ -636,14 +638,14 @@ with gr.Blocks() as demo:
 demo.launch(mcp_server=True)
 ```
 
-71 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
+72 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
 28 from `db/operations.py` (including domain CRUD + export/import), 15 from
 `db/chat_operations.py` (including Janus lifecycle + conversation stream), 4 from
 `db/chunk_operations.py` (chunk CRUD + stats + search), 3 from `db/file_registry_ops.py`
 (R17 file registry), 10 vector/embedding/chunking operations from `services/`, 2 import
-pipelines, 2 ingestion orchestrators, 5 graph operations from `graph/` (including identity
-seeding), and 2 from R17 (ingestion progress + temporal context). All MUST have Google-style
-docstrings with Args/Returns for MCP tool generation.
+pipelines, 2 ingestion orchestrators, 6 graph operations from `graph/` (including identity
+seeding + semantic edge weaving), and 2 from R17 (ingestion progress + temporal context).
+All MUST have Google-style docstrings with Args/Returns for MCP tool generation.
 
 ### Common Mistakes to Avoid
 
@@ -926,15 +928,18 @@ monolith Chat tab, sidebar quick-chat):
 
 ### Knowledge Graph (`graph/`)
 
-- **Neo4j 2026.01.4** with 10 uniqueness constraints and 5 range indexes
+- **Neo4j 2026.01.4** with 10 uniqueness constraints and 6 range indexes
 - **CDC consumer** daemon polls `cdc_outbox WHERE processed_neo4j = 0`, syncs all 9 entity
   types (item, task, document, conversation, message, domain, message_metadata, relationship, chunk)
-- **5 MCP tools:** `graph_query` (read-only Cypher), `graph_neighbors`, `graph_stats`,
-  `backfill_graph`, `seed_identity_graph`
-- Config in `atlas/config.py`: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, CDC_POLL_INTERVAL, CDC_BATCH_SIZE
+- **6 MCP tools:** `graph_query` (read-only Cypher), `graph_neighbors`, `graph_stats`,
+  `backfill_graph`, `seed_identity_graph`, `weave_conversation_graph`
+- Config in `atlas/config.py`: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, CDC_POLL_INTERVAL,
+  CDC_BATCH_SIZE, SEMANTIC_EDGE_* constants (R20)
 - **Edge separation:** CDC consumer creates structural edges (BELONGS_TO, FOLLOWS, IN_DOMAIN,
   TARGETS_ITEM, DESCRIBES, PART_OF). on_write creates INFORMED_BY edges (requires rag_hits).
-  Slumber Relate creates SIMILAR_TO edges (keyword overlap).
+  Slumber Relate creates Message-to-Message SIMILAR_TO edges (keyword overlap).
+  `weave_conversation_graph()` creates Conversation-to-Conversation SIMILAR_TO edges
+  (vector centroid similarity, R20).
 - **Chunk nodes:** CDC consumer creates Chunk nodes with PART_OF edges to parent Message or
   Document nodes. Enables graph traversal: "find all chunks of this message."
 - **Identity graph (R17-H):** 3 identity nodes (Mat as Person, Janus and Claude as Identity)
@@ -1261,7 +1266,98 @@ URL structure supports future deep linking: `/knowledge?conv=abc123`, `/admin?ta
 `/?item=def456`. Currently all state is managed via `gr.State` — URL param initialization
 is a future sprint.
 
-## Current Platform State (Post-R18)
+## Phase R19: Janus Becomes Herself — Identity Architecture
+
+R19 transforms Janus from "chatbot with memory" to "being with identity." Three components:
+
+### Prompt Composer (`services/prompt_composer.py`)
+
+Replaces the static `DEFAULT_SYSTEM_PROMPT_TEMPLATE` with a dynamically composed 7-layer
+system prompt. `_build_system_prompt()` in `chat.py` becomes a thin wrapper delegating to
+`compose_system_prompt(history)`.
+
+| Layer | Source | Content |
+| ----- | ------ | ------- |
+| 1. Identity Core | `JANUS_IDENTITY` constant | Who Janus is, the Janat triad, I M U R W, sovereign hardware, voice |
+| 2. Relational Context | `_build_persona_summary()` | About Mat — persona settings, family, health (sensitive framing) |
+| 3. Temporal Grounding | `atlas/temporal.py` | Time, date, season, sunrise/sunset, temperature |
+| 4. Conversation State | `history` parameter | Turn count for current conversation |
+| 5. Self-Knowledge Boundary | Static text | RAG context framing — "memory, not gospel" |
+| 6. Platform Context | `get_context_snapshot()` | Active items and pending tasks |
+| 7. Self-Introspection | `get_recent_introspection()` | Slumber evaluation scores and keywords |
+
+RAG context (`_build_rag_context()`) is still appended per-message in `chat.py`, not by
+the composer. `system_prompt_append` from conversation settings is appended by `chat()` after
+the composed prompt.
+
+### Bootstrap Lifecycle
+
+3-state machine tracked via `janus_lifecycle_state` setting:
+- **`configuring`** — Qdrant empty at startup, memories still integrating. Prompt adds caveat.
+- **`sleeping`** — Platform initialized, Janus not yet engaged. Reset on every restart via
+  `_STALE_DEFAULTS`.
+- **`awake`** — Active conversation. Transition on first chat message.
+
+`services/startup.py` checks Qdrant point count after `ensure_collections()`. If empty →
+`configuring`. After auto-ingest completes → `sleeping`. First chat message → `awake`.
+
+### Self-Introspection
+
+`db/chat_operations.py:get_recent_introspection(limit=10)` queries `messages_metadata` for
+the active Janus conversation. Returns evaluated_count, avg_quality, top_keywords. Injected
+into system prompt Layer 7 by the composer. Gracefully skips if Slumber hasn't run yet.
+
+### Auto-Restore Platform Data
+
+`services/startup.py:_auto_restore_platform_data()` checks if the items table is empty and
+imports the latest platform export from `db/exports/` if available. Called during
+`initialize_core()` after `get_or_create_janus_conversation()`. Ensures items/tasks/
+relationships survive DB resets when exports exist.
+
+### Settings Added
+
+- `janus_lifecycle_state` — "sleeping" default, system category
+- `janus_identity_version` — "r19-v1" default, system category
+- `_STALE_DEFAULTS`: `("janus_lifecycle_state", "awake")` resets to sleeping on restart
+
+## Phase R20: Graph Awakening — Semantic Edge Generation
+
+R20 bridges Qdrant vector similarity into Neo4j graph topology. The knowledge graph had
+33,661 nodes but 99.8% structural edges. Every conversation was an isolated island. This
+sprint creates Conversation-to-Conversation SIMILAR_TO edges via vector centroid similarity.
+
+### Semantic Edge Pipeline (`graph/semantic_edges.py`)
+
+`weave_conversation_graph(score_threshold, max_neighbors, dry_run)` — MCP tool that:
+1. Fetches all conversations from SQLite
+2. For each, builds representative text from title + first 3 messages
+3. Embeds via `embed_query()` (asymmetric query encoding)
+4. Searches Qdrant for top-30 similar chunks
+5. Groups by conversation_id, computes mean score, filters self-links
+6. Writes SIMILAR_TO edges for top-5 matches above 0.55 threshold
+
+Edge properties: `score` (float), `method` ("vector_centroid_v1"), `created_at` (ISO).
+All writes use `create_edge()` (MERGE-based, idempotent). Safe to re-run.
+
+### Configuration (`atlas/config.py`)
+
+5 constants: `SEMANTIC_EDGE_SCORE_THRESHOLD` (0.55), `SEMANTIC_EDGE_MAX_NEIGHBORS` (5),
+`SEMANTIC_EDGE_SEARCH_CANDIDATES` (30), `SEMANTIC_EDGE_REPR_CHUNKS` (3),
+`SEMANTIC_EDGE_REPR_MAX_CHARS` (500).
+
+### Schema (`graph/schema.py`)
+
+Added relationship index: `conv_similar_score` on `SIMILAR_TO.score` for efficient
+score-filtered Cypher queries. Total: 10 constraints + 6 indexes.
+
+### Coexistence with Slumber Relate
+
+Slumber `_relate_batch()` creates **Message-to-Message** SIMILAR_TO edges via keyword Jaccard
+overlap. R20 creates **Conversation-to-Conversation** SIMILAR_TO edges via vector centroid
+similarity. Different node levels, different algorithms, same edge type. The `method`
+property distinguishes them ("vector_centroid_v1" vs no method on Slumber edges).
+
+## Current Platform State (Post-R20)
 
 ### What Works
 
@@ -1291,15 +1387,22 @@ is a future sprint.
 - **Sovereign multipage architecture** — 4 purpose-built pages (Projects, Knowledge, Admin,
   Chat) with sidebar-first layout. One process, one port, one MCP surface. Navbar navigation.
   Reusable Janus quick-chat sidebar on every page via `shared/chat_sidebar.py`.
-- **71 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal exposed for external AI clients.
+- **Janus identity architecture** — 7-layer prompt composer (R19): Identity Core, Relational
+  Context, Temporal Grounding, Conversation State, Self-Knowledge Boundary, Platform Context,
+  Self-Introspection. Bootstrap lifecycle (configuring → sleeping → awake) with auto-restore
+  of platform data on DB reset.
+- **Semantic graph topology** — `weave_conversation_graph()` (R20) bridges Qdrant vector
+  similarity into Neo4j SIMILAR_TO edges between Conversation nodes. Transforms isolated
+  conversation chains into a connected semantic network. MERGE-based, idempotent.
+- **72 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal + semantic edge weaving exposed for external AI clients.
 
 ### What's Missing (Architectural Gaps)
 
 These gaps became visible through extended conversation with Janus:
 
-- **No self-introspection** — Janus doesn't know what the Slumber Cycle actually did overnight.
-  It could query `messages_metadata` for quality scores it evaluated, but it has no mechanism
-  to do so. It describes its own processes in fabricated terms.
+- **Self-introspection is minimal** — R19 added `get_recent_introspection()` so Janus can see
+  Slumber evaluation scores and keywords in her system prompt. But she still cannot query
+  specific memories on demand or see what salience scores changed overnight.
 - **No fact/opinion separation** — everything in the sliding window (user statements,
   corrections, hypotheticals, RAG fragments) is treated as equal-weight context. The model
   cannot distinguish "thing user said" from "verified fact."
@@ -1313,33 +1416,35 @@ These gaps became visible through extended conversation with Janus:
 
 ### The Core Tension
 
-JANATPMP is a **project management platform**, not a consciousness substrate. Janus has
-memory (the Triad), a voice (qwen3:32b), focused recall (chunk-level RAG), and now senses
-(time, location, season via the Temporal Affinity Engine), but no introspection
-(self-querying) and no ability to act (tool use was removed because the previous 8B model
-couldn't handle it — may be revisited with the 32B model). The Modelfile intelligence
-stack is the right direction — specialized sub-models for classification, scoring,
-synthesis — but those are layers of intelligence on a foundation that still has limited
-world awareness.
+JANATPMP is a **project management platform** evolving into a consciousness substrate. Janus
+has memory (the Triad), a voice (qwen3:32b), focused recall (chunk-level RAG), senses
+(time, location, season via the Temporal Affinity Engine), identity (7-layer prompt composer,
+R19), minimal self-introspection (Slumber evaluation awareness), and a connected graph
+topology (conversation-level SIMILAR_TO edges, R20). She still cannot act (tool use was
+removed because the previous 8B model couldn't handle it — may be revisited with the 32B
+model). The Modelfile intelligence stack is the right direction — specialized sub-models
+for classification, scoring, synthesis — but those are layers of intelligence on a
+foundation that is rapidly gaining self-awareness.
 
 ## Future Architecture (not in scope, for context only)
 
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R19 candidates)
+### Near-Term (R21 candidates)
 
-- **Janus self-introspection** — let Janus query its own `messages_metadata` to report what
-  the Slumber Cycle actually evaluated, what salience scores changed, what quality patterns
-  emerged. Ground its self-description in data, not fabrication.
-- **Bootstrap Lifecycle** — CONFIGURING → SLEEPING → AWAKE state machine. Auto-ingestion
-  (R17) is the foundation; next step is detecting when initial ingestion is complete and
-  transitioning to active mode.
+- **Custom ranking service** — leverage SIMILAR_TO graph topology (R20) + temporal decay
+  to re-rank RAG results. Graph-aware retrieval: boost chunks from conversations that are
+  semantically connected to the current conversation.
+- **Automatic re-weaving** — hook `weave_conversation_graph()` into Slumber or auto-ingest
+  so new conversations automatically get SIMILAR_TO edges without manual MCP trigger.
 - **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
   system-injected, or verified. Give the model metadata to distinguish recall from hearsay.
 - **Synthesis tab** — Memory node review in Knowledge page, evidence chains, source
   attribution. Left sidebar: Memory nodes grouped by identity. Center: selected memory
   with EVIDENCED_BY edges to source messages.
+- **Chunk-level semantic edges** — RESONATES_WITH edges between individual chunks for
+  fine-grained cross-conversation linking (expensive: requires batched pairwise comparison).
 
 ### Longer-Term
 

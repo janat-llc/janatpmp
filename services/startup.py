@@ -19,6 +19,39 @@ _ingest_result: dict = {}
 _ingest_error: str = ""
 
 
+def _auto_restore_platform_data() -> None:
+    """Auto-import the latest platform export if items table is empty.
+
+    After a DB reset, conversations/documents are re-ingested via auto_ingest,
+    but items/tasks/relationships need to come from platform exports. This checks
+    db/exports/ for the most recent export and imports it if the items table is empty.
+    """
+    from pathlib import Path
+
+    try:
+        from db.operations import get_connection, import_platform_data
+
+        with get_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+
+        if count > 0:
+            return  # Items exist, no restore needed
+
+        exports_dir = Path("/app/db/exports")
+        if not exports_dir.exists():
+            return
+
+        exports = sorted(exports_dir.glob("platform_export_*.json"), reverse=True)
+        if not exports:
+            return
+
+        latest = exports[0]
+        result = import_platform_data(str(latest))
+        logger.info("Auto-restored platform data from %s: %s", latest.name, result)
+    except Exception as e:
+        logger.warning("Auto-restore platform data failed: %s", e)
+
+
 def initialize_core() -> None:
     """Initialize database, settings, cleanup, and Janus conversation.
 
@@ -35,6 +68,10 @@ def initialize_core() -> None:
     cleanup_old_logs()
     cleanup_cdc_outbox()
     get_or_create_janus_conversation()
+
+    # Auto-restore platform data if items table is empty and exports exist
+    _auto_restore_platform_data()
+
     logger.info("Core initialized: database, settings, Janus conversation")
 
 
@@ -48,6 +85,15 @@ def initialize_services() -> None:
     try:
         from services.vector_store import ensure_collections
         ensure_collections()
+
+        # R19 Bootstrap lifecycle: check if Qdrant is populated
+        from services.vector_store import _get_client, COLLECTION_MESSAGES
+        from services.settings import set_setting
+        client = _get_client()
+        info = client.get_collection(COLLECTION_MESSAGES)
+        if info.points_count == 0:
+            set_setting("janus_lifecycle_state", "configuring")
+            logger.info("Bootstrap: Qdrant empty, state -> configuring")
     except Exception:
         logger.warning("Qdrant not available -- vector search disabled")
 
@@ -83,6 +129,12 @@ def start_auto_ingest() -> None:
             from services.auto_ingest import scan_and_ingest
             _ingest_result = scan_and_ingest(auto_embed=True, source="startup")
             logger.info("Background auto-ingest complete: %s", _ingest_result)
+
+            # R19 Bootstrap lifecycle: configuring → sleeping after ingest
+            from services.settings import get_setting, set_setting
+            if get_setting("janus_lifecycle_state") == "configuring":
+                set_setting("janus_lifecycle_state", "sleeping")
+                logger.info("Bootstrap: ingest complete, state -> sleeping")
         except Exception as e:
             _ingest_error = str(e)
             logger.warning("Background auto-ingest failed: %s", e)

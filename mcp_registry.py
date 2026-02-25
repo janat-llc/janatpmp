@@ -64,6 +64,8 @@ from db.chunk_operations import (
 # --- Knowledge graph (R13: Neo4j) — 5 functions ---
 from graph.graph_service import graph_query, graph_neighbors, graph_stats
 from graph.cdc_consumer import backfill_graph, seed_identity_graph
+# --- Semantic edge generation (R20: Graph Awakening) — 1 function ---
+from graph.semantic_edges import weave_conversation_graph
 
 # --- File registry + auto-ingestion + temporal context (R17) — 5 functions ---
 from db.file_registry_ops import (
@@ -100,7 +102,7 @@ ALL_MCP_TOOLS: list = [
     embed_all_items, embed_all_tasks,
     get_chunks, get_chunk_stats, search_chunks, delete_chunks,
     graph_query, graph_neighbors, graph_stats,
-    backfill_graph, seed_identity_graph,
+    backfill_graph, seed_identity_graph, weave_conversation_graph,
     get_file_registry_stats, list_registered_files, search_file_registry,
     get_ingestion_progress,
 

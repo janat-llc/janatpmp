@@ -59,3 +59,10 @@ QUERY_INSTRUCTION = (
     "Instruct: Given a query, retrieve relevant documents "
     "that answer the query\nQuery: "
 )
+
+# --- Semantic Edge Generation (R20: Graph Awakening) ---
+SEMANTIC_EDGE_SCORE_THRESHOLD = 0.55  # Min mean similarity for SIMILAR_TO edge
+SEMANTIC_EDGE_MAX_NEIGHBORS = 5       # Max edges per conversation
+SEMANTIC_EDGE_SEARCH_CANDIDATES = 30  # ANN results before grouping
+SEMANTIC_EDGE_REPR_CHUNKS = 3         # Messages used for representative text
+SEMANTIC_EDGE_REPR_MAX_CHARS = 500    # Max chars per message in repr text

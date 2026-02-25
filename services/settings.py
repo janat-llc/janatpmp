@@ -178,6 +178,10 @@ SETTINGS_REGISTRY = {
     "slumber_evaluator":       ("heuristic", False, "system", None),
     "slumber_prune_age_days":  ("7",   False, "system", _validate_positive_int),
 
+    # Janus Identity (R19)
+    "janus_lifecycle_state":   ("sleeping", False, "system", None),
+    "janus_identity_version":  ("r19-v1", False, "system", None),
+
     # Persona (R18 structured schema)
     "user_full_name":       ("", False, "persona", None),
     "user_preferred_name":  ("Mat", False, "persona", None),
@@ -233,6 +237,7 @@ def init_settings():
         ("ollama_num_ctx", "131072"),  # R15: 128K caused VRAM thrashing, 32K is plenty
         ("claude_export_json_dir", "/data/claude_export"),
         ("janus_context_messages", "50"),
+        ("janus_lifecycle_state", "awake"),  # R19: reset to sleeping on every restart
     ]
 
     with get_connection() as conn:

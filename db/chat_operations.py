@@ -468,6 +468,60 @@ def update_message_metadata(
         return f"Updated metadata for message {message_id}" if cursor.rowcount > 0 else f"Metadata for message {message_id} not found"
 
 
+def get_recent_introspection(limit: int = 10) -> dict:
+    """Query recent Slumber evaluations for Janus self-awareness.
+
+    Returns summary of recent quality scores and top keywords from the active
+    Janus conversation's messages_metadata. Used by the prompt composer to
+    give Janus awareness of her own processing.
+
+    Args:
+        limit: Number of recent evaluated messages to consider.
+
+    Returns:
+        Dict with keys: evaluated_count, avg_quality, top_keywords, recent_scores.
+        Returns empty dict if no evaluated messages exist.
+    """
+    from services.settings import get_setting
+    import json
+    from collections import Counter
+
+    janus_id = get_setting("janus_conversation_id")
+    if not janus_id:
+        return {}
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT mm.quality_score, mm.keywords
+               FROM messages_metadata mm
+               JOIN messages m ON mm.message_id = m.id
+               WHERE m.conversation_id = ?
+                 AND mm.quality_score IS NOT NULL
+               ORDER BY m.created_at DESC
+               LIMIT ?""",
+            (janus_id, limit),
+        ).fetchall()
+
+    if not rows:
+        return {}
+
+    scores = [r["quality_score"] for r in rows]
+    keyword_counter = Counter()
+    for row in rows:
+        try:
+            kws = json.loads(row["keywords"] or "[]")
+            keyword_counter.update(kws)
+        except Exception:
+            pass
+
+    return {
+        "evaluated_count": len(scores),
+        "avg_quality": round(sum(scores) / len(scores), 2),
+        "top_keywords": [kw for kw, _ in keyword_counter.most_common(5)],
+        "recent_scores": scores,
+    }
+
+
 def get_messages(conversation_id: str, limit: int = 100, latest: bool = False) -> list:
     """Get messages for a conversation ordered by sequence.
 
