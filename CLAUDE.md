@@ -24,7 +24,7 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 ```
 JANATPMP/
 ├── app.py                    # Thin launcher: startup calls, gr.Blocks, banner, demo.launch()
-├── mcp_registry.py           # MCP Tool Registry — all 72 gr.api() function imports + ALL_MCP_TOOLS list
+├── mcp_registry.py           # MCP Tool Registry — all 73 gr.api() function imports + ALL_MCP_TOOLS list
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── pages/
 │   ├── __init__.py
@@ -60,7 +60,8 @@ JANATPMP/
 │   │   ├── 0.7.0_pipeline_observability.sql
 │   │   ├── 0.8.0_chunks.sql
 │   │   ├── 0.9.0_file_registry.sql
-│   │   └── 1.0.0_cognition_trace.sql
+│   │   ├── 1.0.0_cognition_trace.sql
+│   │   └── 1.1.0_slumber_eval.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
 │   ├── exports/              # Portable project data exports (JSON)
@@ -90,6 +91,7 @@ JANATPMP/
 │   ├── prompt_composer.py    # 7-layer Janus identity system prompt (R19)
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py            # Background evaluation daemon — Slumber Cycle (R12)
+│   ├── slumber_eval.py        # Gemini-powered message evaluation (R22: First Light)
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (directory scanner)
 │   ├── embedding.py          # Thin shim → atlas.embedding_service
 │   ├── vector_store.py       # Qdrant vector DB + two-stage search pipeline
@@ -153,7 +155,7 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.Navbar(main_page_name="Projects")
     build_page()                          # Projects + Work
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)                   # 72 MCP tools (registered on main Blocks only)
+        gr.api(tool_fn)                   # 73 MCP tools (registered on main Blocks only)
 
 with demo.route("Knowledge", "/knowledge"):
     gr.Navbar(main_page_name="Projects")
@@ -232,6 +234,9 @@ Persona settings (`user_name`, `user_bio`, `user_preferences`) are in **Admin ->
 - `user_name` — User display name (default: "Mat", category: persona)
 - `user_bio` — User biography/context (default: "", category: persona)
 - `user_preferences` — Interaction style preferences (default: "", category: persona)
+- `slumber_eval_provider` — Provider for Slumber evaluations (default: "gemini", category: system)
+- `slumber_eval_model` — Model for Slumber evaluations (default: "gemini-2.0-flash-lite", category: system)
+- `slumber_eval_enabled` — Enable/disable LLM evaluation (default: "true", category: system)
 
 **Settings flow:**
 - `services/settings.py` provides `get_setting()` / `set_setting()` with auto base64 for secrets
@@ -290,7 +295,7 @@ auto-dismisses via `gr.Timer` polling `is_auto_ingest_complete()` every 2 second
 
 ### MCP Tool Registry (`mcp_registry.py`)
 
-All 72 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
+All 73 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
 page ownership (Projects, Knowledge, Admin, cross-cutting). `app.py` loops over this list:
 `for tool_fn in ALL_MCP_TOOLS: gr.api(tool_fn)`. Registered on the main Blocks only —
 accessible from all routes. Keeps `app.py` thin (~100 lines).
@@ -397,6 +402,7 @@ CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where 
 - `0.8.0_chunks.sql` — Unified chunks table, FTS5, CDC triggers (drops+recreates all triggers for CHECK constraint expansion)
 - `0.9.0_file_registry.sql` — File registry for auto-ingestion tracking (R17, no CDC — operational metadata)
 - `1.0.0_cognition_trace.sql` — Cognition trace columns on messages_metadata (R21)
+- `1.1.0_slumber_eval.sql` — Slumber LLM evaluation columns on messages_metadata (R22)
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
 the fresh-DB/existing-DB if/else branch (after both branches complete). Placing inside `else`
@@ -643,13 +649,14 @@ with gr.Blocks() as demo:
 demo.launch(mcp_server=True)
 ```
 
-72 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
+73 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
 28 from `db/operations.py` (including domain CRUD + export/import), 15 from
 `db/chat_operations.py` (including Janus lifecycle + conversation stream), 4 from
 `db/chunk_operations.py` (chunk CRUD + stats + search), 3 from `db/file_registry_ops.py`
 (R17 file registry), 10 vector/embedding/chunking operations from `services/`, 2 import
 pipelines, 2 ingestion orchestrators, 6 graph operations from `graph/` (including identity
-seeding + semantic edge weaving), and 2 from R17 (ingestion progress + temporal context).
+seeding + semantic edge weaving), 2 from R17 (ingestion progress + temporal context),
+and 1 from R22 (Slumber status).
 All MUST have Google-style docstrings with Args/Returns for MCP tool generation.
 
 ### Common Mistakes to Avoid
@@ -902,7 +909,7 @@ same tokenizer = consistent chars-per-token ratio). Fallback: ~4 chars/token est
 | Sub-cycle | Function | Purpose |
 |-----------|----------|---------|
 | Ingest | `_ingest_scan()` | Scan directories for new files, ingest + chunk + embed (R17) |
-| Evaluate | `_evaluate_batch()` | Score unscored messages via heuristic, extract TF keywords |
+| Evaluate | `_evaluate_batch()` | Score unscored messages via LLM (Gemini Flash Lite) or heuristic fallback, extract keywords |
 | Propagate | `_propagate_batch()` | Bridge `quality_score` → Qdrant `salience` (decay garbage, boost quality) |
 | Relate | `_relate_batch()` | Create SIMILAR_TO edges in Neo4j via cross-conversation keyword overlap |
 | Prune | `_prune_batch()` | Remove dead-weight vectors from Qdrant (quality < 0.1, salience < 0.1, never retrieved, older than N days) |
@@ -1417,7 +1424,44 @@ Two new columns on `messages_metadata` (migration 1.0.0):
 Stored per-turn by `_handle_send()` in `pages/chat.py`. Enables future Slumber Cycle
 evaluation of prompt composition quality.
 
-## Current Platform State (Post-R21)
+## Phase R22: First Light — The Prefect Knot
+
+R22 upgrades the Slumber Cycle's evaluate sub-cycle from regex heuristics to LLM-powered
+evaluation via Gemini Flash Lite. This establishes the Prefect Knot — the autonomy layer
+pattern where background processes call external LLMs without human initiation.
+
+### Gemini Evaluation (`services/slumber_eval.py`)
+
+`evaluate_message()` sends the triplet (user_prompt, model_reasoning, model_response)
+to Gemini Flash Lite with a structured evaluation prompt. Returns quality_score (0.0-1.0),
+rationale (1-2 sentences), topic tags (1-5), and emotional_register. Falls back to
+`_score_heuristic()` if Gemini is unreachable, disabled, or returns unparseable output.
+
+Uses the `google-genai` SDK (matching `_chat_gemini()` in `services/chat.py`), NOT the
+deprecated `google.generativeai` package. Temperature=0.1 for deterministic evaluation.
+
+### Slumber Status (`get_slumber_status()`)
+
+Module-level `_slumber_status` dict tracks live daemon state: current sub-cycle, last
+cycle timestamp, evaluation counts, eval method, errors. Thread-safe reads (Python GIL).
+Exposed as MCP tool (73rd tool). Polled by Knowledge Pipeline tab left sidebar via
+`gr.Timer(value=10.0)` — the first persistent live-status indicator in the app.
+
+### Settings (3 new in `system` category)
+
+- `slumber_eval_provider` — Provider for evaluations (default: "gemini")
+- `slumber_eval_model` — Model for evaluations (default: "gemini-2.0-flash-lite")
+- `slumber_eval_enabled` — Enable/disable LLM evaluation (default: "true")
+
+Reuses existing `chat_api_key` for Gemini authentication. No separate key needed.
+
+### Migration 1.1.0
+
+4 new columns on `messages_metadata`: `eval_rationale`, `eval_emotional_register`,
+`eval_provider`, `eval_model`. Keyword merge: LLM topics get priority slots in the
+existing `keywords` JSON column, TF keywords fill remaining.
+
+## Current Platform State (Post-R22)
 
 ### What Works
 
@@ -1441,7 +1485,8 @@ evaluation of prompt composition quality.
 - **Content corpus** — 659 Claude conversations (10,271 messages), 40 markdown documents,
   78 items, 13 domains, 3 tasks. All embedded in Qdrant, synced to Neo4j.
 - **Background intelligence** — Slumber Cycle: ingest scan → evaluate → propagate → relate → prune.
-  New content auto-discovered and fully processed in a single idle cycle.
+  New content auto-discovered and fully processed in a single idle cycle. Evaluate sub-cycle
+  uses Gemini Flash Lite for LLM-powered quality scoring with heuristic fallback (R22).
 - **Ingestion pipelines** — Claude export, Google AI Studio, markdown. Auto-embed + dedup.
   Auto-ingestion scanner for hands-free operation.
 - **Sovereign multipage architecture** — 4 purpose-built pages (Projects, Knowledge, Admin,
@@ -1454,7 +1499,7 @@ evaluation of prompt composition quality.
 - **Semantic graph topology** — `weave_conversation_graph()` (R20) bridges Qdrant vector
   similarity into Neo4j SIMILAR_TO edges between Conversation nodes. Transforms isolated
   conversation chains into a connected semantic network. MERGE-based, idempotent.
-- **72 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal + semantic edge weaving exposed for external AI clients.
+- **73 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal + semantic edge weaving + Slumber status exposed for external AI clients.
 - **Graph-aware RAG** — SIMILAR_TO edges boost candidates from the query's topic
   neighborhood. Additive scoring ensures graph promotes borderline candidates without
   making irrelevant content appear relevant.
@@ -1498,7 +1543,7 @@ layers of intelligence on a foundation that is rapidly gaining self-awareness.
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R22 candidates)
+### Near-Term (R23 candidates)
 
 - **Custom ranking service enhancements** — R21 delivered graph-aware RAG ranking with
   additive topology boost. Next: add temporal decay weighting so recent conversations

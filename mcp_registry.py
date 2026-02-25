@@ -73,6 +73,8 @@ from db.file_registry_ops import (
 )
 from services.auto_ingest import get_ingestion_progress
 from atlas.temporal import get_temporal_context
+# --- Slumber status (R22: First Light) — 1 function ---
+from services.slumber import get_slumber_status
 
 
 ALL_MCP_TOOLS: list = [
@@ -111,6 +113,7 @@ ALL_MCP_TOOLS: list = [
     backup_database, reset_database, restore_database, list_backups,
     export_platform_data, import_platform_data,
 
-    # --- Cross-cutting: temporal context (1) ---
+    # --- Cross-cutting: temporal context + slumber status (2) ---
     get_temporal_context,
+    get_slumber_status,
 ]

@@ -355,6 +355,10 @@ def add_message_metadata(
     rag_synthesized: int = 0,
     cognition_prompt_layers: str = "",
     cognition_graph_trace: str = "",
+    eval_rationale: str = "",
+    eval_emotional_register: str = "",
+    eval_provider: str = "",
+    eval_model: str = "",
 ) -> str:
     """Add metadata for a message (timing, RAG snapshot, labels, pipeline observability).
 
@@ -377,6 +381,10 @@ def add_message_metadata(
         rag_synthesized: 1 if RAG context was synthesized, 0 if raw chunks
         cognition_prompt_layers: JSON of prompt layer breakdown (R21)
         cognition_graph_trace: JSON of graph ranking trace (R21)
+        eval_rationale: 1-2 sentence evaluation rationale from Slumber (R22)
+        eval_emotional_register: Detected emotional tone (R22)
+        eval_provider: Provider that performed evaluation (R22)
+        eval_model: Model that performed evaluation (R22)
 
     Returns:
         The ID of the created metadata record
@@ -390,8 +398,9 @@ def add_message_metadata(
                  rag_avg_rerank, rag_avg_salience, rag_scores,
                  keywords, labels, quality_score,
                  system_prompt_length, rag_context_text, rag_synthesized,
-                 cognition_prompt_layers, cognition_graph_trace)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cognition_prompt_layers, cognition_graph_trace,
+                 eval_rationale, eval_emotional_register, eval_provider, eval_model)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             message_id, latency_total_ms, latency_rag_ms, latency_inference_ms,
             rag_hit_count, rag_hits_used, rag_collections,
@@ -399,6 +408,7 @@ def add_message_metadata(
             keywords, labels, quality_score,
             system_prompt_length, rag_context_text, rag_synthesized,
             cognition_prompt_layers, cognition_graph_trace,
+            eval_rationale, eval_emotional_register, eval_provider, eval_model,
         ))
         conn.commit()
         cursor.execute("SELECT id FROM messages_metadata WHERE rowid = ?", (cursor.lastrowid,))
@@ -432,6 +442,10 @@ def update_message_metadata(
     quality_score: float = -1.0,
     rag_scores: str = "",
     salience_synced: int = -1,
+    eval_rationale: str = "",
+    eval_emotional_register: str = "",
+    eval_provider: str = "",
+    eval_model: str = "",
 ) -> str:
     """Update metadata fields for a message.
 
@@ -442,6 +456,10 @@ def update_message_metadata(
         quality_score: Quality score 0.0-1.0 (negative = no change)
         rag_scores: Updated JSON array of per-hit scores (empty = no change)
         salience_synced: Set to 1 after Slumber propagates quality to Qdrant salience (negative = no change)
+        eval_rationale: Evaluation rationale text (empty = no change, R22)
+        eval_emotional_register: Detected emotional tone (empty = no change, R22)
+        eval_provider: Provider that performed evaluation (empty = no change, R22)
+        eval_model: Model that performed evaluation (empty = no change, R22)
 
     Returns:
         Success or error message
@@ -465,6 +483,18 @@ def update_message_metadata(
         if salience_synced >= 0:
             updates.append("salience_synced = ?")
             params.append(salience_synced)
+        if eval_rationale:
+            updates.append("eval_rationale = ?")
+            params.append(eval_rationale)
+        if eval_emotional_register:
+            updates.append("eval_emotional_register = ?")
+            params.append(eval_emotional_register)
+        if eval_provider:
+            updates.append("eval_provider = ?")
+            params.append(eval_provider)
+        if eval_model:
+            updates.append("eval_model = ?")
+            params.append(eval_model)
         if not updates:
             return "No updates provided"
         params.append(message_id)
@@ -498,7 +528,8 @@ def get_recent_introspection(limit: int = 10) -> dict:
 
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT mm.quality_score, mm.keywords
+            """SELECT mm.quality_score, mm.keywords,
+                      mm.eval_rationale, mm.eval_emotional_register
                FROM messages_metadata mm
                JOIN messages m ON mm.message_id = m.id
                WHERE m.conversation_id = ?
@@ -520,11 +551,20 @@ def get_recent_introspection(limit: int = 10) -> dict:
         except Exception:
             pass
 
+    recent_rationales = [
+        r["eval_rationale"] for r in rows if r["eval_rationale"]
+    ]
+    emotional_registers = [
+        r["eval_emotional_register"] for r in rows if r["eval_emotional_register"]
+    ]
+
     return {
         "evaluated_count": len(scores),
         "avg_quality": round(sum(scores) / len(scores), 2),
         "top_keywords": [kw for kw, _ in keyword_counter.most_common(5)],
         "recent_scores": scores,
+        "recent_rationales": recent_rationales[:3],
+        "emotional_registers": emotional_registers,
     }
 
 

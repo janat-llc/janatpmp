@@ -2,8 +2,8 @@
 
 When the system is idle (no chat activity for IDLE_THRESHOLD seconds), the
 Slumber Cycle wakes up and evaluates messages that lack quality scores.
-It extracts keywords, scores reasoning quality via heuristics, and updates
-messages_metadata records.
+R22 (First Light) upgrades scoring from heuristic to LLM-powered evaluation
+via Gemini Flash Lite, with heuristic fallback when Gemini is unreachable.
 
 This is the substrate for self-improving retrieval: quality scores feed into
 salience calculations, keywords enable future semantic clustering, and the
@@ -16,6 +16,7 @@ import time
 import logging
 import threading
 from collections import Counter
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,19 @@ CYCLE_INTERVAL_SECONDS = 60    # Check idle state every minute
 
 _last_activity = time.monotonic()
 _slumber_thread = None
+
+# --- Slumber activity state (R22) — read by UI via get_slumber_status() ---
+_slumber_status = {
+    "state": "idle",           # idle | ingesting | evaluating | propagating | relating | pruning
+    "last_cycle_at": None,     # ISO timestamp of last completed cycle
+    "last_evaluated": 0,       # Messages evaluated in last cycle
+    "last_propagated": 0,      # Messages propagated in last cycle
+    "last_related": 0,         # Edges created in last cycle
+    "last_pruned": 0,          # Vectors pruned in last cycle
+    "eval_method": "",         # "gemini" or "heuristic"
+    "total_evaluated": 0,      # Cumulative since startup
+    "error": "",               # Last error message (if any)
+}
 
 # Words too common to be meaningful keywords
 _STOPWORDS = frozenset({
@@ -52,6 +66,21 @@ def touch_activity():
     """Called on every chat message to reset idle timer."""
     global _last_activity
     _last_activity = time.monotonic()
+
+
+def get_slumber_status() -> dict:
+    """Get current Slumber Cycle status.
+
+    Returns the live state of the background Slumber daemon including
+    current activity state, last cycle timestamp, evaluation counts,
+    and any recent errors. Thread-safe read (Python GIL).
+
+    Returns:
+        Dict with keys: state, last_cycle_at, last_evaluated,
+        last_propagated, last_related, last_pruned, eval_method,
+        total_evaluated, error.
+    """
+    return dict(_slumber_status)
 
 
 def _is_idle() -> bool:
@@ -149,12 +178,22 @@ def _score_heuristic(user_prompt: str, model_response: str, model_reasoning: str
     return max(0.0, min(1.0, round(score, 3)))
 
 
-def _evaluate_batch():
-    """Evaluate a batch of messages without quality scores."""
+def _evaluate_batch() -> int:
+    """Evaluate a batch of messages — LLM-powered or heuristic fallback.
+
+    R22: First Light. Uses Gemini Flash Lite for evaluation when enabled
+    and a valid API key is configured. Falls back to heuristic scoring
+    on any failure or when disabled.
+
+    Returns:
+        Number of messages evaluated (0 if none pending).
+    """
     from db.operations import get_connection
     from db.chat_operations import update_message_metadata
+    from services.settings import get_setting
 
     batch_size = _get_batch_size()
+    use_llm = (get_setting("slumber_eval_enabled") or "true").lower() == "true"
 
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -170,7 +209,7 @@ def _evaluate_batch():
         rows = cursor.fetchall()
 
     if not rows:
-        return
+        return 0
 
     evaluated = 0
     for row in rows:
@@ -179,22 +218,46 @@ def _evaluate_batch():
         model_response = row["model_response"] or ""
         model_reasoning = row["model_reasoning"] or ""
 
-        # Score reasoning quality
-        quality = _score_heuristic(user_prompt, model_response, model_reasoning)
+        if use_llm:
+            from services.slumber_eval import evaluate_message
+            result = evaluate_message(user_prompt, model_response, model_reasoning)
+            quality = result["quality_score"]
+            keywords_from_topics = result.get("topics", [])
+        else:
+            quality = _score_heuristic(user_prompt, model_response, model_reasoning)
+            result = {
+                "fallback": True, "rationale": "", "topics": [],
+                "emotional_register": "", "eval_provider": "heuristic",
+                "eval_model": "",
+            }
+            keywords_from_topics = []
 
-        # Extract keywords from prompt + response
+        # Extract TF keywords, merge with LLM topics (LLM first, TF fills)
         combined_text = f"{user_prompt} {model_response}"
-        keywords = _extract_keywords(combined_text, top_n=10)
+        tf_keywords = _extract_keywords(combined_text, top_n=10)
+        merged_keywords = keywords_from_topics + [
+            k for k in tf_keywords if k not in keywords_from_topics
+        ]
 
-        # Update metadata
+        # Update metadata with quality score + evaluation details
         update_message_metadata(
             message_id=msg_id,
             quality_score=quality,
-            keywords=json.dumps(keywords),
+            keywords=json.dumps(merged_keywords[:10]),
+            eval_rationale=result.get("rationale", ""),
+            eval_emotional_register=result.get("emotional_register", ""),
+            eval_provider=result.get("eval_provider", ""),
+            eval_model=result.get("eval_model", ""),
         )
         evaluated += 1
 
-    logger.info("Slumber cycle: evaluated %d messages", evaluated)
+        # Rate limiting: 0.5s between LLM calls within a batch
+        if use_llm and not result.get("fallback", False):
+            time.sleep(0.5)
+
+    method = "gemini" if use_llm else "heuristic"
+    logger.info("Slumber cycle: evaluated %d messages (method=%s)", evaluated, method)
+    return evaluated
 
 
 def _propagate_batch():
@@ -491,39 +554,63 @@ def _slumber_cycle():
     while True:
         time.sleep(CYCLE_INTERVAL_SECONDS)
         if not _is_idle():
+            _slumber_status["state"] = "idle"
             continue
+
+        _slumber_status["error"] = ""
 
         # Sub-cycle 0: Ingest scan (new content → chunks → embeddings)
         # Runs FIRST so newly ingested content gets full Slumber processing
         # in the same cycle (evaluate, propagate, relate, prune).
+        _slumber_status["state"] = "ingesting"
         try:
             _ingest_scan()
         except Exception as e:
+            _slumber_status["error"] = str(e)
             logger.debug("Slumber ingest scan error: %s", e)
 
         # Sub-cycle 1: Evaluate (score unscored messages)
+        _slumber_status["state"] = "evaluating"
         try:
-            _evaluate_batch()
+            count = _evaluate_batch()
+            _slumber_status["last_evaluated"] = count
+            _slumber_status["total_evaluated"] += count
+            try:
+                from services.settings import get_setting
+                use_llm = (get_setting("slumber_eval_enabled") or "true").lower() == "true"
+                _slumber_status["eval_method"] = "gemini" if use_llm else "heuristic"
+            except Exception:
+                pass
         except Exception as e:
+            _slumber_status["error"] = str(e)
             logger.error("Slumber evaluate error: %s", e)
 
         # Sub-cycle 2: Propagate (quality → Qdrant salience)
+        _slumber_status["state"] = "propagating"
         try:
             _propagate_batch()
         except Exception as e:
+            _slumber_status["error"] = str(e)
             logger.debug("Slumber propagate error: %s", e)
 
         # Sub-cycle 3: Relate (SIMILAR_TO edges via keyword overlap)
+        _slumber_status["state"] = "relating"
         try:
             _relate_batch()
         except Exception as e:
+            _slumber_status["error"] = str(e)
             logger.debug("Slumber relate error: %s", e)
 
         # Sub-cycle 4: Prune (remove dead-weight from Qdrant)
+        _slumber_status["state"] = "pruning"
         try:
             _prune_batch()
         except Exception as e:
+            _slumber_status["error"] = str(e)
             logger.debug("Slumber prune error: %s", e)
+
+        _slumber_status["state"] = "idle"
+        _slumber_status["last_cycle_at"] = datetime.now().isoformat()
 
 
 def start_slumber():

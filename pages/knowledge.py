@@ -173,6 +173,8 @@ def build_knowledge_page():
     selected_item_type = gr.State("")  # "conversation" or "document"
     memory_items_state = gr.State([])
     pipeline_health_state = gr.State({})
+    slumber_status_state = gr.State({})
+    slumber_timer = gr.Timer(value=10.0, active=True)
 
     # === RIGHT SIDEBAR (Janus quick-chat) ===
     chatbot, chat_input, chat_history, sidebar_conv_id = build_chat_sidebar()
@@ -510,8 +512,8 @@ def build_knowledge_page():
 
     # === LEFT SIDEBAR ===
     with gr.Sidebar(position="left"):
-        @gr.render(inputs=[active_tab, memory_items_state, pipeline_health_state])
-        def render_left(tab, memory_items, pipeline_health):
+        @gr.render(inputs=[active_tab, memory_items_state, pipeline_health_state, slumber_status_state])
+        def render_left(tab, memory_items, pipeline_health, slumber_status):
             if tab == "Memory":
                 gr.Markdown("### Memory Browser")
                 stats_text = _load_conv_stats()
@@ -569,6 +571,35 @@ def build_knowledge_page():
                     f"{h.get('graph_edges', 0):,} edges",
                     key="pipe-graph",
                 )
+
+                # Slumber Cycle status (R22: First Light)
+                gr.Markdown("---", key="pipe-slumber-sep")
+                gr.Markdown("### Slumber Cycle", key="pipe-slumber-hdr")
+                s = slumber_status or {}
+                state = s.get("state", "idle")
+                if state == "idle":
+                    gr.Markdown("**Status:** Idle", key="pipe-slumber-st")
+                else:
+                    gr.Markdown(
+                        f"**Status:** {state.title()}...",
+                        key="pipe-slumber-st",
+                    )
+                if s.get("last_cycle_at"):
+                    gr.Markdown(
+                        f"**Last cycle:** {s['last_cycle_at'][:19]}",
+                        key="pipe-slumber-ts",
+                    )
+                if s.get("total_evaluated", 0) > 0:
+                    method = s.get("eval_method", "heuristic")
+                    gr.Markdown(
+                        f"**Evaluated:** {s['total_evaluated']:,} ({method})",
+                        key="pipe-slumber-ev",
+                    )
+                if s.get("error"):
+                    gr.Markdown(
+                        f"**Error:** {s['error'][:100]}",
+                        key="pipe-slumber-err",
+                    )
 
             elif tab == "Synthesis":
                 gr.Markdown("### Synthesis")
@@ -930,6 +961,16 @@ def build_knowledge_page():
     )
     pipeline_tab.select(
         _refresh_pipeline, outputs=[pipeline_health_state],
+        api_visibility="private",
+    )
+
+    # === SLUMBER STATUS POLLING (R22) ===
+    def _poll_slumber():
+        from services.slumber import get_slumber_status
+        return get_slumber_status()
+
+    slumber_timer.tick(
+        _poll_slumber, outputs=[slumber_status_state],
         api_visibility="private",
     )
 

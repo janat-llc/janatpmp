@@ -178,6 +178,11 @@ SETTINGS_REGISTRY = {
     "slumber_evaluator":       ("heuristic", False, "system", None),
     "slumber_prune_age_days":  ("7",   False, "system", _validate_positive_int),
 
+    # Slumber Evaluation (R22: First Light)
+    "slumber_eval_provider":   ("gemini", False, "system", None),
+    "slumber_eval_model":      ("gemini-2.0-flash-lite", False, "system", None),
+    "slumber_eval_enabled":    ("true", False, "system", None),
+
     # Janus Identity (R19)
     "janus_lifecycle_state":   ("sleeping", False, "system", None),
     "janus_identity_version":  ("r19-v1", False, "system", None),
@@ -238,6 +243,7 @@ def init_settings():
         ("claude_export_json_dir", "/data/claude_export"),
         ("janus_context_messages", "50"),
         ("janus_lifecycle_state", "awake"),  # R19: reset to sleeping on every restart
+        ("slumber_evaluator", "heuristic"),  # R22: superseded by slumber_eval_* settings
     ]
 
     with get_connection() as conn:
