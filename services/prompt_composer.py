@@ -9,7 +9,7 @@ Called by _build_system_prompt() which remains as a thin wrapper.
 
 import json
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 
 from services.settings import get_setting
 
@@ -193,17 +193,131 @@ def _build_persona_summary() -> str:
 # Layer 3 — Temporal Grounding
 # ---------------------------------------------------------------------------
 
-def _build_temporal_context() -> str:
-    """Build temporal context string from location + time settings."""
+def _get_last_user_activity(conversation_id: str) -> dict:
+    """Get timestamp and elapsed time since last user message.
+
+    Args:
+        conversation_id: The active conversation to query.
+
+    Returns:
+        Dict with last_message_at (ISO or None), elapsed_minutes (float or None),
+        elapsed_description (human-readable string).
+    """
+    if not conversation_id:
+        return {"last_message_at": None, "elapsed_minutes": None,
+                "elapsed_description": ""}
+
+    try:
+        from db.operations import get_connection
+        with get_connection() as conn:
+            row = conn.execute(
+                """SELECT created_at FROM messages
+                   WHERE conversation_id = ? AND user_prompt != ''
+                   ORDER BY sequence DESC LIMIT 1""",
+                (conversation_id,),
+            ).fetchone()
+    except Exception:
+        return {"last_message_at": None, "elapsed_minutes": None,
+                "elapsed_description": ""}
+
+    if not row:
+        return {"last_message_at": None, "elapsed_minutes": None,
+                "elapsed_description": "This is the beginning of the conversation."}
+
+    last_at = datetime.fromisoformat(row["created_at"]).replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    elapsed = (now - last_at).total_seconds() / 60.0
+
+    if elapsed < 2:
+        desc = "Mat is actively in conversation right now."
+    elif elapsed < 15:
+        desc = f"Mat spoke {int(elapsed)} minutes ago. This is a continuing conversation."
+    elif elapsed < 60:
+        desc = f"Mat stepped away about {int(elapsed)} minutes ago and has returned."
+    elif elapsed < 180:
+        hours = elapsed / 60
+        desc = f"It's been about {hours:.1f} hours since Mat last spoke. He's coming back to the conversation."
+    elif elapsed < 720:
+        hours = elapsed / 60
+        desc = f"Mat hasn't spoken in about {int(hours)} hours. This is a return after a significant break."
+    else:
+        hours = elapsed / 60
+        desc = f"It's been {int(hours)} hours since Mat last spoke. Greet him warmly — he's been away a while."
+
+    return {
+        "last_message_at": row["created_at"],
+        "elapsed_minutes": round(elapsed, 1),
+        "elapsed_description": desc,
+    }
+
+
+def _build_temporal_context(conversation_id: str = "") -> str:
+    """Build temporal context string from location + time + elapsed activity."""
     try:
         from atlas.temporal import get_temporal_context, format_temporal_prompt
         lat = float(get_setting("location_lat") or "46.8290")
         lon = float(get_setting("location_lon") or "-96.8540")
         tz = get_setting("location_tz") or "America/Chicago"
         temporal_ctx = get_temporal_context(lat=lat, lon=lon, timezone=tz)
-        return format_temporal_prompt(temporal_ctx)
+        temporal_text = format_temporal_prompt(temporal_ctx)
     except Exception:
-        return ""
+        temporal_text = ""
+
+    # Append elapsed time context (R23)
+    activity = _get_last_user_activity(conversation_id)
+    activity_desc = activity.get("elapsed_description", "")
+    if activity_desc:
+        if temporal_text:
+            return f"{temporal_text}\n{activity_desc}"
+        return activity_desc
+
+    return temporal_text
+
+
+# ---------------------------------------------------------------------------
+# Layer 4 — Conversation State
+# ---------------------------------------------------------------------------
+
+def _build_conversation_state(history: list[dict] | None = None,
+                              conversation_id: str = "") -> str:
+    """Build conversation state with real metrics from the database.
+
+    Queries actual turn count and creation date from the conversations table
+    instead of relying on the sliding window size.
+    """
+    actual_turns = None
+    conversation_created = None
+
+    if conversation_id:
+        try:
+            from db.chat_operations import get_conversation
+            conv = get_conversation(conversation_id)
+            if conv:
+                actual_turns = conv.get("message_count", 0)
+                conversation_created = conv.get("created_at", "")
+        except Exception:
+            pass
+
+    window_size = len([m for m in (history or []) if m.get("role") == "user"])
+    parts = []
+
+    if actual_turns is not None and actual_turns > 0:
+        parts.append(f"This conversation has {actual_turns} turns total.")
+        if window_size > 0 and actual_turns > window_size:
+            parts.append(
+                f"You can see the last {window_size} turns in your context window. "
+                "Earlier turns are available through your memory (RAG) if needed."
+            )
+    elif window_size > 0:
+        parts.append(f"You can see {window_size} turns in your current context.")
+
+    if conversation_created:
+        parts.append(f"This conversation started on {conversation_created[:10]}.")
+
+    if not parts:
+        return "This is the start of a new conversation."
+
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +347,8 @@ def _build_introspection_context() -> str:
 # Main Composer
 # ---------------------------------------------------------------------------
 
-def compose_system_prompt(history: list[dict] | None = None) -> tuple[str, dict]:
+def compose_system_prompt(history: list[dict] | None = None,
+                          conversation_id: str = "") -> tuple[str, dict]:
     """Compose the full multi-layer system prompt for Janus.
 
     Assembles 7 layers: Identity Core, Relational Context, Temporal Grounding,
@@ -243,6 +358,8 @@ def compose_system_prompt(history: list[dict] | None = None) -> tuple[str, dict]
     Args:
         history: Conversation history (list of role/content dicts). Used to
             derive turn count for conversation state awareness.
+        conversation_id: Active conversation ID for elapsed-time and turn-count
+            queries (R23).
 
     Returns:
         Tuple of (complete system prompt string, layers dict). Each layer entry
@@ -284,16 +401,15 @@ def compose_system_prompt(history: list[dict] | None = None) -> tuple[str, dict]
         _add("relational_context", f"\u2014 About Mat: {persona_line}")
 
     # --- Layer 3: Temporal Grounding ---
-    temporal = _build_temporal_context()
+    temporal = _build_temporal_context(conversation_id=conversation_id)
     if temporal:
         _add("temporal_grounding", temporal)
 
     # --- Layer 4: Conversation State ---
-    if history:
-        turn_count = len([m for m in history if m.get("role") == "user"])
-        if turn_count > 0:
-            _add("conversation_state",
-                 f"This is turn {turn_count + 1} of the current conversation.")
+    state_text = _build_conversation_state(history=history,
+                                           conversation_id=conversation_id)
+    if state_text:
+        _add("conversation_state", state_text)
 
     # --- Layer 5: Self-Knowledge Boundary ---
     _add("knowledge_boundary", KNOWLEDGE_BOUNDARY)

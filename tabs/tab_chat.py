@@ -32,7 +32,7 @@ def _handle_chat(message, history, sidebar_conv_id=""):
     window = int(get_setting("janus_context_messages") or "10")
     api_window = _windowed_api_history(history, window)
 
-    result = chat(message, api_window)
+    result = chat(message, api_window, conversation_id=sidebar_conv_id)
 
     # Reconstruct full history: original + new messages from this turn
     new_messages = result["history"][len(api_window):]

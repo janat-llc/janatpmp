@@ -61,6 +61,7 @@ def _handle_send(message, history, conv_id, provider, model,
 
         result = chat(
             message, api_window,
+            conversation_id=conv_id,
             provider_override=provider, model_override=model,
             temperature=temperature, top_p=top_p,
             max_tokens=int(max_tokens),

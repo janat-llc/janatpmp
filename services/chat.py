@@ -170,7 +170,8 @@ Domains: {domains}
 You are a collaborator, not just an assistant. Be thoughtful, expressive, and thorough in your responses."""
 
 
-def _build_system_prompt(history: list[dict] = None) -> tuple[str, dict]:
+def _build_system_prompt(history: list[dict] = None,
+                         conversation_id: str = "") -> tuple[str, dict]:
     """Compose the full system prompt via the R19 prompt composer.
 
     Delegates to services/prompt_composer.py which assembles 7 layers:
@@ -179,12 +180,13 @@ def _build_system_prompt(history: list[dict] = None) -> tuple[str, dict]:
 
     Args:
         history: Conversation history for turn count awareness.
+        conversation_id: Active conversation ID for temporal/state queries.
 
     Returns:
         Tuple of (system prompt string, layers dict with per-layer text and char counts).
     """
     from services.prompt_composer import compose_system_prompt
-    return compose_system_prompt(history or [])
+    return compose_system_prompt(history or [], conversation_id=conversation_id)
 
 
 _EMPTY_RAG_METRICS = {
@@ -1141,6 +1143,7 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
 # --- Main Chat Entry Point ---
 
 def chat(message: str, history: list[dict],
+         conversation_id: str = "",
          provider_override: str = "", model_override: str = "",
          temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 8192,
          system_prompt_append: str = "") -> dict:
@@ -1149,6 +1152,7 @@ def chat(message: str, history: list[dict],
     Args:
         message: User's new message text.
         history: Current conversation history in gr.Chatbot format.
+        conversation_id: Active conversation ID for prompt composer context.
         provider_override: Override provider (empty = use DB setting).
         model_override: Override model (empty = use DB setting).
         temperature: Sampling temperature.
@@ -1176,7 +1180,7 @@ def chat(message: str, history: list[dict],
         set_setting("janus_lifecycle_state", "awake")
         logger.info("Bootstrap: first chat message, state → awake")
 
-    system_prompt, prompt_layers = _build_system_prompt(history)
+    system_prompt, prompt_layers = _build_system_prompt(history, conversation_id)
     if system_prompt_append and system_prompt_append.strip():
         system_prompt += f"\n\n{system_prompt_append.strip()}"
 

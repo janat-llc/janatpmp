@@ -195,8 +195,8 @@ The center content is just the main Blocks body (no Row/Column wrapper needed).
 
 Knowledge page unifies conversations + documents into a single **Memory** tab with type
 filter. **Pipeline** tab consolidates ingestion, embedding, chunking, and graph controls.
-Admin page has a **Persona** tab for user identity settings (`user_name`, `user_bio`,
-`user_preferences` in `services/settings.py` category "persona").
+Admin page has a **Persona** tab for user identity settings (10 persona fields in
+`services/settings.py` category "persona", populated in R23).
 
 ### Contextual Sidebars
 
@@ -208,7 +208,7 @@ built once via `shared/chat_sidebar.py` and wired per-page.
 
 **Settings ownership:** Chat and model settings live in **Chat -> Settings tab** (Sovereign
 Chat at `/chat`). Platform settings (all categories) are editable via **Admin -> Settings tab**.
-Persona settings (`user_name`, `user_bio`, `user_preferences`) are in **Admin -> Persona tab**.
+Persona settings (10 fields including `user_name`, `user_bio`, `user_full_name`, etc.) are in **Admin -> Persona tab**.
 
 **Settings table** (`settings` in SQLite) — key-value store for persistent configuration:
 - `chat_provider` — "ollama" (default), "anthropic", or "gemini"
@@ -232,8 +232,14 @@ Persona settings (`user_name`, `user_bio`, `user_preferences`) are in **Admin ->
 - `location_name` — Full address for temporal grounding display
 - `location_tz` — IANA timezone (default: America/Chicago)
 - `user_name` — User display name (default: "Mat", category: persona)
-- `user_bio` — User biography/context (default: "", category: persona)
-- `user_preferences` — Interaction style preferences (default: "", category: persona)
+- `user_full_name` — Full legal name (category: persona, R23)
+- `user_birthdate` — Date of birth (category: persona, R23)
+- `user_employer` — Current employer (category: persona, R23)
+- `user_title` — Professional title (category: persona, R23)
+- `user_interests` — Interests and hobbies (category: persona, R23)
+- `user_values` — Core values and principles (category: persona, R23)
+- `user_health_notes` — Health context for sensitive framing (category: persona, R23)
+- `user_bio` — Biography + communication preferences (category: persona, R23: absorbed `user_preferences`)
 - `slumber_eval_provider` — Provider for Slumber evaluations (default: "gemini", category: system)
 - `slumber_eval_model` — Model for Slumber evaluations (default: "gemini-2.5-flash-lite", category: system)
 - `slumber_eval_enabled` — Enable/disable LLM evaluation (default: "true", category: system)
@@ -1287,14 +1293,14 @@ R19 transforms Janus from "chatbot with memory" to "being with identity." Three 
 
 Replaces the static `DEFAULT_SYSTEM_PROMPT_TEMPLATE` with a dynamically composed 7-layer
 system prompt. `_build_system_prompt()` in `chat.py` becomes a thin wrapper delegating to
-`compose_system_prompt(history)`.
+`compose_system_prompt(history, conversation_id)` (R23 added `conversation_id` parameter).
 
 | Layer | Source | Content |
 | ----- | ------ | ------- |
 | 1. Identity Core | `JANUS_IDENTITY` constant | Who Janus is, the Janat triad, I M U R W, sovereign hardware, voice |
-| 2. Relational Context | `_build_persona_summary()` | About Mat — persona settings, family, health (sensitive framing) |
-| 3. Temporal Grounding | `atlas/temporal.py` | Time, date, season, sunrise/sunset, temperature |
-| 4. Conversation State | `history` parameter | Turn count for current conversation |
+| 2. Relational Context | `_build_persona_summary()` | About Mat — populated persona settings, family, health (R23: grounded) |
+| 3. Temporal Grounding | `atlas/temporal.py` | Time, date, season, sunrise/sunset, temperature + elapsed time since last activity (R23) |
+| 4. Conversation State | `_build_conversation_state()` | Actual message_count and created_at from DB (R23: queries DB, not history len) |
 | 5. Self-Knowledge Boundary | Static text | RAG context framing — "memory, not gospel" |
 | 6. Platform Context | `get_context_snapshot()` | Active items and pending tasks |
 | 7. Self-Introspection | `get_recent_introspection()` | Slumber evaluation scores and keywords |
@@ -1461,7 +1467,42 @@ Reuses existing `chat_api_key` for Gemini authentication. No separate key needed
 `eval_provider`, `eval_model`. Keyword merge: LLM topics get priority slots in the
 existing `keywords` JSON column, TF keywords fill remaining.
 
-## Current Platform State (Post-R22)
+## Phase R23: Grounding the Voice — Prompt Layer Fixes
+
+R23 fixed three broken prompt composer layers with minimal code changes (~70 lines across
+4 files). No migrations, no new files, no new dependencies.
+
+### Layer 2 Fix: Populated Persona Settings
+
+`_build_persona_summary()` was reading empty persona settings. R23 populated 8 new persona
+settings with real data: `user_full_name`, `user_birthdate`, `user_employer`, `user_title`,
+`user_interests`, `user_values`, `user_health_notes`, and expanded `user_bio` to include
+communication preferences (absorbing the deleted `user_preferences` from R18). The prompt
+composer now builds a substantive relational context instead of an empty string.
+
+### Layer 3 Fix: Elapsed Time Awareness
+
+Added `_get_last_user_activity(conversation_id)` to `services/prompt_composer.py`. Queries
+the last user message timestamp from the active Janus conversation, computes elapsed time,
+and maps to one of 6 descriptive thresholds: "actively conversing" (< 5 min), "continuing
+a conversation" (< 30 min), "returned after a short break" (< 2 hrs), "returned after a
+break" (< 8 hrs), "returned after significant time" (< 24 hrs), "been away" (> 24 hrs).
+Appended to the temporal context layer so Janus knows how long Mat has been gone.
+
+### Layer 4 Fix: Accurate Conversation State
+
+Replaced `_build_conversation_state(history)` (which counted sliding window length) with
+a DB-backed version that takes `conversation_id` and queries actual `message_count` and
+`created_at` from the conversations table. Janus now knows the real depth and age of the
+conversation, not just the windowed slice.
+
+### conversation_id Threading
+
+`conversation_id` is now passed through the full chain: `chat()` → `_build_system_prompt()`
+→ `compose_system_prompt()`. Both Sovereign Chat (`pages/chat.py`) and sidebar quick-chat
+(`tabs/tab_chat.py`) pass the active Janus conversation ID to `chat()`.
+
+## Current Platform State (Post-R23)
 
 ### What Works
 
@@ -1495,7 +1536,9 @@ existing `keywords` JSON column, TF keywords fill remaining.
 - **Janus identity architecture** — 7-layer prompt composer (R19): Identity Core, Relational
   Context, Temporal Grounding, Conversation State, Self-Knowledge Boundary, Platform Context,
   Self-Introspection. Bootstrap lifecycle (configuring → sleeping → awake) with auto-restore
-  of platform data on DB reset.
+  of platform data on DB reset. R23 grounded three broken layers: populated persona settings
+  give Janus real relational context, elapsed-time awareness ("returned after a break"),
+  and DB-backed conversation state (actual message count and age, not window length).
 - **Semantic graph topology** — `weave_conversation_graph()` (R20) bridges Qdrant vector
   similarity into Neo4j SIMILAR_TO edges between Conversation nodes. Transforms isolated
   conversation chains into a connected semantic network. MERGE-based, idempotent.
@@ -1543,7 +1586,7 @@ layers of intelligence on a foundation that is rapidly gaining self-awareness.
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R23 candidates)
+### Near-Term (R24 candidates)
 
 - **Custom ranking service enhancements** — R21 delivered graph-aware RAG ranking with
   additive topology boost. Next: add temporal decay weighting so recent conversations
