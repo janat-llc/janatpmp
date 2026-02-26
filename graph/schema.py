@@ -35,6 +35,8 @@ def init_graph_schema(driver) -> None:
         "CREATE INDEX conv_source IF NOT EXISTS FOR (n:Conversation) ON (n.source)",
         # R20: Semantic edge score queries
         "CREATE INDEX conv_similar_score IF NOT EXISTS FOR ()-[r:SIMILAR_TO]-() ON (r.score)",
+        # R24: Dream synthesis provenance edges
+        "CREATE INDEX synth_from_method IF NOT EXISTS FOR ()-[r:SYNTHESIZED_FROM]-() ON (r.method)",
     ]
 
     with driver.session() as session:

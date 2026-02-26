@@ -24,7 +24,7 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 ```
 JANATPMP/
 ├── app.py                    # Thin launcher: startup calls, gr.Blocks, banner, demo.launch()
-├── mcp_registry.py           # MCP Tool Registry — all 73 gr.api() function imports + ALL_MCP_TOOLS list
+├── mcp_registry.py           # MCP Tool Registry — all 74 gr.api() function imports + ALL_MCP_TOOLS list
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── pages/
 │   ├── __init__.py
@@ -76,6 +76,7 @@ JANATPMP/
 │   ├── usage_signal.py       # Keyword overlap heuristic for usage-based salience (R12)
 │   ├── on_write.py           # On-write: chunk + embed + fire-and-forget graph edges (R13/R16)
 │   ├── graph_ranking.py       # Graph-aware RAG ranking — topology boost (R21)
+│   ├── dream_synthesis.py      # Dream Synthesis — cross-conversation insight generation (R24)
 │   ├── pipeline.py           # Search pipeline: ANN → salience (rerank decommissioned)
 │   └── temporal.py           # Temporal Affinity Engine — time/location context (R17)
 ├── graph/                    # Knowledge graph layer — Neo4j (R13)
@@ -155,7 +156,7 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.Navbar(main_page_name="Projects")
     build_page()                          # Projects + Work
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)                   # 73 MCP tools (registered on main Blocks only)
+        gr.api(tool_fn)                   # 74 MCP tools (registered on main Blocks only)
 
 with demo.route("Knowledge", "/knowledge"):
     gr.Navbar(main_page_name="Projects")
@@ -243,6 +244,8 @@ Persona settings (10 fields including `user_name`, `user_bio`, `user_full_name`,
 - `slumber_eval_provider` — Provider for Slumber evaluations (default: "gemini", category: system)
 - `slumber_eval_model` — Model for Slumber evaluations (default: "gemini-2.5-flash-lite", category: system)
 - `slumber_eval_enabled` — Enable/disable LLM evaluation (default: "true", category: system)
+- `slumber_dream_enabled` — Enable/disable dream synthesis (default: "true", category: system)
+- `slumber_dream_min_quality` — Minimum quality_score for dream clusters (default: "0.7", category: system)
 
 **Settings flow:**
 - `services/settings.py` provides `get_setting()` / `set_setting()` with auto base64 for secrets
@@ -301,7 +304,7 @@ auto-dismisses via `gr.Timer` polling `is_auto_ingest_complete()` every 2 second
 
 ### MCP Tool Registry (`mcp_registry.py`)
 
-All 73 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
+All 74 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
 page ownership (Projects, Knowledge, Admin, cross-cutting). `app.py` loops over this list:
 `for tool_fn in ALL_MCP_TOOLS: gr.api(tool_fn)`. Registered on the main Blocks only —
 accessible from all routes. Keeps `app.py` thin (~100 lines).
@@ -533,7 +536,7 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
   - Volume: `neo4j_data` (local)
   - Auth: `neo4j/janatpmp_graph`
   - Node labels: Item, Task, Document, Conversation, Message, Domain, MessageMetadata, Chunk, Person, Identity
-  - Edge types: IN_DOMAIN, TARGETS_ITEM, BELONGS_TO, FOLLOWS, DESCRIBES, INFORMED_BY, SIMILAR_TO, PART_OF, BECAME, INHERITS_MEMORY_OF, PARTICIPATED_IN, SPOKE
+  - Edge types: IN_DOMAIN, TARGETS_ITEM, BELONGS_TO, FOLLOWS, DESCRIBES, INFORMED_BY, SIMILAR_TO, PART_OF, BECAME, INHERITS_MEMORY_OF, PARTICIPATED_IN, SPOKE, SYNTHESIZED_FROM
 - **Ollama:** `janatpmp-ollama` container on port 11435, shares `ollama_data` external volume
   - Internal URL: `http://ollama:11434/v1` (Docker DNS)
   - External URL: `http://localhost:11435` (host access for testing)
@@ -655,10 +658,10 @@ with gr.Blocks() as demo:
 demo.launch(mcp_server=True)
 ```
 
-73 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
-28 from `db/operations.py` (including domain CRUD + export/import), 15 from
-`db/chat_operations.py` (including Janus lifecycle + conversation stream), 4 from
-`db/chunk_operations.py` (chunk CRUD + stats + search), 3 from `db/file_registry_ops.py`
+74 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
+28 from `db/operations.py` (including domain CRUD + export/import), 16 from
+`db/chat_operations.py` (including Janus lifecycle + conversation stream + metadata backfill),
+4 from `db/chunk_operations.py` (chunk CRUD + stats + search), 3 from `db/file_registry_ops.py`
 (R17 file registry), 10 vector/embedding/chunking operations from `services/`, 2 import
 pipelines, 2 ingestion orchestrators, 6 graph operations from `graph/` (including identity
 seeding + semantic edge weaving), 2 from R17 (ingestion progress + temporal context),
@@ -904,13 +907,13 @@ same tokenizer = consistent chars-per-token ratio). Fallback: ~4 chars/token est
 - Runs inline after each turn. Graceful degradation if Qdrant down.
 - Config: `SALIENCE_USAGE_RATE=0.03`, `SALIENCE_DECAY_RATE=0.01` in `atlas/config.py`
 
-### Slumber Cycle (4 Sub-cycles)
+### Slumber Cycle (6 Sub-cycles)
 
 - `services/slumber.py` — daemon thread activates after idle threshold (default 5 min)
 - `touch_activity()` called in all chat handlers to reset idle timer
 - Settings: `slumber_idle_threshold`, `slumber_batch_size`, `slumber_evaluator`, `slumber_prune_age_days`
 - Started at app boot in `app.py` via `start_slumber()`
-- Five sub-cycles run in sequence during each idle period:
+- Six sub-cycles run in sequence during each idle period:
 
 | Sub-cycle | Function | Purpose |
 |-----------|----------|---------|
@@ -919,6 +922,7 @@ same tokenizer = consistent chars-per-token ratio). Fallback: ~4 chars/token est
 | Propagate | `_propagate_batch()` | Bridge `quality_score` → Qdrant `salience` (decay garbage, boost quality) |
 | Relate | `_relate_batch()` | Create SIMILAR_TO edges in Neo4j via cross-conversation keyword overlap |
 | Prune | `_prune_batch()` | Remove dead-weight vectors from Qdrant (quality < 0.1, salience < 0.1, never retrieved, older than N days) |
+| Dream | `_dream_batch()` | Select high-quality message clusters, synthesize cross-conversation insights via Gemini, persist as documents + graph edges (R24) |
 
 Ingest runs FIRST so newly ingested content gets full Slumber processing (evaluate, propagate, relate) in the same cycle.
 
@@ -1450,7 +1454,7 @@ deprecated `google.generativeai` package. Temperature=0.1 for deterministic eval
 
 Module-level `_slumber_status` dict tracks live daemon state: current sub-cycle, last
 cycle timestamp, evaluation counts, eval method, errors. Thread-safe reads (Python GIL).
-Exposed as MCP tool (73rd tool). Polled by Knowledge Pipeline tab left sidebar via
+Exposed as MCP tool. Polled by Knowledge Pipeline tab left sidebar via
 `gr.Timer(value=10.0)` — the first persistent live-status indicator in the app.
 
 ### Settings (3 new in `system` category)
@@ -1502,7 +1506,53 @@ conversation, not just the windowed slice.
 → `compose_system_prompt()`. Both Sovereign Chat (`pages/chat.py`) and sidebar quick-chat
 (`tabs/tab_chat.py`) pass the active Janus conversation ID to `chat()`.
 
-## Current Platform State (Post-R23)
+## Phase R24: Dream Synthesis — Cross-Conversation Insight Generation
+
+R24 adds a dream synthesis phase to the Slumber Cycle. During idle periods, the system
+selects clusters of high-quality messages from different conversations that are semantically
+related, sends them to Gemini Flash Lite for cross-conversation analysis, and persists the
+resulting insights as documents with graph edges back to source messages. Dreams feed back
+into RAG — Janus asking about a topic retrieves synthesized understanding, not just raw
+conversations.
+
+### Dream Synthesis Pipeline (`atlas/dream_synthesis.py`)
+
+4 public functions:
+
+- `select_synthesis_clusters()` — queries scored messages (quality >= 0.7), searches Qdrant
+  for cross-conversation neighbors, builds 3-6 message clusters ranked by quality * diversity
+- `synthesize_cluster()` — sends cluster to Gemini (temperature 0.7) with synthesis prompt,
+  parses JSON response (insight_title, insight_text, themes, connections, confidence)
+- `persist_synthesis()` — creates document (doc_type='agent_output', source='dream_synthesis'),
+  inline chunks + embeds for immediate RAG availability, creates SYNTHESIZED_FROM graph edges
+- `run_dream_cycle()` — orchestrator called by Slumber: select → synthesize → persist
+
+### Evaluation Backfill (`db/chat_operations.py`)
+
+`backfill_message_metadata(batch_size)` — creates empty `messages_metadata` rows for imported
+messages that lack them. quality_score = NULL makes them eligible for Slumber's existing
+evaluate phase. 74th MCP tool. Safe to call repeatedly (INSERT OR IGNORE).
+
+### Slumber Integration
+
+Dream runs as sub-cycle 5 (after Prune, before cycle timestamp). `_should_dream()` gates on
+`slumber_dream_enabled` setting and fires every 5th cycle (`DREAM_CYCLE_INTERVAL`). Initialized
+to fire on first eligible cycle after startup. Status tracked in `_slumber_status` with
+`last_dreamed`, `dream_edges`, `total_dreams` fields.
+
+### Graph Schema
+
+New edge type `SYNTHESIZED_FROM` (Document → Message) with `method` property index. Created
+via `create_edge()` (MERGE-based, idempotent). Tracks provenance from dream insights to
+source messages.
+
+### Constants (`atlas/config.py`)
+
+7 constants: `DREAM_MIN_QUALITY` (0.7), `DREAM_MAX_CLUSTERS` (3), `DREAM_CLUSTER_MIN_SIZE` (3),
+`DREAM_CLUSTER_MAX_SIZE` (6), `DREAM_SIMILARITY_THRESHOLD` (0.6), `DREAM_CYCLE_INTERVAL` (5),
+`DREAM_TEMPERATURE` (0.7).
+
+## Current Platform State (Post-R24)
 
 ### What Works
 
@@ -1525,9 +1575,11 @@ conversation, not just the windowed slice.
   decommissioned (rerank=False default).
 - **Content corpus** — 659 Claude conversations (10,271 messages), 40 markdown documents,
   78 items, 13 domains, 3 tasks. All embedded in Qdrant, synced to Neo4j.
-- **Background intelligence** — Slumber Cycle: ingest scan → evaluate → propagate → relate → prune.
-  New content auto-discovered and fully processed in a single idle cycle. Evaluate sub-cycle
-  uses Gemini Flash Lite for LLM-powered quality scoring with heuristic fallback (R22).
+- **Background intelligence** — Slumber Cycle: ingest scan → evaluate → propagate → relate → prune → dream.
+  Six sub-cycles run in sequence during idle periods. New content auto-discovered and fully
+  processed in a single idle cycle. Evaluate sub-cycle uses Gemini Flash Lite for LLM-powered
+  quality scoring with heuristic fallback (R22). Dream sub-cycle synthesizes cross-conversation
+  insights from high-quality message clusters (R24).
 - **Ingestion pipelines** — Claude export, Google AI Studio, markdown. Auto-embed + dedup.
   Auto-ingestion scanner for hands-free operation.
 - **Sovereign multipage architecture** — 4 purpose-built pages (Projects, Knowledge, Admin,
@@ -1542,13 +1594,17 @@ conversation, not just the windowed slice.
 - **Semantic graph topology** — `weave_conversation_graph()` (R20) bridges Qdrant vector
   similarity into Neo4j SIMILAR_TO edges between Conversation nodes. Transforms isolated
   conversation chains into a connected semantic network. MERGE-based, idempotent.
-- **73 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal + semantic edge weaving + Slumber status exposed for external AI clients.
+- **74 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal + semantic edge weaving + Slumber status + metadata backfill exposed for external AI clients.
 - **Graph-aware RAG** — SIMILAR_TO edges boost candidates from the query's topic
   neighborhood. Additive scoring ensures graph promotes borderline candidates without
   making irrelevant content appear relevant.
 - **Cognition introspection** — Sovereign Chat Cognition tab shows the full thought
   pipeline per-turn: prompt layer decomposition, RAG candidate funnel, context budget,
   graph neighborhood. The system watching itself think.
+- **Dream synthesis** — Slumber Cycle sub-cycle 5 synthesizes cross-conversation
+  insights from high-quality message clusters via Gemini. Dreams persist as documents with
+  SYNTHESIZED_FROM graph edges, feeding back into RAG. Evaluation backfill creates metadata
+  rows for all 9,200+ imported messages.
 
 ### What's Missing (Architectural Gaps)
 
@@ -1586,7 +1642,7 @@ layers of intelligence on a foundation that is rapidly gaining self-awareness.
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R24 candidates)
+### Near-Term (R25 candidates)
 
 - **Custom ranking service enhancements** — R21 delivered graph-aware RAG ranking with
   additive topology boost. Next: add temporal decay weighting so recent conversations

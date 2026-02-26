@@ -568,6 +568,45 @@ def get_recent_introspection(limit: int = 10) -> dict:
     }
 
 
+def backfill_message_metadata(batch_size: int = 500) -> str:
+    """Create messages_metadata rows for messages that don't have them.
+
+    Many imported messages (Claude Export, Google AI Studio) lack metadata
+    rows because they were imported before R12's cognitive telemetry was
+    added. This function creates empty rows (quality_score = NULL) so
+    the Slumber Cycle's evaluate phase can score them naturally.
+
+    Safe to call multiple times — uses INSERT OR IGNORE.
+
+    Args:
+        batch_size: Max rows to create per call (default 500).
+
+    Returns:
+        Status message with count of rows created.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT OR IGNORE INTO messages_metadata (message_id)
+               SELECT id FROM messages
+               WHERE id NOT IN (SELECT message_id FROM messages_metadata)
+               LIMIT ?""",
+            (batch_size,),
+        )
+        created = cursor.rowcount
+        conn.commit()
+
+    total = 0
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM messages WHERE id NOT IN "
+            "(SELECT message_id FROM messages_metadata)"
+        ).fetchone()
+        total = row["cnt"] if row else 0
+
+    return f"Created {created} metadata rows. {total} messages still remaining."
+
+
 def get_messages(conversation_id: str, limit: int = 100, latest: bool = False) -> list:
     """Get messages for a conversation ordered by sequence.
 

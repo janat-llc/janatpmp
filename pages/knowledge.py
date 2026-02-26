@@ -601,6 +601,21 @@ def build_knowledge_page():
                         key="pipe-slumber-err",
                     )
 
+                # Dream Synthesis status (R24)
+                total_dreams = s.get("total_dreams", 0)
+                if total_dreams > 0 or s.get("last_dreamed", 0) > 0:
+                    gr.Markdown("---", key="pipe-dream-sep")
+                    gr.Markdown("### Dream Synthesis", key="pipe-dream-hdr")
+                    gr.Markdown(
+                        f"**Last cycle:** {s.get('last_dreamed', 0)} insights, "
+                        f"{s.get('dream_edges', 0)} edges",
+                        key="pipe-dream-last",
+                    )
+                    gr.Markdown(
+                        f"**Total insights:** {total_dreams}",
+                        key="pipe-dream-total",
+                    )
+
             elif tab == "Synthesis":
                 gr.Markdown("### Synthesis")
                 gr.Markdown(

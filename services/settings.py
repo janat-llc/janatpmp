@@ -183,6 +183,10 @@ SETTINGS_REGISTRY = {
     "slumber_eval_model":      ("gemini-2.5-flash-lite", False, "system", None),
     "slumber_eval_enabled":    ("true", False, "system", None),
 
+    # Dream Synthesis (R24)
+    "slumber_dream_enabled":      ("true", False, "system", None),
+    "slumber_dream_min_quality":  ("0.7",  False, "system", _validate_float_0_1),
+
     # Janus Identity (R19)
     "janus_lifecycle_state":   ("sleeping", False, "system", None),
     "janus_identity_version":  ("r19-v1", False, "system", None),

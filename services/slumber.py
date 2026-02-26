@@ -30,7 +30,7 @@ _slumber_thread = None
 
 # --- Slumber activity state (R22) — read by UI via get_slumber_status() ---
 _slumber_status = {
-    "state": "idle",           # idle | ingesting | evaluating | propagating | relating | pruning
+    "state": "idle",           # idle | ingesting | evaluating | propagating | relating | pruning | dreaming
     "last_cycle_at": None,     # ISO timestamp of last completed cycle
     "last_evaluated": 0,       # Messages evaluated in last cycle
     "last_propagated": 0,      # Messages propagated in last cycle
@@ -39,6 +39,11 @@ _slumber_status = {
     "eval_method": "",         # "gemini" or "heuristic"
     "total_evaluated": 0,      # Cumulative since startup
     "error": "",               # Last error message (if any)
+    # Dream Synthesis (R24)
+    "last_dreamed": 0,         # Insights created in last cycle
+    "dream_edges": 0,          # Graph edges created in last cycle
+    "total_dreams": 0,         # Cumulative insights since startup
+    "_cycle_count": 4,         # Internal: starts at INTERVAL-1 so first dream fires on first eligible cycle
 }
 
 # Words too common to be meaningful keywords
@@ -549,8 +554,42 @@ def _ingest_scan():
         logger.info("Slumber ingest scan: %s", result)
 
 
+def _should_dream() -> bool:
+    """Check if dream synthesis should run this cycle."""
+    from services.settings import get_setting
+    from atlas.config import DREAM_CYCLE_INTERVAL
+
+    enabled = (get_setting("slumber_dream_enabled") or "true").lower() == "true"
+    if not enabled:
+        return False
+
+    # Initialized to INTERVAL-1 in _slumber_status so first dream fires on
+    # first eligible idle cycle after startup (not delayed by INTERVAL cycles).
+    _slumber_status["_cycle_count"] = _slumber_status.get(
+        "_cycle_count", DREAM_CYCLE_INTERVAL - 1
+    ) + 1
+    return _slumber_status["_cycle_count"] % DREAM_CYCLE_INTERVAL == 0
+
+
+def _dream_batch():
+    """Sub-cycle 5: Dream Synthesis — cross-conversation insight generation."""
+    from atlas.dream_synthesis import run_dream_cycle
+
+    result = run_dream_cycle()
+    _slumber_status["last_dreamed"] = result.get("insights_created", 0)
+    _slumber_status["dream_edges"] = result.get("edges_created", 0)
+    _slumber_status["total_dreams"] += result.get("insights_created", 0)
+    if result.get("insights_created", 0) > 0:
+        logger.info(
+            "Dream Synthesis: %d clusters -> %d insights, %d edges",
+            result["clusters_found"],
+            result["insights_created"],
+            result["edges_created"],
+        )
+
+
 def _slumber_cycle():
-    """Background thread: Ingest → Evaluate → Propagate → Relate → Prune during idle."""
+    """Background thread: Ingest → Evaluate → Propagate → Relate → Prune → Dream during idle."""
     while True:
         time.sleep(CYCLE_INTERVAL_SECONDS)
         if not _is_idle():
@@ -608,6 +647,15 @@ def _slumber_cycle():
         except Exception as e:
             _slumber_status["error"] = str(e)
             logger.debug("Slumber prune error: %s", e)
+
+        # Sub-cycle 5: Dream Synthesis (R24)
+        if _should_dream():
+            _slumber_status["state"] = "dreaming"
+            try:
+                _dream_batch()
+            except Exception as e:
+                _slumber_status["error"] = str(e)
+                logger.debug("Slumber dream error: %s", e)
 
         _slumber_status["state"] = "idle"
         _slumber_status["last_cycle_at"] = datetime.now().isoformat()

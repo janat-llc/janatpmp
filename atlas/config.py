@@ -71,3 +71,12 @@ SEMANTIC_EDGE_REPR_MAX_CHARS = 500    # Max chars per message in repr text
 GRAPH_BOOST_FACTOR = 0.1         # Score bonus = edge_score * GRAPH_BOOST_FACTOR
 GRAPH_TOPIC_CONVERSATIONS = 3    # Top-N source conversations to seed neighborhood
 GRAPH_NEIGHBORHOOD_HOPS = 1      # SIMILAR_TO traversal depth (1 = direct neighbors only)
+
+# --- Dream Synthesis (R24) ---
+DREAM_MIN_QUALITY = 0.7          # Minimum quality_score for cluster candidates
+DREAM_MAX_CLUSTERS = 3           # Max clusters to synthesize per cycle
+DREAM_CLUSTER_MIN_SIZE = 3       # Minimum messages to form a valid cluster
+DREAM_CLUSTER_MAX_SIZE = 6       # Maximum messages per cluster
+DREAM_SIMILARITY_THRESHOLD = 0.6 # Qdrant cosine threshold for cross-conv matches
+DREAM_CYCLE_INTERVAL = 5         # Dream every Nth slumber cycle
+DREAM_TEMPERATURE = 0.7          # Gemini temperature (creative for synthesis)

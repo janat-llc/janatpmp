@@ -28,6 +28,9 @@ from db.chat_operations import (
 # --- Cognitive telemetry (R12) — 2 functions ---
 from db.chat_operations import add_message_metadata, get_message_metadata
 
+# --- Evaluation backfill (R24) — 1 function ---
+from db.chat_operations import backfill_message_metadata
+
 # --- Janus continuous chat + stream (R14/R17) — 4 functions ---
 from db.chat_operations import (
     get_or_create_janus_conversation, archive_janus_conversation,
@@ -113,7 +116,8 @@ ALL_MCP_TOOLS: list = [
     backup_database, reset_database, restore_database, list_backups,
     export_platform_data, import_platform_data,
 
-    # --- Cross-cutting: temporal context + slumber status (2) ---
+    # --- Cross-cutting: temporal context + slumber status + backfill (3) ---
     get_temporal_context,
     get_slumber_status,
+    backfill_message_metadata,
 ]
