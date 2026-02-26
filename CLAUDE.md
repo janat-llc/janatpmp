@@ -235,7 +235,7 @@ Persona settings (`user_name`, `user_bio`, `user_preferences`) are in **Admin ->
 - `user_bio` — User biography/context (default: "", category: persona)
 - `user_preferences` — Interaction style preferences (default: "", category: persona)
 - `slumber_eval_provider` — Provider for Slumber evaluations (default: "gemini", category: system)
-- `slumber_eval_model` — Model for Slumber evaluations (default: "gemini-2.0-flash-lite", category: system)
+- `slumber_eval_model` — Model for Slumber evaluations (default: "gemini-2.5-flash-lite", category: system)
 - `slumber_eval_enabled` — Enable/disable LLM evaluation (default: "true", category: system)
 
 **Settings flow:**
@@ -1450,7 +1450,7 @@ Exposed as MCP tool (73rd tool). Polled by Knowledge Pipeline tab left sidebar v
 ### Settings (3 new in `system` category)
 
 - `slumber_eval_provider` — Provider for evaluations (default: "gemini")
-- `slumber_eval_model` — Model for evaluations (default: "gemini-2.0-flash-lite")
+- `slumber_eval_model` — Model for evaluations (default: "gemini-2.5-flash-lite")
 - `slumber_eval_enabled` — Enable/disable LLM evaluation (default: "true")
 
 Reuses existing `chat_api_key` for Gemini authentication. No separate key needed.
