@@ -3,7 +3,7 @@
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
 ![Gradio 6.6.0](https://img.shields.io/badge/Gradio-6.6.0-orange?logo=gradio&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-74%20Tools-blueviolet)
+![MCP](https://img.shields.io/badge/MCP-76%20Tools-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![Neo4j](https://img.shields.io/badge/Neo4j-2026.01.4-008CC1?logo=neo4j&logoColor=white)
 
@@ -41,7 +41,7 @@ graph TB
 
 ```mermaid
 graph TB
-    MCP[MCP Tools<br/>74 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
+    MCP[MCP Tools<br/>76 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
     UI[Gradio UI] --> DB
     API[REST API] --> DB
     DB --> SQLite[(SQLite)]
@@ -56,7 +56,7 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 
 ## Features
 
-- **74 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, chunks, Janus lifecycle, backups, file registry, temporal context, semantic edges, dream synthesis)
+- **76 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, chunks, Janus lifecycle, backups, file registry, temporal context, semantic edges, dream synthesis, backfill orchestration)
 - **Sovereign multipage architecture** — 4 independent pages (Projects, Knowledge, Admin, Chat) with client-side navbar navigation; one process, one port, one MCP surface; each page has purpose-built left sidebar + shared Janus right sidebar
 - **Message chunking** — long messages and documents are split into focused ~2500-char chunks before embedding; each chunk gets its own Qdrant vector with parent traceability; RAG returns specific paragraphs instead of entire turns; paragraph-aware splitting with configurable thresholds
 - **Triple-write pipeline** — every message is chunked, then each chunk fans out to SQLite, Qdrant, and Neo4j synchronously; immediately retrievable on the next turn
@@ -90,6 +90,8 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Grounded prompt layers** — R23 fixed three broken layers in the 7-layer identity architecture: populated relational context (bio, health, preferences from persona settings), elapsed time awareness in temporal grounding ("Mat last spoke X minutes ago"), and accurate conversation state from the database (real turn count instead of sliding window length)
 - **Dream Synthesis** — cross-conversation insight generation during Slumber idle periods via Gemini; discovers thematic patterns across conversation history and produces synthesized insight documents; evaluation backfill scores unscored messages in batch (R24)
 - **Pre-Cognition** — Gemini Flash Lite pre-pass gathers 7 context signals (elapsed time, emotional trajectory, conversation depth, dream titles, temporal context, active domains, session turns) and produces directives that modulate prompt layer weights; three-variant system for static layers + weight parameters on dynamic builders; tone and memory directives inject contextual instructions; 3s timeout with graceful degradation (R25)
+- **Intent-aware pipeline routing** — regex-based classifier gates Pre-Cognition and RAG by message intent; greetings, acknowledgments, and meta-conversation skip expensive pipeline stages while knowledge queries get full retrieval (R26)
+- **Backfill orchestrator** — phased data foundation pipeline with progress tracking; orchestrates chunk, embed, graph backfill, and semantic edge weaving in sequence with per-phase status reporting via MCP (R26)
 - **Change Data Capture** outbox with background Neo4j sync consumer
 
 ---
@@ -173,7 +175,7 @@ python app.py
 ```
 JANATPMP/
 ├── app.py                     # Orchestrator: startup, routes, gr.api(), launch
-├── mcp_registry.py            # MCP Tool Registry — 74 gr.api() imports + ALL_MCP_TOOLS
+├── mcp_registry.py            # MCP Tool Registry — 76 gr.api() imports + ALL_MCP_TOOLS
 ├── janat_theme.py             # Custom Gradio theme (Janat brand colors + CSS)
 ├── assets/
 │   └── janat_logo_bold_transparent.png  # Janat Mandala logo
@@ -223,6 +225,8 @@ JANATPMP/
 │   ├── slumber.py             # Slumber Cycle — 5-stage background daemon (R12+R13+R17)
 │   ├── slumber_eval.py        # LLM-powered message evaluation — Gemini Flash Lite + heuristic fallback (R22)
 │   ├── settings.py            # Settings registry with validation and categories
+│   ├── intent_router.py       # Regex-based intent classifier for pipeline gating (R26)
+│   ├── backfill_orchestrator.py # Phased data foundation pipeline with progress tracking (R26)
 │   ├── auto_ingest.py         # Startup + Slumber auto-ingestion scanner (R17)
 │   ├── startup.py             # Platform init: core, services, background auto-ingest
 │   ├── claude_import.py       # Claude JSON → triplet messages
@@ -239,7 +243,7 @@ JANATPMP/
 
 ## MCP Integration
 
-JANATPMP exposes **74 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
+JANATPMP exposes **76 tools** via [Gradio's MCP server mode](https://www.gradio.app/guides/building-mcp-server-with-gradio). Any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.) can connect to:
 
 ```
 http://localhost:7860/gradio_api/mcp/sse
@@ -422,7 +426,7 @@ feature/phase{X}-{description}  # legacy naming
 
 ## Future
 
-JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), **auto-ingestion** removes manual import friction (R17), **Janus identity architecture** gives her genuine selfhood (R19), **semantic graph topology** connects conversations into a navigable network (R20), **graph-aware RAG** closes the loop between graph and retrieval (R21), the **Cognition tab** makes the thought pipeline permanently visible (R21), **LLM-powered Slumber evaluation** replaces heuristics with Gemini Flash Lite scoring (R22), **grounded prompt layers** fix three broken identity layers so Janus speaks from real context instead of empty templates (R23), **Dream Synthesis** generates cross-conversation insights during Slumber idle periods (R24), and **Pre-Cognition** adapts the prompt to the moment via Gemini pre-pass with weight-driven layer modulation (R25). Planned next steps:
+JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), **auto-ingestion** removes manual import friction (R17), **Janus identity architecture** gives her genuine selfhood (R19), **semantic graph topology** connects conversations into a navigable network (R20), **graph-aware RAG** closes the loop between graph and retrieval (R21), the **Cognition tab** makes the thought pipeline permanently visible (R21), **LLM-powered Slumber evaluation** replaces heuristics with Gemini Flash Lite scoring (R22), **grounded prompt layers** fix three broken identity layers so Janus speaks from real context instead of empty templates (R23), **Dream Synthesis** generates cross-conversation insights during Slumber idle periods (R24), **Pre-Cognition** adapts the prompt to the moment via Gemini pre-pass with weight-driven layer modulation (R25), **intent-aware pipeline routing** classifies messages to skip expensive stages for greetings and meta-conversation (R26), and a **backfill orchestrator** provides a single-command phased data foundation pipeline (R26). Planned next steps:
 
 - **Automatic re-weaving** — hook semantic edge generation into Slumber so new conversations auto-connect
 - **Synthesis tab** — Memory node review, evidence chains, source attribution (Knowledge page placeholder ready)

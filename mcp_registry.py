@@ -78,6 +78,10 @@ from services.auto_ingest import get_ingestion_progress
 from atlas.temporal import get_temporal_context
 # --- Slumber status (R22: First Light) — 1 function ---
 from services.slumber import get_slumber_status
+# --- Backfill orchestrator (R26: The Waking Mind) — 3 functions ---
+from services.backfill_orchestrator import (
+    get_backfill_progress, cancel_backfill, run_backfill,
+)
 
 
 ALL_MCP_TOOLS: list = [
@@ -116,8 +120,11 @@ ALL_MCP_TOOLS: list = [
     backup_database, reset_database, restore_database, list_backups,
     export_platform_data, import_platform_data,
 
-    # --- Cross-cutting: temporal context + slumber status + backfill (3) ---
+    # --- Cross-cutting: temporal context + slumber status + backfill (6) ---
     get_temporal_context,
     get_slumber_status,
     backfill_message_metadata,
+    get_backfill_progress,
+    cancel_backfill,
+    run_backfill,
 ]

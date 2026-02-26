@@ -700,6 +700,32 @@ def build_chat_page():
                 prompt_layers = trace.get("prompt_layers", {})
                 graph_trace = trace.get("graph_trace", {})
 
+                # --- Section: Intent Classification (R26) ---
+                intent_data = trace.get("intent", {})
+                if intent_data:
+                    intent_name = intent_data.get(
+                        "intent", "unknown").upper()
+                    confidence = intent_data.get("confidence", 0)
+                    rag = intent_data.get("rag_depth", "unknown")
+                    precog_flag = ("Yes" if intent_data.get(
+                        "run_precognition") else "No")
+                    reasoning = intent_data.get("reasoning", "")
+                    conf_bar = (
+                        "\u2588" * int(confidence * 10)
+                        + "\u2591" * (10 - int(confidence * 10))
+                    )
+                    gr.Markdown(
+                        "### Intent Classification",
+                        key="cog-intent-header",
+                    )
+                    gr.Markdown(
+                        f"**{intent_name}** ({rag} RAG) | "
+                        f"{conf_bar} {confidence:.0%}\n\n"
+                        f"Pre-Cognition: {precog_flag} | {reasoning}",
+                        key="cog-intent-body",
+                    )
+                    gr.Markdown("---", key="cog-intent-sep")
+
                 # --- Section 0: Pre-Cognition (R25) ---
                 precog = trace.get("precognition", {})
                 if precog.get("precognition_used"):

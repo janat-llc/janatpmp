@@ -408,7 +408,8 @@ def _needs_rag(message: str) -> bool:
     return True
 
 
-def _build_rag_context(user_message: str) -> tuple[str, dict]:
+def _build_rag_context(user_message: str,
+                       skip_gate: bool = False) -> tuple[str, dict]:
     """Hybrid search: Qdrant vectors + SQLite FTS keyword matching.
 
     Two-source retrieval ensures both semantic similarity AND keyword matches
@@ -431,7 +432,7 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
     """
     metrics = dict(_EMPTY_RAG_METRICS, scores=[], rejected=[])
 
-    if not _needs_rag(user_message):
+    if not skip_gate and not _needs_rag(user_message):
         logger.debug("RAG skipped — message too short/conversational: %s", user_message[:50])
         return "", metrics
 
@@ -644,6 +645,59 @@ def _build_rag_context(user_message: str) -> tuple[str, dict]:
     except Exception as e:
         logger.debug("RAG context unavailable: %s", e)
         return "", metrics  # Graceful degradation if Qdrant is down
+
+
+def _build_light_rag_context(user_message: str) -> tuple[str, dict]:
+    """Light RAG — vector search only, top-5, no FTS/graph/synthesis.
+
+    Used for CONTINUATION, CLARIFICATION, and META intents where
+    some context helps but full pipeline is overkill.
+
+    Args:
+        user_message: The user's current message.
+
+    Returns:
+        Tuple of (formatted context string, RAG metrics dict).
+    """
+    metrics = dict(_EMPTY_RAG_METRICS, light_rag=True, scores=[], rejected=[])
+    try:
+        from services.vector_store import search_all
+        threshold = float(get_setting("rag_score_threshold") or RAG_SCORE_THRESHOLD)
+        results = search_all(user_message, limit=5, rerank=False)
+
+        if not results:
+            return "", metrics
+
+        # Filter by score threshold
+        passed = [r for r in results if r.get("score", 0) >= threshold]
+        if not passed:
+            return "", metrics
+
+        # Simple concatenation — no synthesis, no diversity cap
+        context_parts = []
+        used_scores = []
+        for r in passed[:3]:
+            text = r.get("text", "")[:500]
+            if text:
+                context_parts.append(text)
+                used_scores.append({
+                    "score": round(r.get("score", 0), 4),
+                    "collection": r.get("collection", ""),
+                    "text_preview": text[:100],
+                })
+
+        if not context_parts:
+            return "", metrics
+
+        context = "\n\n---\n\n[Relevant context]\n\n" + "\n\n".join(context_parts)
+        metrics["hit_count"] = len(results)
+        metrics["hits_used"] = len(context_parts)
+        metrics["scores"] = used_scores
+        metrics["context_text"] = context
+        return context, metrics
+    except Exception as e:
+        logger.debug("Light RAG unavailable: %s", e)
+        return "", metrics
 
 
 def _synthesize_rag_context(user_message: str, raw_context: str, context_parts: list[str]) -> str:
@@ -1185,14 +1239,23 @@ def chat(message: str, history: list[dict],
         set_setting("janus_lifecycle_state", "awake")
         logger.info("Bootstrap: first chat message, state → awake")
 
-    # R25: Pre-cognition — adaptive prompt shaping
+    # R26: Intent classification (< 5ms, no I/O)
+    from services.intent_router import classify_intent, RAGDepth
+    intent_result = classify_intent(
+        message, conversation_turn_count=len(history) // 2)
+    logger.info("Intent: %s (%.0f%% conf, RAG=%s, precog=%s)",
+                intent_result.intent.value, intent_result.confidence * 100,
+                intent_result.rag_depth.value, intent_result.run_precognition)
+
+    # R25: Pre-cognition — adaptive prompt shaping (gated by intent)
     precog_directives = {}
-    try:
-        from services.precognition import run_precognition
-        precog_directives = run_precognition(conversation_id, history,
-                                             user_message=message)
-    except Exception as e:
-        logger.debug("Pre-cognition unavailable: %s", e)
+    if intent_result.run_precognition:
+        try:
+            from services.precognition import run_precognition
+            precog_directives = run_precognition(conversation_id, history,
+                                                 user_message=message)
+        except Exception as e:
+            logger.debug("Pre-cognition unavailable: %s", e)
 
     system_prompt, prompt_layers = _build_system_prompt(
         history, conversation_id, directives=precog_directives)
@@ -1211,9 +1274,17 @@ def chat(message: str, history: list[dict],
         }
 
     with TurnTimer() as timer:
-        # RAG context injection (gracefully degrades if Qdrant unavailable)
+        # R26: RAG depth gated by intent classification
         with timer.span("rag"):
-            rag_context, rag_metrics = _build_rag_context(message)
+            if intent_result.rag_depth == RAGDepth.FULL:
+                rag_context, rag_metrics = _build_rag_context(
+                    message, skip_gate=True)
+            elif intent_result.rag_depth == RAGDepth.LIGHT:
+                rag_context, rag_metrics = _build_light_rag_context(message)
+            else:
+                rag_context = ""
+                rag_metrics = dict(_EMPTY_RAG_METRICS, skipped=True,
+                                   skip_reason=intent_result.intent.value)
         if rag_context:
             system_prompt += rag_context
         logger.debug("System prompt composed (%d chars)", len(system_prompt))
@@ -1255,6 +1326,13 @@ def chat(message: str, history: list[dict],
                 "system_prompt_length": len(system_prompt),
                 # R21: Cognition trace for introspection surface
                 "cognition_trace": {
+                    "intent": {
+                        "intent": intent_result.intent.value,
+                        "confidence": intent_result.confidence,
+                        "rag_depth": intent_result.rag_depth.value,
+                        "run_precognition": intent_result.run_precognition,
+                        "reasoning": intent_result.reasoning,
+                    },
                     "prompt_layers": prompt_layers,
                     "graph_trace": rag_metrics.get("graph_trace", {}),
                     "rag_query": message,

@@ -498,6 +498,25 @@ def build_knowledge_page():
                             label="Graph Operation Result", value={}
                         )
 
+                    # --- Data Foundation (R26) ---
+                    with gr.Accordion("Data Foundation", open=False):
+                        gr.Markdown(
+                            "Run the full backfill pipeline: metadata → chunking "
+                            "→ embedding → graph sync. All phases are checkpoint-safe "
+                            "and re-runnable."
+                        )
+                        backfill_progress = gr.JSON(
+                            label="Backfill Progress", value={}
+                        )
+                        with gr.Row():
+                            start_backfill_btn = gr.Button(
+                                "Run Full Pipeline", variant="primary"
+                            )
+                            cancel_backfill_btn = gr.Button(
+                                "Cancel", variant="stop"
+                            )
+                        backfill_timer = gr.Timer(5, active=False)
+
         # ---------------------------------------------------------------
         # TAB 4: Synthesis (placeholder for R19)
         # ---------------------------------------------------------------
@@ -986,6 +1005,40 @@ def build_knowledge_page():
 
     slumber_timer.tick(
         _poll_slumber, outputs=[slumber_status_state],
+        api_visibility="private",
+    )
+
+    # === BACKFILL ORCHESTRATOR (R26) ===
+    def _start_backfill():
+        from services.backfill_orchestrator import run_backfill_async
+        msg = run_backfill_async()
+        return {"status": msg}, gr.Timer(active=True)
+
+    def _cancel_backfill():
+        from services.backfill_orchestrator import cancel_backfill
+        return cancel_backfill()
+
+    def _poll_backfill():
+        from services.backfill_orchestrator import get_backfill_progress
+        progress = get_backfill_progress()
+        # Stop polling when idle or complete
+        if progress.get("status") in ("idle", "complete"):
+            return progress, gr.Timer(active=False)
+        return progress, gr.Timer(active=True)
+
+    start_backfill_btn.click(
+        _start_backfill,
+        outputs=[backfill_progress, backfill_timer],
+        api_visibility="private",
+    )
+    cancel_backfill_btn.click(
+        _cancel_backfill,
+        outputs=[backfill_progress],
+        api_visibility="private",
+    )
+    backfill_timer.tick(
+        _poll_backfill,
+        outputs=[backfill_progress, backfill_timer],
         api_visibility="private",
     )
 

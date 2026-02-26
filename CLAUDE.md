@@ -24,7 +24,7 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 ```
 JANATPMP/
 ├── app.py                    # Thin launcher: startup calls, gr.Blocks, banner, demo.launch()
-├── mcp_registry.py           # MCP Tool Registry — all 74 gr.api() function imports + ALL_MCP_TOOLS list
+├── mcp_registry.py           # MCP Tool Registry — all 76 gr.api() function imports + ALL_MCP_TOOLS list
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── pages/
 │   ├── __init__.py
@@ -102,6 +102,8 @@ JANATPMP/
 │   ├── settings.py           # Settings registry with validation and categories
 │   ├── auto_ingest.py        # Startup + Slumber auto-ingestion scanner (R17)
 │   ├── startup.py            # Platform init: initialize_core(), initialize_services(), background auto-ingest
+│   ├── intent_router.py      # Intent classification + pipeline routing (R26)
+│   ├── backfill_orchestrator.py  # Phased data backfill pipeline (R26)
 │   └── ingestion/            # Content ingestion parsers (Phase 6A)
 │       ├── __init__.py
 │       ├── google_ai_studio.py  # Google AI Studio chunkedPrompt parser
@@ -158,7 +160,7 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.Navbar(main_page_name="Projects")
     build_page()                          # Projects + Work
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)                   # 74 MCP tools (registered on main Blocks only)
+        gr.api(tool_fn)                   # 76 MCP tools (registered on main Blocks only)
 
 with demo.route("Knowledge", "/knowledge"):
     gr.Navbar(main_page_name="Projects")
@@ -308,7 +310,7 @@ auto-dismisses via `gr.Timer` polling `is_auto_ingest_complete()` every 2 second
 
 ### MCP Tool Registry (`mcp_registry.py`)
 
-All 74 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
+All 76 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
 page ownership (Projects, Knowledge, Admin, cross-cutting). `app.py` loops over this list:
 `for tool_fn in ALL_MCP_TOOLS: gr.api(tool_fn)`. Registered on the main Blocks only —
 accessible from all routes. Keeps `app.py` thin (~100 lines).
@@ -658,19 +660,19 @@ from mcp_registry import ALL_MCP_TOOLS
 with gr.Blocks() as demo:
     build_page()
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)  # 71 MCP tools from registry
+        gr.api(tool_fn)  # 76 MCP tools from registry
 
 demo.launch(mcp_server=True)
 ```
 
-74 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
+76 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
 28 from `db/operations.py` (including domain CRUD + export/import), 16 from
 `db/chat_operations.py` (including Janus lifecycle + conversation stream + metadata backfill),
 4 from `db/chunk_operations.py` (chunk CRUD + stats + search), 3 from `db/file_registry_ops.py`
 (R17 file registry), 10 vector/embedding/chunking operations from `services/`, 2 import
 pipelines, 2 ingestion orchestrators, 6 graph operations from `graph/` (including identity
 seeding + semantic edge weaving), 2 from R17 (ingestion progress + temporal context),
-and 1 from R22 (Slumber status).
+1 from R22 (Slumber status), and 3 from R26 backfill orchestrator (run/progress/cancel).
 All MUST have Google-style docstrings with Args/Returns for MCP tool generation.
 
 ### Common Mistakes to Avoid
@@ -722,6 +724,7 @@ Claude Export ingestion creates conversations + messages records via
 
 1. User types message, presses Enter
 2. If no active conversation, `get_or_create_janus_conversation()` provides one
+2.5. Classify intent via `classify_intent()` — determines RAG depth (NONE/LIGHT/FULL) and whether Pre-Cognition runs
 3. Apply sliding window: `_windowed_api_history(history, window)` sends last N turns to LLM
 4. Call `chat()` with per-session override params (provider, model, temperature, top_p, max_tokens)
 5. Reconstruct full history: `new_messages = result["history"][len(api_window):]` then append
@@ -1604,7 +1607,53 @@ PRECOGNITION_WEIGHT_MAX (2.0), PRECOGNITION_TEMPERATURE (0.1).
 
 1 column: `cognition_precognition` on messages_metadata (TEXT, stores JSON of weights + directives).
 
-## Current Platform State (Post-R25)
+## Phase R26: The Waking Mind — Intent Router + Data Foundation
+
+R26 adds two independent components: an intent router that gives the system judgment about
+when and how much to think, and a backfill orchestrator that populates the data foundation
+so the R21-R25 cognition pipeline has material to operate on.
+
+### Intent Router (`services/intent_router.py`)
+
+Regex-based message intent classifier. Runs in <5ms, no LLM calls. 11 intent categories:
+GREETING, ACKNOWLEDGMENT, FAREWELL, EMOTIONAL, CONTINUATION, CLARIFICATION, KNOWLEDGE,
+CREATIVE, PLANNING, META, COMMAND. Each maps to a routing decision:
+
+| Intent | RAG Depth | Pre-Cognition | Use Case |
+|--------|-----------|---------------|----------|
+| GREETING/ACK/FAREWELL | none | skip | Fast conversational turns |
+| EMOTIONAL | none | run | Tone adaptation without knowledge noise |
+| CONTINUATION/CLARIFICATION | light | skip | Nudge context, not full pipeline |
+| KNOWLEDGE/CREATIVE/PLANNING | full | run | Full cognition pipeline |
+| META | light | run | Self-referential with tone awareness |
+| COMMAND | none | skip | Slash commands |
+
+Light RAG = vector search only (top-5, no FTS, no graph boost, no synthesis).
+Full RAG = existing pipeline (vector + FTS + graph boost + synthesis).
+
+Intent classification is the first section in the Cognition Tab, showing the system's
+initial judgment before any other processing.
+
+### RAG Gate Fix
+
+`_build_rag_context()` gained a `skip_gate` parameter. When the intent router routes to
+FULL, `skip_gate=True` bypasses the internal `_needs_rag()` word-count check, preventing
+silent downgrades on short knowledge queries.
+
+### Backfill Orchestrator (`services/backfill_orchestrator.py`)
+
+Wraps existing MCP tools into a phased pipeline with progress tracking and cancellation:
+
+1. **Metadata** — `backfill_message_metadata()` creates empty metadata rows
+2. **Chunking** — `chunk_all_messages()` + `chunk_all_documents()`
+3. **Embedding** — `embed_all_messages()` + `embed_all_documents()` + items + tasks
+4. **Graph** — `backfill_graph()` + `weave_conversation_graph()`
+
+All phases are checkpoint-safe. Module-level progress readable from any thread.
+UI controls in Knowledge Pipeline tab (Data Foundation accordion).
+3 new MCP tools: `get_backfill_progress`, `cancel_backfill`, `run_backfill`.
+
+## Current Platform State (Post-R26)
 
 ### What Works
 
@@ -1648,7 +1697,7 @@ PRECOGNITION_WEIGHT_MAX (2.0), PRECOGNITION_TEMPERATURE (0.1).
 - **Semantic graph topology** — `weave_conversation_graph()` (R20) bridges Qdrant vector
   similarity into Neo4j SIMILAR_TO edges between Conversation nodes. Transforms isolated
   conversation chains into a connected semantic network. MERGE-based, idempotent.
-- **74 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal + semantic edge weaving + Slumber status + metadata backfill exposed for external AI clients.
+- **76 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal + semantic edge weaving + Slumber status + metadata backfill + backfill orchestrator exposed for external AI clients.
 - **Graph-aware RAG** — SIMILAR_TO edges boost candidates from the query's topic
   neighborhood. Additive scoring ensures graph promotes borderline candidates without
   making irrelevant content appear relevant.
@@ -1665,6 +1714,11 @@ PRECOGNITION_WEIGHT_MAX (2.0), PRECOGNITION_TEMPERATURE (0.1).
   is constructed. Three-variant system (minimal/standard/expanded) for static layers plus
   weight parameters on dynamic builders. Tone and memory directives inject contextual
   instructions. 3s timeout with graceful degradation — pre-cognition failure never blocks chat.
+- **Intent-aware pipeline routing** — regex-based intent classifier (<5ms) gates Pre-Cognition
+  and RAG depth. Greetings skip 2-4s of unnecessary pipeline work. Emotional messages get
+  tone adaptation without knowledge retrieval noise.
+- **Backfill orchestrator** — phased pipeline runs existing tools in dependency order with
+  progress tracking, cancellation, and checkpoint resume.
 
 ### What's Missing (Architectural Gaps)
 

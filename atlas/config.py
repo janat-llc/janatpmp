@@ -86,3 +86,7 @@ PRECOGNITION_TIMEOUT_MS = 3000   # Max wait for Gemini pre-pass (ms)
 PRECOGNITION_WEIGHT_MIN = 0.0    # Floor for layer weights
 PRECOGNITION_WEIGHT_MAX = 2.0    # Ceiling for layer weights
 PRECOGNITION_TEMPERATURE = 0.1   # Low temp — consistent decisions
+
+# --- Data Foundation (R26: The Waking Mind) ---
+BACKFILL_EMBEDDING_BATCH_SIZE = 50    # Chunks per embedding batch (reduces Qdrant write pressure)
+BACKFILL_BATCH_SLEEP_SECONDS = 0.5    # Pause between batches
