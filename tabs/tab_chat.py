@@ -75,6 +75,7 @@ def _handle_chat(message, history, sidebar_conv_id=""):
 
     if msg_id:
         from db.chat_operations import add_message_metadata
+        cognition_trace = result.get("cognition_trace", {})
         add_message_metadata(
             message_id=msg_id,
             latency_total_ms=timings.get("total", 0),
@@ -89,6 +90,12 @@ def _handle_chat(message, history, sidebar_conv_id=""):
             system_prompt_length=result.get("system_prompt_length", 0),
             rag_context_text=rag_metrics.get("context_text", ""),
             rag_synthesized=1 if rag_metrics.get("synthesized") else 0,
+            cognition_prompt_layers=json.dumps(
+                cognition_trace.get("prompt_layers", {})),
+            cognition_graph_trace=json.dumps(
+                cognition_trace.get("graph_trace", {})),
+            cognition_precognition=json.dumps(
+                cognition_trace.get("precognition", {})),
         )
 
         # Live memory: embed + INFORMED_BY edges

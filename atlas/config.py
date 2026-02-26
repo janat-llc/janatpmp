@@ -80,3 +80,9 @@ DREAM_CLUSTER_MAX_SIZE = 6       # Maximum messages per cluster
 DREAM_SIMILARITY_THRESHOLD = 0.6 # Qdrant cosine threshold for cross-conv matches
 DREAM_CYCLE_INTERVAL = 5         # Dream every Nth slumber cycle
 DREAM_TEMPERATURE = 0.7          # Gemini temperature (creative for synthesis)
+
+# --- Pre-Cognition (R25) ---
+PRECOGNITION_TIMEOUT_MS = 3000   # Max wait for Gemini pre-pass (ms)
+PRECOGNITION_WEIGHT_MIN = 0.0    # Floor for layer weights
+PRECOGNITION_WEIGHT_MAX = 2.0    # Ceiling for layer weights
+PRECOGNITION_TEMPERATURE = 0.1   # Low temp — consistent decisions

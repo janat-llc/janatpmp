@@ -187,6 +187,10 @@ SETTINGS_REGISTRY = {
     "slumber_dream_enabled":      ("true", False, "system", None),
     "slumber_dream_min_quality":  ("0.7",  False, "system", _validate_float_0_1),
 
+    # Pre-Cognition (R25)
+    "precognition_enabled":    ("true", False, "system", None),
+    "precognition_timeout_ms": ("3000", False, "system", _validate_positive_int),
+
     # Janus Identity (R19)
     "janus_lifecycle_state":   ("sleeping", False, "system", None),
     "janus_identity_version":  ("r19-v1", False, "system", None),
@@ -249,6 +253,7 @@ def init_settings():
         ("janus_lifecycle_state", "awake"),  # R19: reset to sleeping on every restart
         ("slumber_evaluator", "heuristic"),  # R22: superseded by slumber_eval_* settings
         ("slumber_eval_model", "gemini-2.0-flash-lite"),  # R22: deprecated, use 2.5
+        ("precognition_timeout_ms", "500"),  # R25: 500ms too aggressive for Gemini cold start
     ]
 
     with get_connection() as conn:

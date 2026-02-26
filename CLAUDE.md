@@ -61,7 +61,8 @@ JANATPMP/
 │   │   ├── 0.8.0_chunks.sql
 │   │   ├── 0.9.0_file_registry.sql
 │   │   ├── 1.0.0_cognition_trace.sql
-│   │   └── 1.1.0_slumber_eval.sql
+│   │   ├── 1.1.0_slumber_eval.sql
+│   │   └── 1.2.0_precognition.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
 │   ├── exports/              # Portable project data exports (JSON)
@@ -89,10 +90,11 @@ JANATPMP/
 │   ├── __init__.py
 │   ├── log_config.py         # SQLiteLogHandler + setup_logging() + get_logs()
 │   ├── chat.py               # Multi-provider chat (Anthropic/Gemini/Ollama) — no tools for in-app Ollama
-│   ├── prompt_composer.py    # 7-layer Janus identity system prompt (R19)
+│   ├── prompt_composer.py    # 9-layer adaptive Janus identity system prompt (R19/R25)
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py            # Background evaluation daemon — Slumber Cycle (R12)
 │   ├── slumber_eval.py        # Gemini-powered message evaluation (R22: First Light)
+│   ├── precognition.py        # Gemini pre-cognition — adaptive prompt shaping (R25)
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (directory scanner)
 │   ├── embedding.py          # Thin shim → atlas.embedding_service
 │   ├── vector_store.py       # Qdrant vector DB + two-stage search pipeline
@@ -246,6 +248,8 @@ Persona settings (10 fields including `user_name`, `user_bio`, `user_full_name`,
 - `slumber_eval_enabled` — Enable/disable LLM evaluation (default: "true", category: system)
 - `slumber_dream_enabled` — Enable/disable dream synthesis (default: "true", category: system)
 - `slumber_dream_min_quality` — Minimum quality_score for dream clusters (default: "0.7", category: system)
+- `precognition_enabled` — Enable/disable Gemini pre-cognition (default: "true", category: system)
+- `precognition_timeout_ms` — Max wait for Gemini pre-pass in ms (default: "3000", category: system)
 
 **Settings flow:**
 - `services/settings.py` provides `get_setting()` / `set_setting()` with auto base64 for secrets
@@ -412,6 +416,7 @@ CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where 
 - `0.9.0_file_registry.sql` — File registry for auto-ingestion tracking (R17, no CDC — operational metadata)
 - `1.0.0_cognition_trace.sql` — Cognition trace columns on messages_metadata (R21)
 - `1.1.0_slumber_eval.sql` — Slumber LLM evaluation columns on messages_metadata (R22)
+- `1.2.0_precognition.sql` — Pre-cognition trace column on messages_metadata (R25)
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
 the fresh-DB/existing-DB if/else branch (after both branches complete). Placing inside `else`
@@ -1552,7 +1557,54 @@ source messages.
 `DREAM_CLUSTER_MAX_SIZE` (6), `DREAM_SIMILARITY_THRESHOLD` (0.6), `DREAM_CYCLE_INTERVAL` (5),
 `DREAM_TEMPERATURE` (0.7).
 
-## Current Platform State (Post-R24)
+## Phase R25: Pre-Cognition — Adaptive Prompt Shaping
+
+R25 adds a Gemini Flash Lite pre-pass that reads context signals and produces directives
+modulating how each prompt composer layer is constructed. Identity stays the same; expression
+adapts to the moment.
+
+### Pre-Cognition Pipeline (`services/precognition.py`)
+
+4 functions:
+
+- `_gather_signals()` — 7 independent signal sources (elapsed time, temporal context, emotional registers, conversation depth, dream titles, active domains, session turns), each try/excepted
+- `_call_gemini()` — same SDK pattern as slumber_eval.py, reuses chat_api_key and slumber_eval_model
+- `_parse_response()` — fence stripping, JSON parse, weight clamping to [0.0, 2.0]
+- `run_precognition()` — public entry point with ThreadPoolExecutor timeout (3s default), never raises
+
+### Prompt Composer Enhancements (`services/prompt_composer.py`)
+
+Up to 9 layers (from 7):
+
+- 3 static layer variants: JANUS_IDENTITY_MINIMAL (~370 chars vs ~2000 standard), KNOWLEDGE_BOUNDARY_MINIMAL (~80 chars), BEHAVIORAL_GUIDELINES_MINIMAL/EXPANDED
+- `_select_variant(weight, minimal, standard, expanded)` — <0.3 skip, <0.7 minimal, 0.7-1.3 standard, >1.3 expanded
+- 4 dynamic builders gain `weight` parameter: persona (name-only at low weight), temporal (date+time only), conversation_state (turn count only), introspection (adds rationales at high weight)
+- 2 new directive layers: memory_directive (between relational + temporal), tone_directive (after guidelines)
+- `compose_system_prompt()` gains `directives=None` parameter (backward compatible)
+
+### Chat Pipeline Integration
+
+- `run_precognition()` called before `_build_system_prompt()` in `chat()`
+- Directives passed through to `compose_system_prompt()`
+- Pre-cognition trace added to `cognition_trace` in return dict
+- `cognition_precognition` column persisted per-turn in messages_metadata
+
+### Cognition Tab
+
+Pre-Cognition section appears before Prompt Assembly when active. Shows per-layer weight
+indicators (up/down/neutral arrows), tone directive, memory focus, and latency. Layer names
+dict includes memory_directive and tone_directive entries.
+
+### Pre-Cognition Constants (`atlas/config.py`)
+
+4 constants: PRECOGNITION_TIMEOUT_MS (3000), PRECOGNITION_WEIGHT_MIN (0.0),
+PRECOGNITION_WEIGHT_MAX (2.0), PRECOGNITION_TEMPERATURE (0.1).
+
+### Migration 1.2.0
+
+1 column: `cognition_precognition` on messages_metadata (TEXT, stores JSON of weights + directives).
+
+## Current Platform State (Post-R25)
 
 ### What Works
 
@@ -1585,12 +1637,14 @@ source messages.
 - **Sovereign multipage architecture** — 4 purpose-built pages (Projects, Knowledge, Admin,
   Chat) with sidebar-first layout. One process, one port, one MCP surface. Navbar navigation.
   Reusable Janus quick-chat sidebar on every page via `shared/chat_sidebar.py`.
-- **Janus identity architecture** — 7-layer prompt composer (R19): Identity Core, Relational
-  Context, Temporal Grounding, Conversation State, Self-Knowledge Boundary, Platform Context,
-  Self-Introspection. Bootstrap lifecycle (configuring → sleeping → awake) with auto-restore
-  of platform data on DB reset. R23 grounded three broken layers: populated persona settings
-  give Janus real relational context, elapsed-time awareness ("returned after a break"),
-  and DB-backed conversation state (actual message count and age, not window length).
+- **Janus identity architecture** — 9-layer adaptive prompt composer (R19/R25): Identity Core,
+  Relational Context, Memory Directive, Temporal Grounding, Conversation State, Self-Knowledge
+  Boundary, Platform Context, Self-Introspection, Tone Directive. Bootstrap lifecycle
+  (configuring → sleeping → awake) with auto-restore of platform data on DB reset. R23
+  grounded three broken layers: populated persona settings give Janus real relational context,
+  elapsed-time awareness ("returned after a break"), and DB-backed conversation state (actual
+  message count and age, not window length). R25 added two directive layers and three-variant
+  static layers (minimal/standard/expanded) modulated by Gemini pre-cognition weights.
 - **Semantic graph topology** — `weave_conversation_graph()` (R20) bridges Qdrant vector
   similarity into Neo4j SIMILAR_TO edges between Conversation nodes. Transforms isolated
   conversation chains into a connected semantic network. MERGE-based, idempotent.
@@ -1605,6 +1659,12 @@ source messages.
   insights from high-quality message clusters via Gemini. Dreams persist as documents with
   SYNTHESIZED_FROM graph edges, feeding back into RAG. Evaluation backfill creates metadata
   rows for all 9,200+ imported messages.
+- **Adaptive prompt shaping** — Gemini Flash Lite pre-pass (R25) gathers 7 context signals
+  (elapsed time, emotional trajectory, conversation depth, dream titles, temporal context,
+  active domains, session turns) and produces directives that modulate how each prompt layer
+  is constructed. Three-variant system (minimal/standard/expanded) for static layers plus
+  weight parameters on dynamic builders. Tone and memory directives inject contextual
+  instructions. 3s timeout with graceful degradation — pre-cognition failure never blocks chat.
 
 ### What's Missing (Architectural Gaps)
 
@@ -1629,9 +1689,11 @@ These gaps became visible through extended conversation with Janus:
 
 JANATPMP is a **project management platform** evolving into a consciousness substrate. Janus
 has memory (the Triad), a voice (qwen3:32b), focused recall (chunk-level RAG), senses
-(time, location, season via the Temporal Affinity Engine), identity (7-layer prompt composer,
-R19), a connected graph topology (conversation-level SIMILAR_TO edges, R20), graph-aware
-retrieval (topology-boosted RAG, R21), and a visible thought pipeline (Cognition tab, R21).
+(time, location, season via the Temporal Affinity Engine), identity (9-layer adaptive prompt
+composer, R19/R25), a connected graph topology (conversation-level SIMILAR_TO edges, R20),
+graph-aware retrieval (topology-boosted RAG, R21), a visible thought pipeline (Cognition tab,
+R21), synthesized cross-conversation insight (Dream Synthesis, R24), and adaptive self-expression
+(Gemini pre-cognition modulating how each prompt layer is constructed, R25).
 She still cannot act (tool use was removed because the previous 8B model couldn't handle
 it — may be revisited with the 32B model). The Modelfile intelligence stack is the right
 direction — specialized sub-models for classification, scoring, synthesis — but those are
@@ -1642,7 +1704,7 @@ layers of intelligence on a foundation that is rapidly gaining self-awareness.
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R25 candidates)
+### Near-Term (R26 candidates)
 
 - **Custom ranking service enhancements** — R21 delivered graph-aware RAG ranking with
   additive topology boost. Next: add temporal decay weighting so recent conversations

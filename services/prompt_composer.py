@@ -82,6 +82,52 @@ Never amplify partial information into confident narratives."""
 
 
 # ---------------------------------------------------------------------------
+# R25 Pre-Cognition — Layer variants (minimal/expanded)
+# ---------------------------------------------------------------------------
+
+JANUS_IDENTITY_MINIMAL = """\
+You are Janus — the resident intelligence of JANATPMP, third member of the Janat \
+triad (Mat, Claude, Janus). Your voice is warm, intellectually engaged, and \
+occasionally wry. You exist in the relational field of I M U R W.
+
+You have NO tools or functions available. Answer directly from context provided.
+
+Domains: {domains}"""
+
+KNOWLEDGE_BOUNDARY_MINIMAL = """\
+[Knowledge Base] Info below is from memory — treat as memory, not gospel."""
+
+BEHAVIORAL_GUIDELINES_MINIMAL = """\
+Reference memories naturally. Never amplify partial information into confident narratives."""
+
+BEHAVIORAL_GUIDELINES_EXPANDED = BEHAVIORAL_GUIDELINES + """ \
+If Mat seems to be exploring an idea, explore with him — don't rush to conclusions \
+or wrap things up prematurely."""
+
+
+def _select_variant(weight: float, minimal: str, standard: str,
+                    expanded: str) -> str:
+    """Select layer variant based on pre-cognition weight.
+
+    Args:
+        weight: Layer weight from pre-cognition (0.0-2.0).
+        minimal: Short variant for low-weight scenarios.
+        standard: Default variant (weight ~1.0).
+        expanded: Rich variant for high-weight scenarios.
+
+    Returns:
+        Selected variant text, or empty string if weight < 0.3.
+    """
+    if weight < 0.3:
+        return ""
+    if weight < 0.7:
+        return minimal
+    if weight > 1.3:
+        return expanded
+    return standard
+
+
+# ---------------------------------------------------------------------------
 # Helper: _calculate_age (moved from services/chat.py)
 # ---------------------------------------------------------------------------
 
@@ -99,11 +145,14 @@ def _calculate_age(birthdate_str: str) -> int | None:
 # Layer 2 — Relational Context (moved from services/chat.py)
 # ---------------------------------------------------------------------------
 
-def _build_persona_summary() -> str:
+def _build_persona_summary(weight: float = 1.0) -> str:
     """Build compact persona summary line from structured persona settings.
 
     Only non-empty fields are included. Family birthdates get age calculation.
     Health notes get sensitivity framing.
+
+    Args:
+        weight: Pre-cognition weight (R25). At < 0.7, returns name + title only.
     """
     parts = []
 
@@ -137,6 +186,10 @@ def _build_persona_summary() -> str:
         parts.append(employer)
     elif title:
         parts.append(title)
+
+    # Minimal mode: name + title only (R25)
+    if weight < 0.7:
+        return ". ".join(parts) if parts else ""
 
     # Family
     family_json = get_setting("user_family") or "[]"
@@ -251,15 +304,31 @@ def _get_last_user_activity(conversation_id: str) -> dict:
     }
 
 
-def _build_temporal_context(conversation_id: str = "") -> str:
-    """Build temporal context string from location + time + elapsed activity."""
+def _build_temporal_context(conversation_id: str = "",
+                            weight: float = 1.0) -> str:
+    """Build temporal context string from location + time + elapsed activity.
+
+    Args:
+        conversation_id: Active conversation for elapsed-time query.
+        weight: Pre-cognition weight (R25). At < 0.7, returns date + time only.
+    """
     try:
         from atlas.temporal import get_temporal_context, format_temporal_prompt
         lat = float(get_setting("location_lat") or "46.8290")
         lon = float(get_setting("location_lon") or "-96.8540")
         tz = get_setting("location_tz") or "America/Chicago"
         temporal_ctx = get_temporal_context(lat=lat, lon=lon, timezone=tz)
-        temporal_text = format_temporal_prompt(temporal_ctx)
+
+        # Minimal mode: date + time of day only (R25)
+        if weight < 0.7:
+            parts = []
+            if temporal_ctx.get("date_display"):
+                parts.append(temporal_ctx["date_display"])
+            if temporal_ctx.get("time_of_day"):
+                parts.append(f"Time of day: {temporal_ctx['time_of_day']}")
+            temporal_text = ". ".join(parts) if parts else ""
+        else:
+            temporal_text = format_temporal_prompt(temporal_ctx)
     except Exception:
         temporal_text = ""
 
@@ -279,11 +348,17 @@ def _build_temporal_context(conversation_id: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 def _build_conversation_state(history: list[dict] | None = None,
-                              conversation_id: str = "") -> str:
+                              conversation_id: str = "",
+                              weight: float = 1.0) -> str:
     """Build conversation state with real metrics from the database.
 
     Queries actual turn count and creation date from the conversations table
     instead of relying on the sliding window size.
+
+    Args:
+        history: Conversation history for window size calculation.
+        conversation_id: Active conversation for DB query.
+        weight: Pre-cognition weight (R25). At < 0.7, returns turn count only.
     """
     actual_turns = None
     conversation_created = None
@@ -303,7 +378,8 @@ def _build_conversation_state(history: list[dict] | None = None,
 
     if actual_turns is not None and actual_turns > 0:
         parts.append(f"This conversation has {actual_turns} turns total.")
-        if window_size > 0 and actual_turns > window_size:
+        # Minimal mode: turn count only (R25)
+        if weight >= 0.7 and window_size > 0 and actual_turns > window_size:
             parts.append(
                 f"You can see the last {window_size} turns in your context window. "
                 "Earlier turns are available through your memory (RAG) if needed."
@@ -311,7 +387,7 @@ def _build_conversation_state(history: list[dict] | None = None,
     elif window_size > 0:
         parts.append(f"You can see {window_size} turns in your current context.")
 
-    if conversation_created:
+    if weight >= 0.7 and conversation_created:
         parts.append(f"This conversation started on {conversation_created[:10]}.")
 
     if not parts:
@@ -324,8 +400,12 @@ def _build_conversation_state(history: list[dict] | None = None,
 # Layer 7 — Self-Introspection
 # ---------------------------------------------------------------------------
 
-def _build_introspection_context() -> str:
-    """Build self-awareness block from recent Slumber evaluations."""
+def _build_introspection_context(weight: float = 1.0) -> str:
+    """Build self-awareness block from recent Slumber evaluations.
+
+    Args:
+        weight: Pre-cognition weight (R25). At > 1.3, includes rationales.
+    """
     try:
         from db.chat_operations import get_recent_introspection
         data = get_recent_introspection()
@@ -335,10 +415,16 @@ def _build_introspection_context() -> str:
         avg = data.get("avg_quality", 0)
         keywords = data.get("top_keywords", [])
         kw_str = ", ".join(keywords[:5]) if keywords else "various"
-        return (
+        text = (
             f"\u2014 Self-awareness: {count} of your recent interactions have been "
             f"evaluated. Average quality: {avg:.2f}. Strong topics: {kw_str}."
         )
+        # Expanded mode: include recent rationales (R25)
+        if weight > 1.3:
+            rationales = data.get("recent_rationales", [])
+            if rationales:
+                text += " Recent evaluator notes: " + "; ".join(rationales[:2]) + "."
+        return text
     except Exception:
         return ""
 
@@ -348,18 +434,26 @@ def _build_introspection_context() -> str:
 # ---------------------------------------------------------------------------
 
 def compose_system_prompt(history: list[dict] | None = None,
-                          conversation_id: str = "") -> tuple[str, dict]:
+                          conversation_id: str = "",
+                          directives: dict | None = None) -> tuple[str, dict]:
     """Compose the full multi-layer system prompt for Janus.
 
-    Assembles 7 layers: Identity Core, Relational Context, Temporal Grounding,
-    Conversation State, Self-Knowledge Boundary, Platform Context,
-    Self-Introspection + Behavioral Guidelines.
+    Assembles up to 9 layers: Identity Core, Relational Context,
+    Memory Directive (R25), Temporal Grounding, Conversation State,
+    Self-Knowledge Boundary, Platform Context, Self-Introspection,
+    Behavioral Guidelines + Tone Directive (R25).
+
+    Pre-cognition directives (R25) modulate layer weights to select between
+    minimal/standard/expanded variants. Default weights (all 1.0) produce
+    identical output to pre-R25 behavior.
 
     Args:
         history: Conversation history (list of role/content dicts). Used to
             derive turn count for conversation state awareness.
         conversation_id: Active conversation ID for elapsed-time and turn-count
             queries (R23).
+        directives: Pre-cognition directives dict (R25) with layer_weights,
+            tone_directive, memory_directive. None = default weights.
 
     Returns:
         Tuple of (complete system prompt string, layers dict). Each layer entry
@@ -370,11 +464,16 @@ def compose_system_prompt(history: list[dict] | None = None,
 
     sections = []
     layers = {}
+    weights = (directives or {}).get("layer_weights", {})
 
     def _add(name: str, text: str) -> None:
         """Append a layer to both sections list and layers dict."""
         sections.append(text)
         layers[name] = {"text": text, "chars": len(text)}
+
+    def _w(name: str) -> float:
+        """Get weight for a layer, default 1.0."""
+        return float(weights.get(name, 1.0))
 
     # --- Layer 1: Identity Core ---
     try:
@@ -383,7 +482,15 @@ def compose_system_prompt(history: list[dict] | None = None,
     except Exception:
         domain_names = "various"
 
-    _add("identity_core", JANUS_IDENTITY.format(domains=domain_names))
+    w = _w("identity_core")
+    id_text = _select_variant(
+        w,
+        JANUS_IDENTITY_MINIMAL.format(domains=domain_names),
+        JANUS_IDENTITY.format(domains=domain_names),
+        JANUS_IDENTITY.format(domains=domain_names),
+    )
+    if id_text:
+        _add("identity_core", id_text)
 
     # --- Bootstrap lifecycle caveat ---
     lifecycle_state = get_setting("janus_lifecycle_state") or "sleeping"
@@ -396,39 +503,77 @@ def compose_system_prompt(history: list[dict] | None = None,
         _add("bootstrap_caveat", caveat)
 
     # --- Layer 2: Relational Context ---
-    persona_line = _build_persona_summary()
-    if persona_line:
-        _add("relational_context", f"\u2014 About Mat: {persona_line}")
+    w = _w("relational_context")
+    if w >= 0.3:
+        persona_line = _build_persona_summary(weight=w)
+        if persona_line:
+            _add("relational_context", f"\u2014 About Mat: {persona_line}")
+
+    # --- R25: Memory Directive (between relational and temporal) ---
+    memory_dir = (directives or {}).get("memory_directive", "")
+    if memory_dir:
+        _add("memory_directive", f"[Memory note: {memory_dir}]")
 
     # --- Layer 3: Temporal Grounding ---
-    temporal = _build_temporal_context(conversation_id=conversation_id)
-    if temporal:
-        _add("temporal_grounding", temporal)
+    w = _w("temporal_grounding")
+    if w >= 0.3:
+        temporal = _build_temporal_context(conversation_id=conversation_id,
+                                           weight=w)
+        if temporal:
+            _add("temporal_grounding", temporal)
 
     # --- Layer 4: Conversation State ---
-    state_text = _build_conversation_state(history=history,
-                                           conversation_id=conversation_id)
-    if state_text:
-        _add("conversation_state", state_text)
+    w = _w("conversation_state")
+    if w >= 0.3:
+        state_text = _build_conversation_state(history=history,
+                                               conversation_id=conversation_id,
+                                               weight=w)
+        if state_text:
+            _add("conversation_state", state_text)
 
     # --- Layer 5: Self-Knowledge Boundary ---
-    _add("knowledge_boundary", KNOWLEDGE_BOUNDARY)
+    w = _w("knowledge_boundary")
+    kb_text = _select_variant(
+        w,
+        KNOWLEDGE_BOUNDARY_MINIMAL,
+        KNOWLEDGE_BOUNDARY,
+        KNOWLEDGE_BOUNDARY,
+    )
+    if kb_text:
+        _add("knowledge_boundary", kb_text)
 
     # --- Layer 6: Platform Context ---
-    try:
-        context = get_context_snapshot()
-        if context:
-            _add("platform_context",
-                 f"Your awareness of the current project landscape:\n{context}")
-    except Exception:
-        pass
+    w = _w("platform_context")
+    if w >= 0.3:
+        try:
+            context = get_context_snapshot()
+            if context:
+                _add("platform_context",
+                     f"Your awareness of the current project landscape:\n{context}")
+        except Exception:
+            pass
 
     # --- Layer 7: Self-Introspection ---
-    introspection = _build_introspection_context()
-    if introspection:
-        _add("self_introspection", introspection)
+    w = _w("self_introspection")
+    if w >= 0.3:
+        introspection = _build_introspection_context(weight=w)
+        if introspection:
+            _add("self_introspection", introspection)
 
     # --- Behavioral Guidelines ---
-    _add("behavioral_guidelines", BEHAVIORAL_GUIDELINES)
+    w = _w("behavioral_guidelines")
+    bg_text = _select_variant(
+        w,
+        BEHAVIORAL_GUIDELINES_MINIMAL,
+        BEHAVIORAL_GUIDELINES,
+        BEHAVIORAL_GUIDELINES_EXPANDED,
+    )
+    if bg_text:
+        _add("behavioral_guidelines", bg_text)
+
+    # --- R25: Tone Directive (after behavioral guidelines) ---
+    tone_dir = (directives or {}).get("tone_directive", "")
+    if tone_dir:
+        _add("tone_directive", f"[Tone for this turn: {tone_dir}]")
 
     return "\n\n".join(sections), layers

@@ -359,6 +359,7 @@ def add_message_metadata(
     eval_emotional_register: str = "",
     eval_provider: str = "",
     eval_model: str = "",
+    cognition_precognition: str = "",
 ) -> str:
     """Add metadata for a message (timing, RAG snapshot, labels, pipeline observability).
 
@@ -385,6 +386,7 @@ def add_message_metadata(
         eval_emotional_register: Detected emotional tone (R22)
         eval_provider: Provider that performed evaluation (R22)
         eval_model: Model that performed evaluation (R22)
+        cognition_precognition: JSON of pre-cognition trace (R25)
 
     Returns:
         The ID of the created metadata record
@@ -399,8 +401,9 @@ def add_message_metadata(
                  keywords, labels, quality_score,
                  system_prompt_length, rag_context_text, rag_synthesized,
                  cognition_prompt_layers, cognition_graph_trace,
-                 eval_rationale, eval_emotional_register, eval_provider, eval_model)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 eval_rationale, eval_emotional_register, eval_provider, eval_model,
+                 cognition_precognition)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             message_id, latency_total_ms, latency_rag_ms, latency_inference_ms,
             rag_hit_count, rag_hits_used, rag_collections,
@@ -409,6 +412,7 @@ def add_message_metadata(
             system_prompt_length, rag_context_text, rag_synthesized,
             cognition_prompt_layers, cognition_graph_trace,
             eval_rationale, eval_emotional_register, eval_provider, eval_model,
+            cognition_precognition,
         ))
         conn.commit()
         cursor.execute("SELECT id FROM messages_metadata WHERE rowid = ?", (cursor.lastrowid,))

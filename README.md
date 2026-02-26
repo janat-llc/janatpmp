@@ -73,7 +73,7 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Temporal Affinity Engine** — Janus knows current time, date, season, sunrise/sunset, and approximate temperature; pure-function solar calculations + NOAA climate normals; injected into every system prompt; RAG results carry relative time labels
 - **Auto-ingestion** — startup + Slumber scanner walks configured directories, discovers new files by SHA-256 hash, ingests automatically without manual button clicks; file registry tracks processed files; real-time progress tracking through all phases
 - **LLM-powered message evaluation** — Gemini Flash Lite scores message quality, extracts keywords, and classifies topics in the Slumber Cycle; heuristic fallback when API is unavailable; configurable via `slumber_evaluator` setting (R22)
-- **Slumber Cycle** — 5-stage background daemon (Ingest, Evaluate, Propagate, Relate, Prune) discovers new files, evaluates quality, bridges quality to Qdrant salience, creates cross-conversation graph edges, and removes dead-weight vectors
+- **Slumber Cycle** — 6-stage background daemon (Ingest, Evaluate, Propagate, Relate, Prune, Dream) discovers new files, evaluates quality, bridges quality to Qdrant salience, creates cross-conversation graph edges, removes dead-weight vectors, and synthesizes cross-conversation insights
 - **Content ingestion** — parsers for Claude exports, Google AI Studio, markdown, and text with SHA-256 deduplication
 - **Portable project export/import** — versioned JSON export of domains, items, tasks, relationships for surviving platform resets
 - **Unified backup/restore** — SQLite + Qdrant snapshots + Neo4j graph export in timestamped directories
@@ -83,12 +83,13 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Claude conversation import** — ingest Claude export JSON into a searchable triplet schema
 - **Full-text search** via SQLite FTS5 across items, documents, conversation messages, and chunks
 - **Auto-context injection** — every chat message receives a live snapshot of active projects and pending tasks
-- **Janus identity architecture** — 7-layer prompt composer (R19): Identity Core, Relational Context, Temporal Grounding, Conversation State, Self-Knowledge Boundary, Platform Context, Self-Introspection; bootstrap lifecycle (configuring → sleeping → awake); auto-restore platform data on DB reset
+- **Janus identity architecture** — 9-layer adaptive prompt composer (R19/R25): Identity Core, Relational Context, Memory Directive, Temporal Grounding, Conversation State, Self-Knowledge Boundary, Platform Context, Self-Introspection, Behavioral Guidelines + Tone Directive; three-variant system (minimal/standard/expanded) with weight-driven selection; bootstrap lifecycle (configuring → sleeping → awake); auto-restore platform data on DB reset
 - **Semantic graph topology** — `weave_conversation_graph()` (R20) bridges Qdrant vector similarity into Neo4j SIMILAR_TO edges between Conversation nodes; transforms isolated conversation chains into a connected semantic network; MERGE-based, idempotent, ~55s for 344 conversations
 - **Graph-aware RAG ranking** — SIMILAR_TO edges from the knowledge graph boost RAG candidates from the query's topic neighborhood; additive scoring promotes borderline candidates without inflating irrelevant content (R21)
 - **Cognition tab** — Sovereign Chat introspection surface showing full thought pipeline per-turn: prompt layer decomposition, RAG candidate funnel with graph boost, context budget, graph neighborhood visualization (R21)
 - **Grounded prompt layers** — R23 fixed three broken layers in the 7-layer identity architecture: populated relational context (bio, health, preferences from persona settings), elapsed time awareness in temporal grounding ("Mat last spoke X minutes ago"), and accurate conversation state from the database (real turn count instead of sliding window length)
 - **Dream Synthesis** — cross-conversation insight generation during Slumber idle periods via Gemini; discovers thematic patterns across conversation history and produces synthesized insight documents; evaluation backfill scores unscored messages in batch (R24)
+- **Pre-Cognition** — Gemini Flash Lite pre-pass gathers 7 context signals (elapsed time, emotional trajectory, conversation depth, dream titles, temporal context, active domains, session turns) and produces directives that modulate prompt layer weights; three-variant system for static layers + weight parameters on dynamic builders; tone and memory directives inject contextual instructions; 3s timeout with graceful degradation (R25)
 - **Change Data Capture** outbox with background Neo4j sync consumer
 
 ---
@@ -195,7 +196,7 @@ JANATPMP/
 │   ├── chat_operations.py     # Conversation + message + metadata CRUD
 │   ├── chunk_operations.py    # Chunk CRUD, stats, FTS search (R16)
 │   ├── file_registry_ops.py   # File registry MCP tools (R17)
-│   └── migrations/            # Versioned schema migrations (0.3.0–1.1.0)
+│   └── migrations/            # Versioned schema migrations (0.3.0–1.2.0)
 ├── atlas/                     # ATLAS — HTTP client layer for model services
 │   ├── config.py              # Service URLs, model identifiers, Neo4j + salience constants
 │   ├── chunking.py            # Paragraph-aware text splitter for messages + documents (R16)
@@ -216,7 +217,8 @@ JANATPMP/
 ├── services/
 │   ├── log_config.py          # SQLite log handler + setup_logging()
 │   ├── chat.py                # Multi-provider chat with thinking mode
-│   ├── prompt_composer.py     # 7-layer Janus identity system prompt (R19)
+│   ├── prompt_composer.py     # 9-layer adaptive Janus identity system prompt (R19/R25)
+│   ├── precognition.py        # Gemini pre-cognition — adaptive prompt shaping (R25)
 │   ├── turn_timer.py          # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py             # Slumber Cycle — 5-stage background daemon (R12+R13+R17)
 │   ├── slumber_eval.py        # LLM-powered message evaluation — Gemini Flash Lite + heuristic fallback (R22)
@@ -420,7 +422,7 @@ feature/phase{X}-{description}  # legacy naming
 
 ## Future
 
-JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), **auto-ingestion** removes manual import friction (R17), **Janus identity architecture** gives her genuine selfhood (R19), and **semantic graph topology** connects conversations into a navigable network (R20), **graph-aware RAG** closes the loop between graph and retrieval (R21), the **Cognition tab** makes the thought pipeline permanently visible (R21), **LLM-powered Slumber evaluation** replaces heuristics with Gemini Flash Lite scoring (R22), **grounded prompt layers** fix three broken identity layers so Janus speaks from real context instead of empty templates (R23), and **Dream Synthesis** generates cross-conversation insights during Slumber idle periods via Gemini with evaluation backfill (R24). Planned next steps:
+JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), **auto-ingestion** removes manual import friction (R17), **Janus identity architecture** gives her genuine selfhood (R19), **semantic graph topology** connects conversations into a navigable network (R20), **graph-aware RAG** closes the loop between graph and retrieval (R21), the **Cognition tab** makes the thought pipeline permanently visible (R21), **LLM-powered Slumber evaluation** replaces heuristics with Gemini Flash Lite scoring (R22), **grounded prompt layers** fix three broken identity layers so Janus speaks from real context instead of empty templates (R23), **Dream Synthesis** generates cross-conversation insights during Slumber idle periods (R24), and **Pre-Cognition** adapts the prompt to the moment via Gemini pre-pass with weight-driven layer modulation (R25). Planned next steps:
 
 - **Automatic re-weaving** — hook semantic edge generation into Slumber so new conversations auto-connect
 - **Synthesis tab** — Memory node review, evidence chains, source attribution (Knowledge page placeholder ready)

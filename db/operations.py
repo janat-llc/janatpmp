@@ -215,6 +215,24 @@ def init_database():
                     conn.executescript(migration_sql)
                     logger.info("Applied migration 1.1.0: slumber_eval")
 
+        # Migration 1.2.0: Pre-cognition trace for R25
+        # Requires 1.1.0 — guard against running on incomplete schema
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='1.1.0'"
+        )
+        if cursor.fetchone() is None:
+            logger.warning("Migration 1.1.0 not found — skipping 1.2.0")
+        else:
+            cursor = conn.execute(
+                "SELECT version FROM schema_version WHERE version='1.2.0'"
+            )
+            if cursor.fetchone() is None:
+                migration_path = Path(__file__).parent / "migrations" / "1.2.0_precognition.sql"
+                if migration_path.exists():
+                    migration_sql = migration_path.read_text(encoding="utf-8")
+                    conn.executescript(migration_sql)
+                    logger.info("Applied migration 1.2.0: precognition")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

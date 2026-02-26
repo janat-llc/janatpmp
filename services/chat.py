@@ -171,22 +171,27 @@ You are a collaborator, not just an assistant. Be thoughtful, expressive, and th
 
 
 def _build_system_prompt(history: list[dict] = None,
-                         conversation_id: str = "") -> tuple[str, dict]:
+                         conversation_id: str = "",
+                         directives: dict = None) -> tuple[str, dict]:
     """Compose the full system prompt via the R19 prompt composer.
 
-    Delegates to services/prompt_composer.py which assembles 7 layers:
-    Identity Core, Relational Context, Temporal Grounding, Conversation State,
-    Self-Knowledge Boundary, Platform Context, Self-Introspection.
+    Delegates to services/prompt_composer.py which assembles up to 9 layers:
+    Identity Core, Relational Context, Memory Directive, Temporal Grounding,
+    Conversation State, Self-Knowledge Boundary, Platform Context,
+    Self-Introspection, Behavioral Guidelines + Tone Directive.
 
     Args:
         history: Conversation history for turn count awareness.
         conversation_id: Active conversation ID for temporal/state queries.
+        directives: Pre-cognition directives dict (R25) with layer_weights,
+            tone_directive, memory_directive. None = default weights.
 
     Returns:
         Tuple of (system prompt string, layers dict with per-layer text and char counts).
     """
     from services.prompt_composer import compose_system_prompt
-    return compose_system_prompt(history or [], conversation_id=conversation_id)
+    return compose_system_prompt(history or [], conversation_id=conversation_id,
+                                 directives=directives)
 
 
 _EMPTY_RAG_METRICS = {
@@ -1180,7 +1185,17 @@ def chat(message: str, history: list[dict],
         set_setting("janus_lifecycle_state", "awake")
         logger.info("Bootstrap: first chat message, state → awake")
 
-    system_prompt, prompt_layers = _build_system_prompt(history, conversation_id)
+    # R25: Pre-cognition — adaptive prompt shaping
+    precog_directives = {}
+    try:
+        from services.precognition import run_precognition
+        precog_directives = run_precognition(conversation_id, history,
+                                             user_message=message)
+    except Exception as e:
+        logger.debug("Pre-cognition unavailable: %s", e)
+
+    system_prompt, prompt_layers = _build_system_prompt(
+        history, conversation_id, directives=precog_directives)
     if system_prompt_append and system_prompt_append.strip():
         system_prompt += f"\n\n{system_prompt_append.strip()}"
 
@@ -1244,6 +1259,7 @@ def chat(message: str, history: list[dict],
                     "graph_trace": rag_metrics.get("graph_trace", {}),
                     "rag_query": message,
                     "history_turns_sent": len(history) // 2,
+                    "precognition": precog_directives,  # R25
                 },
             }
         except Exception as e:

@@ -164,6 +164,8 @@ def _handle_send(message, history, conv_id, provider, model,
                     cognition_trace.get("prompt_layers", {})),
                 cognition_graph_trace=json.dumps(
                     cognition_trace.get("graph_trace", {})),
+                cognition_precognition=json.dumps(
+                    cognition_trace.get("precognition", {})),
             )
 
             # Usage signal: estimate which RAG hits the model actually used
@@ -698,6 +700,54 @@ def build_chat_page():
                 prompt_layers = trace.get("prompt_layers", {})
                 graph_trace = trace.get("graph_trace", {})
 
+                # --- Section 0: Pre-Cognition (R25) ---
+                precog = trace.get("precognition", {})
+                if precog.get("precognition_used"):
+                    gr.Markdown(
+                        "### Pre-Cognition",
+                        key="cog-precog-header",
+                    )
+
+                    pcog_weights = precog.get("layer_weights", {})
+                    weight_lines = []
+                    for lname, w in pcog_weights.items():
+                        display = layer_names.get(
+                            lname, lname.replace("_", " ").title()
+                        )
+                        if w > 1.1:
+                            indicator = "\u25b2"
+                        elif w < 0.9:
+                            indicator = "\u25bc"
+                        else:
+                            indicator = "\u25cf"
+                        weight_lines.append(
+                            f"- {indicator} **{display}**: {w:.1f}"
+                        )
+                    gr.Markdown(
+                        "\n".join(weight_lines),
+                        key="cog-precog-weights",
+                    )
+
+                    tone = precog.get("tone_directive", "")
+                    if tone:
+                        gr.Markdown(
+                            f"**Tone:** {tone}",
+                            key="cog-precog-tone",
+                        )
+                    memory = precog.get("memory_directive", "")
+                    if memory:
+                        gr.Markdown(
+                            f"**Memory focus:** {memory}",
+                            key="cog-precog-memory",
+                        )
+
+                    latency = precog.get("latency_ms", 0)
+                    gr.Markdown(
+                        f"*Latency: {latency}ms*",
+                        key="cog-precog-latency",
+                    )
+                    gr.Markdown("---", key="cog-precog-sep")
+
                 # --- Section 1: Prompt Assembly ---
                 layer_count = len(prompt_layers)
                 total_chars = sum(
@@ -713,12 +763,14 @@ def build_chat_page():
                     "identity_core": "Identity Core",
                     "bootstrap_caveat": "Bootstrap Caveat",
                     "relational_context": "Relational Context",
+                    "memory_directive": "Memory Directive",
                     "temporal_grounding": "Temporal Grounding",
                     "conversation_state": "Conversation State",
                     "knowledge_boundary": "Knowledge Boundary",
                     "platform_context": "Platform Context",
                     "self_introspection": "Self-Introspection",
                     "behavioral_guidelines": "Behavioral Guidelines",
+                    "tone_directive": "Tone Directive",
                 }
 
                 for i, (key, layer) in enumerate(prompt_layers.items()):
