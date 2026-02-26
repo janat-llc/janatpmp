@@ -180,7 +180,7 @@ SETTINGS_REGISTRY = {
 
     # Slumber Evaluation (R22: First Light)
     "slumber_eval_provider":   ("gemini", False, "system", None),
-    "slumber_eval_model":      ("gemini-2.0-flash-lite", False, "system", None),
+    "slumber_eval_model":      ("gemini-2.5-flash-lite", False, "system", None),
     "slumber_eval_enabled":    ("true", False, "system", None),
 
     # Janus Identity (R19)
@@ -244,6 +244,7 @@ def init_settings():
         ("janus_context_messages", "50"),
         ("janus_lifecycle_state", "awake"),  # R19: reset to sleeping on every restart
         ("slumber_evaluator", "heuristic"),  # R22: superseded by slumber_eval_* settings
+        ("slumber_eval_model", "gemini-2.0-flash-lite"),  # R22: deprecated, use 2.5
     ]
 
     with get_connection() as conn:

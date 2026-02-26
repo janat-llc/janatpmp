@@ -148,7 +148,7 @@ def evaluate_message(
     from services.settings import get_setting
 
     provider = provider or get_setting("slumber_eval_provider") or "gemini"
-    model = model or get_setting("slumber_eval_model") or "gemini-2.0-flash-lite"
+    model = model or get_setting("slumber_eval_model") or "gemini-2.5-flash-lite"
     api_key = api_key or get_setting("chat_api_key") or ""
 
     if not api_key:
