@@ -81,6 +81,9 @@ DREAM_SIMILARITY_THRESHOLD = 0.6 # Qdrant cosine threshold for cross-conv matche
 DREAM_CYCLE_INTERVAL = 5         # Dream every Nth slumber cycle
 DREAM_TEMPERATURE = 0.7          # Gemini temperature (creative for synthesis)
 
+# --- Slumber Graph Weave (R27) ---
+WEAVE_CYCLE_INTERVAL = 5         # Weave every Nth slumber cycle (same as Dream)
+
 # --- Pre-Cognition (R25) ---
 PRECOGNITION_TIMEOUT_MS = 3000   # Max wait for Gemini pre-pass (ms)
 PRECOGNITION_WEIGHT_MIN = 0.0    # Floor for layer weights

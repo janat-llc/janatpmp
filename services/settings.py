@@ -187,6 +187,9 @@ SETTINGS_REGISTRY = {
     "slumber_dream_enabled":      ("true", False, "system", None),
     "slumber_dream_min_quality":  ("0.7",  False, "system", _validate_float_0_1),
 
+    # Graph Weave (R27)
+    "last_graph_weave_at":        ("", False, "system", None),
+
     # Pre-Cognition (R25)
     "precognition_enabled":    ("true", False, "system", None),
     "precognition_timeout_ms": ("3000", False, "system", _validate_positive_int),

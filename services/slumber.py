@@ -30,7 +30,7 @@ _slumber_thread = None
 
 # --- Slumber activity state (R22) — read by UI via get_slumber_status() ---
 _slumber_status = {
-    "state": "idle",           # idle | ingesting | evaluating | propagating | relating | pruning | dreaming
+    "state": "idle",           # idle | ingesting | evaluating | propagating | relating | pruning | dreaming | weaving
     "last_cycle_at": None,     # ISO timestamp of last completed cycle
     "last_evaluated": 0,       # Messages evaluated in last cycle
     "last_propagated": 0,      # Messages propagated in last cycle
@@ -43,7 +43,10 @@ _slumber_status = {
     "last_dreamed": 0,         # Insights created in last cycle
     "dream_edges": 0,          # Graph edges created in last cycle
     "total_dreams": 0,         # Cumulative insights since startup
-    "_cycle_count": 4,         # Internal: starts at INTERVAL-1 so first dream fires on first eligible cycle
+    # Graph Weave (R27)
+    "last_woven": 0,           # Edges woven in last cycle
+    "total_woven": 0,          # Cumulative edges since startup
+    "_cycle_count": 4,         # Internal: starts at INTERVAL-1 so first dream/weave fires on first eligible cycle
 }
 
 # Words too common to be meaningful keywords
@@ -83,7 +86,8 @@ def get_slumber_status() -> dict:
     Returns:
         Dict with keys: state, last_cycle_at, last_evaluated,
         last_propagated, last_related, last_pruned, eval_method,
-        total_evaluated, error.
+        total_evaluated, last_dreamed, dream_edges, total_dreams,
+        last_woven, total_woven, error.
     """
     return dict(_slumber_status)
 
@@ -588,8 +592,34 @@ def _dream_batch():
         )
 
 
+def _should_weave() -> bool:
+    """Check if graph weaving should run this cycle.
+
+    Uses the same _cycle_count as _should_dream — both fire on their
+    respective intervals independently.
+    """
+    from atlas.config import WEAVE_CYCLE_INTERVAL
+
+    return _slumber_status["_cycle_count"] % WEAVE_CYCLE_INTERVAL == 0
+
+
+def _weave_batch():
+    """Sub-cycle 6: Weave semantic edges for new conversations."""
+    from graph.semantic_edges import weave_new_conversations
+
+    result = weave_new_conversations()
+    _slumber_status["last_woven"] = result.get("edges_created", 0)
+    _slumber_status["total_woven"] += result.get("edges_created", 0)
+    if result.get("edges_created", 0) > 0:
+        logger.info(
+            "Slumber weave: %d edges from %d conversations",
+            result["edges_created"],
+            result["conversations_processed"],
+        )
+
+
 def _slumber_cycle():
-    """Background thread: Ingest → Evaluate → Propagate → Relate → Prune → Dream during idle."""
+    """Background thread: Ingest → Evaluate → Propagate → Relate → Prune → Dream → Weave during idle."""
     while True:
         time.sleep(CYCLE_INTERVAL_SECONDS)
         if not _is_idle():
@@ -656,6 +686,15 @@ def _slumber_cycle():
             except Exception as e:
                 _slumber_status["error"] = str(e)
                 logger.debug("Slumber dream error: %s", e)
+
+        # Sub-cycle 6: Graph Weave (R27)
+        if _should_weave():
+            _slumber_status["state"] = "weaving"
+            try:
+                _weave_batch()
+            except Exception as e:
+                _slumber_status["error"] = str(e)
+                logger.debug("Slumber weave error: %s", e)
 
         _slumber_status["state"] = "idle"
         _slumber_status["last_cycle_at"] = datetime.now().isoformat()

@@ -118,8 +118,20 @@ def _get_message_context(
     return conv_title, created_at, sequence or 0
 
 
-def _insert_chunks(message_id: str, chunks: list[dict], point_ids: list[str]) -> None:
-    """Persist chunk records to SQLite chunks table."""
+def _insert_chunks_for(
+    entity_type: str,
+    entity_id: str,
+    chunks: list[dict],
+    point_ids: list[str],
+) -> None:
+    """Persist chunk records to SQLite chunks table.
+
+    Args:
+        entity_type: 'message' or 'document'.
+        entity_id: The parent entity ID.
+        chunks: List of chunk dicts from atlas/chunking.py.
+        point_ids: Corresponding Qdrant point IDs.
+    """
     try:
         from db.operations import get_connection
         with get_connection() as conn:
@@ -128,13 +140,13 @@ def _insert_chunks(message_id: str, chunks: list[dict], point_ids: list[str]) ->
                     """INSERT OR IGNORE INTO chunks
                        (entity_type, entity_id, chunk_index, chunk_text,
                         char_start, char_end, position, point_id, embedded_at)
-                       VALUES ('message', ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                    (message_id, chunk["index"], chunk["text"],
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    (entity_type, entity_id, chunk["index"], chunk["text"],
                      chunk["char_start"], chunk["char_end"],
                      chunk["position"], point_id),
                 )
     except Exception as e:
-        logger.warning("on_write chunk insert failed for %s: %s", message_id[:12], e)
+        logger.warning("on_write chunk insert failed for %s: %s", entity_id[:12], e)
 
 
 def _embed(
@@ -211,7 +223,7 @@ def _embed(
             upsert_point(COLLECTION_MESSAGES, point_id, vector, payload)
 
         # Persist chunk records to SQLite
-        _insert_chunks(message_id, chunks, point_ids)
+        _insert_chunks_for("message", message_id, chunks, point_ids)
 
         logger.debug(
             "on_write embed: %s -> %d chunk(s) in Qdrant",
@@ -251,3 +263,189 @@ def _relate(message_id: str, rag_hits: list[dict] | None) -> None:
 
     except Exception as e:
         logger.debug("on_write relate skipped for %s: %s", message_id[:12], e)
+
+
+# ---------------------------------------------------------------------------
+# R27: On-write hooks for non-message entities
+# ---------------------------------------------------------------------------
+
+
+def on_document_write(
+    document_id: str,
+    title: str,
+    content: str,
+    doc_type: str = "",
+    source: str = "",
+) -> None:
+    """Synchronous chunk + embed a document into Qdrant.
+
+    Called after create_document() to make the document immediately
+    retrievable via RAG search. Follows the same try/except isolation
+    pattern as on_message_write() — Qdrant/Ollama being down never
+    blocks document creation.
+
+    Args:
+        document_id: The persisted document ID from create_document().
+        title: Document title.
+        content: Document content text.
+        doc_type: Document type (file, artifact, research, etc.).
+        source: Document source (upload, agent, manual, etc.).
+    """
+    if len(content) < 20:
+        return
+
+    try:
+        from datetime import datetime, timezone
+
+        from atlas.chunking import chunk_document
+        from services.embedding import embed_passages
+        from services.settings import get_setting
+        from services.vector_store import COLLECTION_DOCUMENTS, upsert_point
+
+        max_chars = int(get_setting("chunk_max_chars") or 2500)
+        threshold = int(get_setting("chunk_threshold") or 3000)
+
+        chunks = chunk_document(
+            content, title=title or "",
+            max_chars=max_chars, threshold=threshold,
+        )
+        if not chunks:
+            return
+
+        chunk_total = len(chunks)
+        point_ids = [
+            _generate_point_id(document_id, c["index"], chunk_total)
+            for c in chunks
+        ]
+
+        chunk_texts = [c["text"] for c in chunks]
+        vectors = embed_passages(chunk_texts)
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        base_payload = {
+            "parent_document_id": document_id,
+            "title": title or "",
+            "doc_type": doc_type,
+            "source": source,
+            "created_at": now_iso,
+            "salience": SALIENCE_DEFAULT,
+            "entity_type": "document",
+        }
+
+        for chunk, vector, point_id in zip(chunks, vectors, point_ids):
+            payload = {
+                **base_payload,
+                "text": chunk["text"],
+                "chunk_index": chunk["index"],
+                "chunk_total": chunk_total,
+                "chunk_position": chunk["position"],
+            }
+            upsert_point(COLLECTION_DOCUMENTS, point_id, vector, payload)
+
+        _insert_chunks_for("document", document_id, chunks, point_ids)
+
+        logger.debug(
+            "on_write embed document: %s -> %d chunk(s) in Qdrant",
+            document_id[:12], chunk_total,
+        )
+
+    except Exception as e:
+        logger.warning("on_write embed document failed for %s: %s",
+                        document_id[:12], e)
+
+
+def on_item_write(
+    item_id: str,
+    entity_type: str,
+    domain: str,
+    title: str,
+    description: str = "",
+) -> None:
+    """Embed an item into Qdrant for immediate RAG discoverability.
+
+    Items are short texts — no chunking needed, single vector each.
+    Payload matches embed_all_items() in services/bulk_embed.py.
+
+    Args:
+        item_id: The persisted item ID from create_item().
+        entity_type: Item type (project, epic, feature, etc.).
+        domain: Domain name.
+        title: Item title.
+        description: Optional item description.
+    """
+    text = f"{entity_type}: {title}"
+    if description:
+        text += f"\n{description}"
+    if len(text) < 10:
+        return
+
+    try:
+        from services.embedding import embed_passages
+        from services.vector_store import COLLECTION_DOCUMENTS, upsert_point
+
+        vectors = embed_passages([text])
+        payload = {
+            "text": text,
+            "entity_type": "item",
+            "item_type": entity_type,
+            "title": title or "",
+            "domain": domain or "",
+            "status": "not_started",
+            "priority": 3,
+        }
+        upsert_point(COLLECTION_DOCUMENTS, item_id, vectors[0], payload)
+
+        logger.debug("on_write embed item: %s", item_id[:12])
+
+    except Exception as e:
+        logger.warning("on_write embed item failed for %s: %s",
+                        item_id[:12], e)
+
+
+def on_task_write(
+    task_id: str,
+    task_type: str,
+    title: str,
+    description: str = "",
+    agent_instructions: str = "",
+) -> None:
+    """Embed a task into Qdrant for immediate RAG discoverability.
+
+    Tasks are short texts — no chunking needed, single vector each.
+    Payload matches embed_all_tasks() in services/bulk_embed.py.
+
+    Args:
+        task_id: The persisted task ID from create_task().
+        task_type: Task type (agent_story, research, etc.).
+        title: Task title.
+        description: Optional task description.
+        agent_instructions: Optional detailed instructions.
+    """
+    text = f"Task: {title}"
+    if description:
+        text += f"\n{description}"
+    if agent_instructions:
+        text += f"\n{agent_instructions}"
+    if len(text) < 10:
+        return
+
+    try:
+        from services.embedding import embed_passages
+        from services.vector_store import COLLECTION_DOCUMENTS, upsert_point
+
+        vectors = embed_passages([text])
+        payload = {
+            "text": text,
+            "entity_type": "task",
+            "task_type": task_type or "",
+            "title": title or "",
+            "assigned_to": "",
+            "status": "not_started",
+        }
+        upsert_point(COLLECTION_DOCUMENTS, task_id, vectors[0], payload)
+
+        logger.debug("on_write embed task: %s", task_id[:12])
+
+    except Exception as e:
+        logger.warning("on_write embed task failed for %s: %s",
+                        task_id[:12], e)

@@ -442,7 +442,16 @@ def create_item(
         # Get the generated ID
         cursor.execute("SELECT id FROM items WHERE rowid = ?", (cursor.lastrowid,))
         row = cursor.fetchone()
-        return row['id'] if row else ""
+        item_id = row['id'] if row else ""
+
+    # R27: auto-embed for immediate RAG discoverability
+    try:
+        from atlas.on_write import on_item_write
+        on_item_write(item_id, entity_type, domain, title, description or "")
+    except Exception:
+        pass  # Qdrant/Ollama down = graceful degradation
+
+    return item_id
 
 
 def get_item(item_id: str) -> dict:
@@ -632,7 +641,17 @@ def create_task(
 
         cursor.execute("SELECT id FROM tasks WHERE rowid = ?", (cursor.lastrowid,))
         row = cursor.fetchone()
-        return row['id'] if row else ""
+        task_id = row['id'] if row else ""
+
+    # R27: auto-embed for immediate RAG discoverability
+    try:
+        from atlas.on_write import on_task_write
+        on_task_write(task_id, task_type, title, description or "",
+                      agent_instructions or "")
+    except Exception:
+        pass  # Qdrant/Ollama down = graceful degradation
+
+    return task_id
 
 
 def get_task(task_id: str) -> dict:
@@ -785,7 +804,16 @@ def create_document(
 
         cursor.execute("SELECT id FROM documents WHERE rowid = ?", (cursor.lastrowid,))
         row = cursor.fetchone()
-        return row['id'] if row else ""
+        doc_id = row['id'] if row else ""
+
+    # R27: auto-embed for immediate RAG discoverability
+    try:
+        from atlas.on_write import on_document_write
+        on_document_write(doc_id, title, content or "", doc_type, source)
+    except Exception:
+        pass  # Qdrant/Ollama down = graceful degradation
+
+    return doc_id
 
 
 def get_document(document_id: str) -> dict:

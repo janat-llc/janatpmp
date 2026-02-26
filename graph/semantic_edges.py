@@ -226,3 +226,112 @@ def weave_conversation_graph(
     )
 
     return stats
+
+
+def weave_new_conversations(since: str = "") -> dict:
+    """Weave semantic SIMILAR_TO edges for conversations created since a timestamp.
+
+    Incremental version of weave_conversation_graph(). Reads the 'since'
+    parameter (ISO timestamp), or falls back to the 'last_graph_weave_at'
+    setting. After completion, updates the setting to current time.
+
+    Args:
+        since: ISO timestamp. Empty = read from settings.
+
+    Returns:
+        Dict with conversations_processed, edges_created, skipped,
+        errors, elapsed_seconds.
+    """
+    from db.operations import get_connection
+    from graph.graph_service import create_edge
+    from services.embedding import embed_query
+    from services.settings import get_setting, set_setting
+
+    start_time = time.time()
+
+    stats = {
+        "conversations_processed": 0,
+        "edges_created": 0,
+        "skipped": 0,
+        "errors": [],
+    }
+
+    # Determine watermark
+    if not since:
+        since = get_setting("last_graph_weave_at") or ""
+    if not since:
+        since = "1970-01-01T00:00:00"
+
+    # Fetch conversations created since watermark
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM conversations WHERE created_at > ? ORDER BY created_at",
+                (since,),
+            ).fetchall()
+            conversations = [dict(r) for r in rows]
+    except Exception as e:
+        stats["errors"].append(f"Failed to query conversations: {e}")
+        stats["elapsed_seconds"] = round(time.time() - start_time, 2)
+        return stats
+
+    if not conversations:
+        stats["elapsed_seconds"] = round(time.time() - start_time, 2)
+        set_setting("last_graph_weave_at", datetime.now(timezone.utc).isoformat())
+        return stats
+
+    logger.info("Weave incremental: %d new conversations since %s", len(conversations), since[:19])
+
+    for conv in conversations:
+        conv_id = conv.get("id", "")
+        if not conv_id:
+            stats["skipped"] += 1
+            continue
+
+        try:
+            repr_text = _build_representative_text(conv)
+            if not repr_text or len(repr_text) < 20:
+                stats["skipped"] += 1
+                continue
+
+            vector = embed_query(repr_text)
+            neighbors = _find_similar_conversations(conv_id, vector)
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for neighbor in neighbors:
+                try:
+                    create_edge(
+                        "Conversation", conv_id,
+                        "Conversation", neighbor["conversation_id"],
+                        "SIMILAR_TO",
+                        {
+                            "score": neighbor["mean_score"],
+                            "method": "vector_centroid_v1",
+                            "created_at": now_iso,
+                        },
+                    )
+                    stats["edges_created"] += 1
+                except Exception as e:
+                    stats["errors"].append(
+                        f"Edge {conv_id[:12]}→{neighbor['conversation_id'][:12]}: {e}"
+                    )
+
+            stats["conversations_processed"] += 1
+
+        except Exception as e:
+            stats["errors"].append(f"Conversation {conv_id[:12]}: {e}")
+            stats["skipped"] += 1
+
+    # Update watermark
+    set_setting("last_graph_weave_at", datetime.now(timezone.utc).isoformat())
+
+    stats["elapsed_seconds"] = round(time.time() - start_time, 2)
+
+    if stats["edges_created"] > 0:
+        logger.info(
+            "Weave incremental: %d edges from %d conversations in %.1fs",
+            stats["edges_created"], stats["conversations_processed"],
+            stats["elapsed_seconds"],
+        )
+
+    return stats

@@ -75,7 +75,7 @@ JANATPMP/
 │   ├── reranking_service.py  # DECOMMISSIONED — vLLM reranker removed, rerank defaults to False
 │   ├── memory_service.py     # Salience write-back to Qdrant payloads
 │   ├── usage_signal.py       # Keyword overlap heuristic for usage-based salience (R12)
-│   ├── on_write.py           # On-write: chunk + embed + fire-and-forget graph edges (R13/R16)
+│   ├── on_write.py           # On-write: chunk + embed for messages/documents/items/tasks (R13/R16/R27)
 │   ├── graph_ranking.py       # Graph-aware RAG ranking — topology boost (R21)
 │   ├── dream_synthesis.py      # Dream Synthesis — cross-conversation insight generation (R24)
 │   ├── pipeline.py           # Search pipeline: ANN → salience (rerank decommissioned)
@@ -92,7 +92,7 @@ JANATPMP/
 │   ├── chat.py               # Multi-provider chat (Anthropic/Gemini/Ollama) — no tools for in-app Ollama
 │   ├── prompt_composer.py    # 9-layer adaptive Janus identity system prompt (R19/R25)
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
-│   ├── slumber.py            # Background evaluation daemon — Slumber Cycle (R12)
+│   ├── slumber.py            # Background daemon — 7-stage Slumber Cycle (R12/R27)
 │   ├── slumber_eval.py        # Gemini-powered message evaluation (R22: First Light)
 │   ├── precognition.py        # Gemini pre-cognition — adaptive prompt shaping (R25)
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (directory scanner)
@@ -915,13 +915,13 @@ same tokenizer = consistent chars-per-token ratio). Fallback: ~4 chars/token est
 - Runs inline after each turn. Graceful degradation if Qdrant down.
 - Config: `SALIENCE_USAGE_RATE=0.03`, `SALIENCE_DECAY_RATE=0.01` in `atlas/config.py`
 
-### Slumber Cycle (6 Sub-cycles)
+### Slumber Cycle (7 Sub-cycles)
 
 - `services/slumber.py` — daemon thread activates after idle threshold (default 5 min)
 - `touch_activity()` called in all chat handlers to reset idle timer
 - Settings: `slumber_idle_threshold`, `slumber_batch_size`, `slumber_evaluator`, `slumber_prune_age_days`
 - Started at app boot in `app.py` via `start_slumber()`
-- Six sub-cycles run in sequence during each idle period:
+- Seven sub-cycles run in sequence during each idle period:
 
 | Sub-cycle | Function | Purpose |
 |-----------|----------|---------|
@@ -931,6 +931,7 @@ same tokenizer = consistent chars-per-token ratio). Fallback: ~4 chars/token est
 | Relate | `_relate_batch()` | Create SIMILAR_TO edges in Neo4j via cross-conversation keyword overlap |
 | Prune | `_prune_batch()` | Remove dead-weight vectors from Qdrant (quality < 0.1, salience < 0.1, never retrieved, older than N days) |
 | Dream | `_dream_batch()` | Select high-quality message clusters, synthesize cross-conversation insights via Gemini, persist as documents + graph edges (R24) |
+| Weave | `_weave_batch()` | Incremental SIMILAR_TO edges for new conversations via vector centroid similarity (R27) |
 
 Ingest runs FIRST so newly ingested content gets full Slumber processing (evaluate, propagate, relate) in the same cycle.
 
@@ -1653,12 +1654,57 @@ All phases are checkpoint-safe. Module-level progress readable from any thread.
 UI controls in Knowledge Pipeline tab (Data Foundation accordion).
 3 new MCP tools: `get_backfill_progress`, `cancel_backfill`, `run_backfill`.
 
-## Current Platform State (Post-R26)
+## Phase R27: Autonomic Memory — On-Write Pipeline + Slumber Graph Weave
+
+R27 closes two data pipeline asymmetries: entities created outside of chat (documents,
+items, tasks) had no auto-embed hook, and `weave_conversation_graph()` was never called
+automatically. Both gaps are now sealed. 0 new files, 8 modified files.
+
+### On-Write Hooks for Non-Message Entities (`atlas/on_write.py`)
+
+Three new sibling functions alongside `on_message_write()`:
+
+- **`on_document_write()`** — chunks document content via `chunk_document()`, embeds all
+  chunks in one batch, upserts to `COLLECTION_DOCUMENTS` with payload matching
+  `embed_all_documents()`. Chunk records persisted to SQLite.
+- **`on_item_write()`** — single-vector embed (items are short), payload matches
+  `embed_all_items()`. No chunk record — same as bulk function.
+- **`on_task_write()`** — single-vector embed, payload matches `embed_all_tasks()`.
+
+Refactored `_insert_chunks()` → `_insert_chunks_for(entity_type, entity_id, ...)` to
+accept entity_type parameter for document chunk reuse.
+
+### Fire-and-Forget Hooks (`db/operations.py`)
+
+`create_item()`, `create_task()`, and `create_document()` each call their respective
+on-write function after the INSERT. Same `try/except: pass` pattern as CDC triggers —
+Qdrant/Ollama being down never blocks entity creation. Lazy imports avoid circular deps.
+
+### Incremental Graph Weave (`graph/semantic_edges.py`)
+
+`weave_new_conversations(since)` — watermark-based incremental version of
+`weave_conversation_graph()`. Only processes conversations created since the
+`last_graph_weave_at` setting. Updates watermark after completion. Reuses existing
+`_build_representative_text()` and `_find_similar_conversations()` helpers.
+
+### Slumber Weave Sub-cycle (`services/slumber.py`)
+
+Sub-cycle 6 (after Dream): `_should_weave()` gates on `WEAVE_CYCLE_INTERVAL` (every 5th
+cycle, same as Dream). `_weave_batch()` calls `weave_new_conversations()` and updates
+`last_woven` / `total_woven` status fields. State "weaving" added to valid states.
+
+### Settings and Config
+
+- `last_graph_weave_at` — system setting, watermark for incremental weave
+- `WEAVE_CYCLE_INTERVAL = 5` — in `atlas/config.py`
+
+## Current Platform State (Post-R27)
 
 ### What Works
 
 - **Triad of Memory operational** — SQLite (source of truth), Qdrant (semantic search),
-  Neo4j (knowledge graph). Triple-write pipeline keeps all three in sync on every message.
+  Neo4j (knowledge graph). Triple-write pipeline keeps all three in sync on every message,
+  document, item, and task creation (R27: on-write hooks for all entity types).
 - **Temporal grounding** — Janus knows current time, date, season, sunrise/sunset, approximate
   temperature for Fargo, ND. System prompt includes temporal context every turn. RAG results
   carry relative time labels ("3 months ago", "yesterday").
@@ -1676,11 +1722,12 @@ UI controls in Knowledge Pipeline tab (Data Foundation accordion).
   decommissioned (rerank=False default).
 - **Content corpus** — 659 Claude conversations (10,271 messages), 40 markdown documents,
   78 items, 13 domains, 3 tasks. All embedded in Qdrant, synced to Neo4j.
-- **Background intelligence** — Slumber Cycle: ingest scan → evaluate → propagate → relate → prune → dream.
-  Six sub-cycles run in sequence during idle periods. New content auto-discovered and fully
+- **Background intelligence** — Slumber Cycle: ingest → evaluate → propagate → relate → prune → dream → weave.
+  Seven sub-cycles run in sequence during idle periods. New content auto-discovered and fully
   processed in a single idle cycle. Evaluate sub-cycle uses Gemini Flash Lite for LLM-powered
   quality scoring with heuristic fallback (R22). Dream sub-cycle synthesizes cross-conversation
-  insights from high-quality message clusters (R24).
+  insights from high-quality message clusters (R24). Weave sub-cycle incrementally connects
+  new conversations via SIMILAR_TO edges using vector centroid similarity (R27).
 - **Ingestion pipelines** — Claude export, Google AI Studio, markdown. Auto-embed + dedup.
   Auto-ingestion scanner for hands-free operation.
 - **Sovereign multipage architecture** — 4 purpose-built pages (Projects, Knowledge, Admin,
@@ -1758,13 +1805,11 @@ layers of intelligence on a foundation that is rapidly gaining self-awareness.
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R26 candidates)
+### Near-Term (R28 candidates)
 
 - **Custom ranking service enhancements** — R21 delivered graph-aware RAG ranking with
   additive topology boost. Next: add temporal decay weighting so recent conversations
   score higher on ambiguous queries.
-- **Automatic re-weaving** — hook `weave_conversation_graph()` into Slumber or auto-ingest
-  so new conversations automatically get SIMILAR_TO edges without manual MCP trigger.
 - **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
   system-injected, or verified. Give the model metadata to distinguish recall from hearsay.
 - **Synthesis tab** — Memory node review in Knowledge page, evidence chains, source
