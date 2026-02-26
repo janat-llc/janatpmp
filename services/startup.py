@@ -52,6 +52,46 @@ def _auto_restore_platform_data() -> None:
         logger.warning("Auto-restore platform data failed: %s", e)
 
 
+def _fix_imported_message_timestamps() -> None:
+    """One-time fix: set messages.created_at from parent conversation dates.
+
+    The Claude import pipeline didn't set created_at on message INSERT,
+    so all 8,591+ imported messages got datetime('now') — the import
+    timestamp. This sets them to their parent conversation's created_at.
+    Idempotent — safe to run multiple times (no-op if already fixed).
+    """
+    try:
+        from db.operations import get_connection
+
+        with get_connection() as conn:
+            # Check if any messages still have the wrong timestamp pattern
+            # (all messages in a conversation having the exact same date as
+            # the import date, different from the conversation's created_at)
+            broken = conn.execute(
+                "SELECT COUNT(*) FROM messages m "
+                "JOIN conversations c ON m.conversation_id = c.id "
+                "WHERE c.source IN ('claude_export', 'imported') "
+                "AND date(m.created_at) <> date(c.created_at)"
+            ).fetchone()[0]
+
+            if broken == 0:
+                return  # Already fixed
+
+            conn.execute(
+                "UPDATE messages SET created_at = ("
+                "  SELECT c.created_at FROM conversations c"
+                "  WHERE c.id = messages.conversation_id"
+                ") WHERE conversation_id IN ("
+                "  SELECT id FROM conversations"
+                "  WHERE source IN ('claude_export', 'imported')"
+                ")"
+            )
+            conn.commit()
+            logger.info("Fixed %d imported message timestamps", broken)
+    except Exception as e:
+        logger.warning("Fix imported message timestamps failed: %s", e)
+
+
 def initialize_core() -> None:
     """Initialize database, settings, cleanup, and Janus conversation.
 

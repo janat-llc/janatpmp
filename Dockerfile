@@ -20,6 +20,7 @@ EXPOSE 7860
 # Define environment variable
 ENV GRADIO_SERVER_NAME="0.0.0.0"
 ENV GRADIO_MCP_SERVER="True"
+ENV PYTHONUNBUFFERED="1"
 
 # Run app.py when the container launches
 CMD ["python", "app.py"]

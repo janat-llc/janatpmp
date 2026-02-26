@@ -1416,3 +1416,170 @@ def chat(message: str, history: list[dict],
             logger.error("Chat failed: provider=%s, model=%s — %s", provider, model, e)
             history.append({"role": "assistant", "content": f"Error: {str(e)}"})
             return _error_result(history)
+
+
+def chat_with_janus(message: str) -> dict:
+    """Send a message to Janus through the full pipeline and return response + diagnostics.
+
+    Runs the complete chat pipeline: intent classification, pre-cognition, RAG retrieval,
+    graph ranking, temporal decay, inference, message persistence, and triple-write.
+    Returns the model response alongside full cognition trace and RAG metrics.
+
+    Use this to diagnose pipeline behavior, test RAG quality, or interact with Janus
+    programmatically via MCP.
+
+    Args:
+        message: The message to send to Janus.
+
+    Returns:
+        Dict with response, cognition_trace, rag_metrics, timings, token_counts,
+        provider, model, conversation_id, message_id.
+    """
+    from db.chat_operations import (
+        get_or_create_janus_conversation, get_messages, add_message,
+        add_message_metadata, update_message_metadata, parse_reasoning,
+    )
+    from services.settings import get_setting
+
+    conv_id = get_or_create_janus_conversation()
+
+    # Load recent history in gr.Chatbot format
+    window = int(get_setting("janus_context_messages") or "10")
+    raw_msgs = get_messages(conv_id, limit=window * 2, latest=True)
+    history = []
+    for m in raw_msgs:
+        if m.get("user_prompt"):
+            history.append({"role": "user", "content": m["user_prompt"]})
+        if m.get("model_response"):
+            history.append({"role": "assistant", "content": m["model_response"]})
+
+    # Run full pipeline
+    result = chat(message, history, conversation_id=conv_id)
+
+    # Extract response
+    new_messages = result["history"][len(history):]
+    raw_response = ""
+    for msg in reversed(new_messages):
+        if msg.get("role") == "assistant":
+            raw_response = msg.get("content", "")
+            break
+
+    reasoning, clean_response = parse_reasoning(raw_response)
+    rag_metrics = result.get("rag_metrics", {})
+    token_counts = result.get("token_counts", {})
+    timings = result.get("timings", {})
+    cognition_trace = result.get("cognition_trace", {})
+    provider = result.get("provider", "")
+    model = result.get("model", "")
+
+    # Decompose reasoning tokens if needed
+    if reasoning and token_counts.get("reasoning", 0) == 0:
+        completion = token_counts.get("response", 0)
+        r_len = len(reasoning)
+        c_len = len(clean_response or raw_response)
+        total_len = r_len + c_len
+        if completion > 0 and total_len > 0:
+            token_counts["reasoning"] = int(completion * r_len / total_len)
+            token_counts["response"] = completion - token_counts["reasoning"]
+
+    # Persist triplet message
+    msg_id = add_message(
+        conversation_id=conv_id,
+        user_prompt=message,
+        model_reasoning=reasoning or None,
+        model_response=clean_response or raw_response,
+        provider=provider, model=model,
+        tools_called="[]",
+        tokens_prompt=token_counts.get("prompt", 0),
+        tokens_reasoning=token_counts.get("reasoning", 0),
+        tokens_response=token_counts.get("response", 0),
+    )
+
+    # Persist metadata
+    if msg_id:
+        add_message_metadata(
+            message_id=msg_id,
+            latency_total_ms=timings.get("total", 0),
+            latency_rag_ms=timings.get("rag", 0),
+            latency_inference_ms=timings.get("inference", 0),
+            rag_hit_count=rag_metrics.get("hit_count", 0),
+            rag_hits_used=rag_metrics.get("hits_used", 0),
+            rag_collections=json.dumps(rag_metrics.get("collections_searched", [])),
+            rag_avg_rerank=rag_metrics.get("avg_rerank_score", 0.0),
+            rag_avg_salience=rag_metrics.get("avg_salience", 0.0),
+            rag_scores=json.dumps(rag_metrics.get("scores", [])),
+            system_prompt_length=result.get("system_prompt_length", 0),
+            rag_context_text=rag_metrics.get("context_text", ""),
+            rag_synthesized=1 if rag_metrics.get("synthesized") else 0,
+            cognition_prompt_layers=json.dumps(
+                cognition_trace.get("prompt_layers", {})),
+            cognition_graph_trace=json.dumps(
+                cognition_trace.get("graph_trace", {})),
+            cognition_precognition=json.dumps(
+                cognition_trace.get("precognition", {})),
+        )
+
+        # Usage signal
+        try:
+            from atlas.usage_signal import compute_usage_signal
+            from atlas.memory_service import write_usage_salience
+            scores = rag_metrics.get("scores", [])
+            if scores and (clean_response or raw_response):
+                usage = compute_usage_signal(scores, clean_response or raw_response)
+                if usage:
+                    update_message_metadata(msg_id, rag_scores=json.dumps(usage))
+                    for coll in {u.get("source", "") for u in usage if u.get("source")}:
+                        col_hits = [u for u in usage if u.get("source") == coll]
+                        write_usage_salience(coll, col_hits)
+        except Exception:
+            pass
+
+        # Triple-write: chunk + embed + INFORMED_BY edges
+        try:
+            from atlas.on_write import on_message_write
+            on_message_write(
+                message_id=msg_id,
+                conversation_id=conv_id,
+                user_prompt=message,
+                model_response=clean_response or raw_response,
+                provider=provider, model=model,
+                rag_hits=rag_metrics.get("scores", []),
+            )
+        except Exception:
+            pass
+
+    # Build diagnostic return — everything an architect needs
+    return {
+        "response": clean_response or raw_response,
+        "reasoning": reasoning[:500] if reasoning else "",
+        "conversation_id": conv_id,
+        "message_id": msg_id or "",
+        "provider": provider,
+        "model": model,
+        "timings": timings,
+        "token_counts": token_counts,
+        "cognition_trace": cognition_trace,
+        "rag_summary": {
+            "hit_count": rag_metrics.get("hit_count", 0),
+            "hits_used": rag_metrics.get("hits_used", 0),
+            "hits_rejected": len(rag_metrics.get("rejected_scores", [])),
+            "collections": rag_metrics.get("collections_searched", []),
+            "synthesized": rag_metrics.get("synthesized", False),
+            "skipped": rag_metrics.get("skipped", False),
+            "skip_reason": rag_metrics.get("skip_reason", ""),
+            "temporal_trace": rag_metrics.get("temporal_trace", {}),
+            "graph_trace": rag_metrics.get("graph_trace", {}),
+        },
+        "rag_hits": [
+            {
+                "title": s.get("title", ""),
+                "score": s.get("ann_score", 0),
+                "text_preview": s.get("text_preview", "")[:150],
+                "source_conversation": s.get("source_conversation_title", ""),
+                "created_at": s.get("created_at", ""),
+                "temporal_factor": s.get("temporal_factor", 1.0),
+                "age_days": s.get("age_days"),
+            }
+            for s in rag_metrics.get("scores", [])[:10]
+        ],
+    }

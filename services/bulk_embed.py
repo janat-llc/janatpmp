@@ -421,7 +421,8 @@ def embed_all_messages() -> dict:
             SELECT c.id as chunk_id, c.entity_id as message_id, c.chunk_index,
                    c.chunk_text, c.point_id, c.position,
                    COUNT(*) OVER (PARTITION BY c.entity_id) as chunk_total,
-                   m.conversation_id, m.sequence, m.created_at,
+                   m.conversation_id, m.sequence,
+                   COALESCE(m.created_at, conv.created_at) as created_at,
                    m.provider, m.model,
                    conv.title as conv_title
             FROM chunks c
@@ -491,7 +492,8 @@ def embed_all_messages() -> dict:
         legacy_rows = conn.execute("""
             SELECT m.id, m.conversation_id, m.sequence,
                    m.user_prompt, m.model_response,
-                   m.created_at, m.provider, m.model,
+                   COALESCE(m.created_at, c.created_at) as created_at,
+                   m.provider, m.model,
                    c.title as conv_title
             FROM messages m
             JOIN conversations c ON c.id = m.conversation_id

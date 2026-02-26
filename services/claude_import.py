@@ -189,20 +189,22 @@ def _import_single_conversation(
         row = cursor.fetchone()
         conv_id = row["id"] if row else ""
 
-        # Insert triplet messages
+        # Insert triplet messages (use conversation created_at as message date)
+        msg_created_at = created_at[:19].replace("T", " ") if created_at else None
         for seq, triplet in enumerate(triplets, start=1):
             tools_json = json.dumps(triplet["tools_called"]) if triplet["tools_called"] else "[]"
             cursor.execute("""
                 INSERT INTO messages
                     (conversation_id, sequence, user_prompt, model_reasoning,
-                     model_response, provider, model, tools_called)
-                VALUES (?, ?, ?, ?, ?, 'anthropic', 'claude', ?)
+                     model_response, provider, model, tools_called, created_at)
+                VALUES (?, ?, ?, ?, ?, 'anthropic', 'claude', ?, ?)
             """, (
                 conv_id, seq,
                 triplet["user_prompt"],
                 triplet["model_reasoning"],
                 triplet["model_response"],
                 tools_json,
+                msg_created_at,
             ))
 
         conn.commit()
