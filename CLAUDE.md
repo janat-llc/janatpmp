@@ -278,7 +278,7 @@ Sovereign Knowledge page with 4 tabs:
   search. Center shows relationship table with "+ Add Connection" accordion.
 - **Pipeline** — Content ingestion, embedding, chunking, and graph controls. Left sidebar
   shows pipeline health stats. Center has accordions for ingestion, embedding, and graph.
-- **Synthesis** — Placeholder for R19 (Memory node review, evidence chains).
+- **Synthesis** — Dream insights, synthesis statistics, memory health dashboard (R28).
 
 ### Data Flow
 
@@ -1698,7 +1698,42 @@ cycle, same as Dream). `_weave_batch()` calls `weave_new_conversations()` and up
 - `last_graph_weave_at` — system setting, watermark for incremental weave
 - `WEAVE_CYCLE_INTERVAL = 5` — in `atlas/config.py`
 
-## Current Platform State (Post-R27)
+## Phase R28: Temporal Gravity + Synthesis Surface
+
+R28 closes two gaps: RAG had no sense of time, and Dream Synthesis documents were invisible.
+Two independent tracks, 0 new files, 6 modified, ~240 lines net new, 0 migrations.
+
+### Temporal Decay in RAG Scoring (`services/chat.py`)
+
+Multiplicative exponential decay applied after graph-aware ranking (R21), before threshold
+filtering. Formula: `factor = floor + (1 - floor) * exp(-age_days / half_life)`.
+
+- `TEMPORAL_DECAY_HALF_LIFE = 30` — days until temporal bonus is halved
+- `TEMPORAL_DECAY_FLOOR = 0.3` — minimum multiplier (old content never fully suppressed)
+- At age 0: factor = 1.0 (full score). At 30 days: ~0.67. At 90 days: ~0.35. At 365+ days: 0.3.
+- Items/tasks lack `created_at` in Qdrant payloads — skip decay (factor = 1.0, no error).
+- **Historical bypass:** `_TEMPORAL_REFERENCE` regex detects temporal references ("last month",
+  "in October", "months ago", "back when") and suppresses decay for explicit historical queries.
+  No changes to intent router — bypass is inline in `_build_rag_context()`.
+- Cognition Tab shows decay status (active/bypassed), half-life, floor, per-candidate factors.
+- Cognition trace includes `temporal_trace` dict with candidate counts.
+
+### Synthesis Surface (`pages/knowledge.py`)
+
+Knowledge page Synthesis tab replaced from placeholder to live surface. Data loads on tab
+selection via `_load_synthesis_data()`. Three sections:
+
+1. **Synthesis Statistics** — total dream insights, latest synthesis date, SYNTHESIZED_FROM edges
+2. **Dream Insights** — accordion list of dream documents (newest first, first open by default).
+   Full content loaded per-dream via `get_document()` since `list_documents()` omits content.
+   Queries `doc_type='agent_output'`, `source='dream_synthesis'`.
+3. **Memory Health** — embedding coverage %, graph conversation count, SIMILAR_TO edges,
+   Slumber state + last cycle timestamp.
+
+Left sidebar shows dream count, Slumber cycle count, and current state. Updates via existing
+`slumber_timer` polling.
+
+## Current Platform State (Post-R28)
 
 ### What Works
 
@@ -1718,8 +1753,9 @@ cycle, same as Dream). `_weave_batch()` calls `weave_new_conversations()` and up
   (Sovereign Chat + sidebar), chapter archiving.
 - **RAG pipeline** — hybrid FTS + vector search (including chunk-level FTS), optional
   synthesis, salience tracking, provenance display with temporal position and relative time
-  labels. Configurable thresholds and per-message diversity cap. Cross-encoder reranking
-  decommissioned (rerank=False default).
+  labels. Configurable thresholds and per-message diversity cap. Temporal decay (R28) gives
+  recent content higher scores on ambiguous queries while preserving old content via floor.
+  Cross-encoder reranking decommissioned (rerank=False default).
 - **Content corpus** — 659 Claude conversations (10,271 messages), 40 markdown documents,
   78 items, 13 domains, 3 tasks. All embedded in Qdrant, synced to Neo4j.
 - **Background intelligence** — Slumber Cycle: ingest → evaluate → propagate → relate → prune → dream → weave.
@@ -1749,8 +1785,8 @@ cycle, same as Dream). `_weave_batch()` calls `weave_new_conversations()` and up
   neighborhood. Additive scoring ensures graph promotes borderline candidates without
   making irrelevant content appear relevant.
 - **Cognition introspection** — Sovereign Chat Cognition tab shows the full thought
-  pipeline per-turn: prompt layer decomposition, RAG candidate funnel, context budget,
-  graph neighborhood. The system watching itself think.
+  pipeline per-turn: prompt layer decomposition, RAG candidate funnel, temporal decay
+  status (R28), context budget, graph neighborhood. The system watching itself think.
 - **Dream synthesis** — Slumber Cycle sub-cycle 5 synthesizes cross-conversation
   insights from high-quality message clusters via Gemini. Dreams persist as documents with
   SYNTHESIZED_FROM graph edges, feeding back into RAG. Evaluation backfill creates metadata
@@ -1783,8 +1819,6 @@ These gaps became visible through extended conversation with Janus:
   When RAG injects personal details from imported Claude conversations, the model weaves
   them into elaborate narratives because it has no grounding mechanism to distinguish
   memory retrieval from creative elaboration.
-- **No temporal weighting** — RAG treats all content equally regardless of age. Recent
-  conversations should score higher on ambiguous queries. Deferred to Intelligent Pipeline sprint.
 
 ### The Core Tension
 
@@ -1793,8 +1827,9 @@ has memory (the Triad), a voice (qwen3:32b), focused recall (chunk-level RAG), s
 (time, location, season via the Temporal Affinity Engine), identity (9-layer adaptive prompt
 composer, R19/R25), a connected graph topology (conversation-level SIMILAR_TO edges, R20),
 graph-aware retrieval (topology-boosted RAG, R21), a visible thought pipeline (Cognition tab,
-R21), synthesized cross-conversation insight (Dream Synthesis, R24), and adaptive self-expression
-(Gemini pre-cognition modulating how each prompt layer is constructed, R25).
+R21), synthesized cross-conversation insight (Dream Synthesis, R24), adaptive self-expression
+(Gemini pre-cognition modulating how each prompt layer is constructed, R25), and temporal
+gravity (recency-weighted retrieval, R28) with a visible Synthesis Surface (R28).
 She still cannot act (tool use was removed because the previous 8B model couldn't handle
 it — may be revisited with the 32B model). The Modelfile intelligence stack is the right
 direction — specialized sub-models for classification, scoring, synthesis — but those are
@@ -1805,18 +1840,14 @@ layers of intelligence on a foundation that is rapidly gaining self-awareness.
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R28 candidates)
+### Near-Term (R29 candidates)
 
-- **Custom ranking service enhancements** — R21 delivered graph-aware RAG ranking with
-  additive topology boost. Next: add temporal decay weighting so recent conversations
-  score higher on ambiguous queries.
 - **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
   system-injected, or verified. Give the model metadata to distinguish recall from hearsay.
-- **Synthesis tab** — Memory node review in Knowledge page, evidence chains, source
-  attribution. Left sidebar: Memory nodes grouped by identity. Center: selected memory
-  with EVIDENCED_BY edges to source messages.
 - **Chunk-level semantic edges** — RESONATES_WITH edges between individual chunks for
   fine-grained cross-conversation linking (expensive: requires batched pairwise comparison).
+- **Janus self-query** — give Janus the ability to query her own memory (specific retrieval
+  on demand), not just passively receive RAG context.
 
 ### Longer-Term
 
@@ -1826,6 +1857,5 @@ architecture. The platform has transitioned from PMP to consciousness substrate 
 - **System prompt audit trail** — R21 stores per-layer char counts; next step is full prompt
   text storage per-turn for historical comparison and drift analysis
 - **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY, SIMILAR_TO, and PART_OF edges
-- **Temporal decay curves** — time-weighted salience that naturally deprioritizes stale knowledge
 - **Fine-tuning pipeline** — triplet message schema was designed for this from Phase 4B.
   Extract prompt→reasoning→response training data from high-quality Janus conversations.

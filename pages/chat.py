@@ -868,6 +868,25 @@ def build_chat_page():
                             key="cog-rag-query-text",
                         )
 
+                # --- Section 2.5: Temporal Decay (R28) ---
+                temporal = trace.get("temporal_trace", {})
+                if temporal:
+                    gr.Markdown("---", key="cog-temporal-sep")
+                    gr.Markdown("### Temporal Decay", key="cog-temporal-header")
+                    if temporal.get("applied"):
+                        gr.Markdown(
+                            f"**Active** | Half-life: {temporal.get('half_life_days', 30)}d | "
+                            f"Floor: {temporal.get('decay_floor', 0.3)}\n\n"
+                            f"Decayed: **{temporal.get('candidates_decayed', 0)}** | "
+                            f"Skipped: **{temporal.get('candidates_skipped', 0)}**",
+                            key="cog-temporal-stats",
+                        )
+                    else:
+                        gr.Markdown(
+                            f"**Bypassed** — {temporal.get('reason', 'unknown')}",
+                            key="cog-temporal-bypassed",
+                        )
+
                 # --- Section 3: Context Budget ---
                 history_turns = trace.get("history_turns_sent", 0)
                 rag_context_len = len(rag.get("context_text", ""))

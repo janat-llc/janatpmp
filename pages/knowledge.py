@@ -4,7 +4,7 @@ Sovereign page at /knowledge with 4 tabs:
   Memory      — unified conversation + document browser
   Connections — entity relationship viewer
   Pipeline    — ingestion, embedding, graph operations
-  Synthesis   — placeholder for R19 Memory node review
+  Synthesis   — dream insights, synthesis stats, memory health (R28)
 
 Three-panel layout:
   Left sidebar: context/navigation per active tab
@@ -23,8 +23,8 @@ import logging
 import gradio as gr
 import pandas as pd
 from db.operations import (
-    get_document, create_document, get_stats,
-    search_items, search_documents,
+    get_connection, get_document, create_document, get_stats,
+    list_documents, search_items, search_documents,
     get_relationships, create_relationship,
 )
 from db.chat_operations import (
@@ -160,6 +160,51 @@ def _load_pipeline_health():
     return health
 
 
+def _load_synthesis_data():
+    """Load dream synthesis documents and memory health stats."""
+    data = {"dreams": [], "total_dreams": 0, "latest_dream_date": "",
+            "slumber_state": "unknown", "last_cycle": "",
+            "embedding_coverage": 0.0, "graph_conversations": 0,
+            "similar_to_edges": 0, "synthesized_from_edges": 0}
+    try:
+        dreams = list_documents(doc_type="agent_output", source="dream_synthesis", limit=50)
+        data["dreams"] = dreams
+        data["total_dreams"] = len(dreams)
+        if dreams:
+            data["latest_dream_date"] = (dreams[0].get("created_at") or "")[:19]
+    except Exception:
+        pass
+    try:
+        from services.slumber import get_slumber_status
+        s = get_slumber_status()
+        data["slumber_state"] = s.get("state", "unknown")
+        data["last_cycle"] = s.get("last_cycle_at", "")
+        data["total_dreams"] = max(data["total_dreams"], s.get("total_dreams", 0))
+    except Exception:
+        pass
+    try:
+        with get_connection() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            embedded = conn.execute(
+                "SELECT COUNT(*) FROM chunks WHERE embedded_at IS NOT NULL"
+            ).fetchone()[0]
+        if total > 0:
+            data["embedding_coverage"] = round(embedded / total * 100, 1)
+    except Exception:
+        pass
+    try:
+        from graph.graph_service import graph_stats
+        g = graph_stats()
+        nodes = g.get("nodes", {})
+        edges = g.get("edges", {})
+        data["graph_conversations"] = nodes.get("Conversation", 0)
+        data["similar_to_edges"] = edges.get("SIMILAR_TO", 0)
+        data["synthesized_from_edges"] = edges.get("SYNTHESIZED_FROM", 0)
+    except Exception:
+        pass
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Page builder
 # ---------------------------------------------------------------------------
@@ -174,6 +219,7 @@ def build_knowledge_page():
     memory_items_state = gr.State([])
     pipeline_health_state = gr.State({})
     slumber_status_state = gr.State({})
+    synthesis_data_state = gr.State({})
     slumber_timer = gr.Timer(value=10.0, active=True)
 
     # === RIGHT SIDEBAR (Janus quick-chat) ===
@@ -518,16 +564,77 @@ def build_knowledge_page():
                         backfill_timer = gr.Timer(5, active=False)
 
         # ---------------------------------------------------------------
-        # TAB 4: Synthesis (placeholder for R19)
+        # TAB 4: Synthesis (R28: Synthesis Surface)
         # ---------------------------------------------------------------
         with gr.Tab("Synthesis") as synthesis_tab:
-            gr.Markdown("### Synthesis — Coming in R19")
-            gr.Markdown(
-                "Slumber Memory node review, evidence chains, source attribution.\n\n"
-                "Left sidebar will show Memory nodes grouped by identity "
-                "(Mat / Janus). Center will show selected memory with its "
-                "evidence chain (EVIDENCED_BY edges to source messages)."
-            )
+            @gr.render(inputs=[synthesis_data_state])
+            def render_synthesis(synth_data):
+                data = synth_data or {}
+                dreams = data.get("dreams", [])
+                total = data.get("total_dreams", 0)
+                latest = data.get("latest_dream_date", "")
+
+                # --- Section 1: Synthesis Statistics ---
+                gr.Markdown("### Synthesis Statistics", key="synth-stats-hdr")
+                stats_lines = [
+                    f"- Total dream insights: **{total}**",
+                    f"- Latest synthesis: **{latest or 'none yet'}**",
+                ]
+                synth_from = data.get("synthesized_from_edges", 0)
+                if synth_from > 0:
+                    stats_lines.append(f"- Source edges (SYNTHESIZED_FROM): **{synth_from}**")
+                gr.Markdown("\n".join(stats_lines), key="synth-stats-body")
+
+                # --- Section 2: Dream Insights ---
+                gr.Markdown("---", key="synth-dreams-sep")
+                gr.Markdown("### Dream Insights", key="synth-dreams-hdr")
+                if not dreams:
+                    gr.Markdown(
+                        "No dream synthesis documents yet. Dreams are generated "
+                        "during Slumber idle cycles when enough high-quality "
+                        "conversations have accumulated.",
+                        key="synth-no-dreams",
+                    )
+                else:
+                    displayed = dreams[:20]
+                    for i, dream in enumerate(displayed):
+                        doc_id = dream.get("id", "")
+                        title = dream.get("title", "Untitled Dream")
+                        created = (dream.get("created_at") or "")[:19]
+                        label = f"{title} — {created}" if created else title
+                        with gr.Accordion(label, open=(i == 0), key=f"synth-dream-{i}"):
+                            if doc_id:
+                                doc = get_document(doc_id)
+                                content = doc.get("content", "") if isinstance(doc, dict) else ""
+                                if content:
+                                    gr.Markdown(content, key=f"synth-dream-content-{i}")
+                                else:
+                                    gr.Markdown("*No content available.*", key=f"synth-dream-empty-{i}")
+                            else:
+                                gr.Markdown("*Missing document ID.*", key=f"synth-dream-noid-{i}")
+                    if len(dreams) > 20:
+                        gr.Markdown(
+                            f"*Showing 20 of {len(dreams)} dream documents.*",
+                            key="synth-dreams-more",
+                        )
+
+                # --- Section 3: Memory Health ---
+                gr.Markdown("---", key="synth-health-sep")
+                gr.Markdown("### Memory Health", key="synth-health-hdr")
+                embed_cov = data.get("embedding_coverage", 0.0)
+                graph_convs = data.get("graph_conversations", 0)
+                sim_edges = data.get("similar_to_edges", 0)
+                slumber_state = data.get("slumber_state", "unknown")
+                last_cycle = data.get("last_cycle", "")
+                health_lines = [
+                    f"- Embedding coverage: **{embed_cov}%**",
+                    f"- Graph conversations: **{graph_convs}**",
+                    f"- SIMILAR_TO edges: **{sim_edges}**",
+                    f"- Slumber state: **{slumber_state}**",
+                ]
+                if last_cycle:
+                    health_lines.append(f"- Last Slumber cycle: **{last_cycle[:19]}**")
+                gr.Markdown("\n".join(health_lines), key="synth-health-body")
 
     # === LEFT SIDEBAR ===
     with gr.Sidebar(position="left"):
@@ -636,11 +743,30 @@ def build_knowledge_page():
                     )
 
             elif tab == "Synthesis":
-                gr.Markdown("### Synthesis")
+                gr.Markdown("### Synthesis", key="synth-sidebar-hdr")
+                s = slumber_status or {}
+                total_dreams = s.get("total_dreams", 0)
+                state = s.get("state", "idle")
                 gr.Markdown(
-                    "Coming in R19 — Memory node browser by identity",
-                    key="synth-placeholder",
+                    f"**Dream insights:** {total_dreams}",
+                    key="synth-sidebar-count",
                 )
+                cycle_count = s.get("cycle_count", 0)
+                if cycle_count > 0:
+                    gr.Markdown(
+                        f"**Slumber cycles:** {cycle_count}",
+                        key="synth-sidebar-cycles",
+                    )
+                if state in ("dreaming", "evaluating", "weaving"):
+                    gr.Markdown(
+                        f"**Slumber:** {state.title()}...",
+                        key="synth-sidebar-active",
+                    )
+                else:
+                    gr.Markdown(
+                        f"**Slumber:** {state.title()}",
+                        key="synth-sidebar-state",
+                    )
 
     # === EVENT WIRING ===
 
@@ -656,6 +782,10 @@ def build_knowledge_page():
     )
     synthesis_tab.select(
         lambda: "Synthesis", outputs=[active_tab], api_visibility="private"
+    )
+    synthesis_tab.select(
+        _load_synthesis_data, outputs=[synthesis_data_state],
+        api_visibility="private",
     )
 
     # --- Memory tab: browse + search ---

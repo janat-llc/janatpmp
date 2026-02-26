@@ -84,6 +84,10 @@ DREAM_TEMPERATURE = 0.7          # Gemini temperature (creative for synthesis)
 # --- Slumber Graph Weave (R27) ---
 WEAVE_CYCLE_INTERVAL = 5         # Weave every Nth slumber cycle (same as Dream)
 
+# --- Temporal Decay (R28: Temporal Gravity) ---
+TEMPORAL_DECAY_HALF_LIFE = 30    # Days until temporal bonus is halved
+TEMPORAL_DECAY_FLOOR = 0.3       # Minimum multiplier (old content never fully suppressed)
+
 # --- Pre-Cognition (R25) ---
 PRECOGNITION_TIMEOUT_MS = 3000   # Max wait for Gemini pre-pass (ms)
 PRECOGNITION_WEIGHT_MIN = 0.0    # Floor for layer weights

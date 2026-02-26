@@ -15,6 +15,7 @@ chat() call — no restart needed when settings change.
 import inspect
 import json
 import logging
+import re
 from typing import Any
 from db import operations as db_ops
 from shared.constants import MAX_TOOL_ITERATIONS, RAG_SCORE_THRESHOLD
@@ -213,6 +214,20 @@ _FTS_STOP_WORDS = {
     "will", "with", "would", "you", "your",
 }
 
+# R28: Temporal reference patterns — suppress decay for explicit historical queries
+_TEMPORAL_REFERENCE = re.compile(
+    r"(last\s*(year|month|week|summer|winter|fall|spring|"
+    r"january|february|march|april|may|june|july|august|"
+    r"september|october|november|december))|"
+    r"(months?\s*ago|years?\s*ago|weeks?\s*ago)|"
+    r"(in\s*(january|february|march|april|may|june|july|august|"
+    r"september|october|november|december)(\s+\d{4})?)|"
+    r"(in\s+\d{4})|"
+    r"(back\s+when|first\s+time|earliest|originally)|"
+    r"(our\s+(first|earliest|original)\s+(conversation|discussion|chat))",
+    re.IGNORECASE,
+)
+
 
 def _fts_search_messages(query: str, limit: int = 10) -> list[dict]:
     """Keyword search on messages via SQLite FTS5.
@@ -379,6 +394,50 @@ def _format_relative_time(iso_ts: str) -> str:
         return ""
 
 
+def _apply_temporal_decay(candidates, half_life=0.0, floor=0.0):
+    """Multiply RAG candidate scores by temporal decay factor.
+
+    factor = floor + (1 - floor) * exp(-age_days / half_life)
+    Candidates missing 'created_at' pass through unmodified.
+
+    R28: Temporal Gravity
+    """
+    import math
+    from datetime import datetime
+    from atlas.config import TEMPORAL_DECAY_HALF_LIFE, TEMPORAL_DECAY_FLOOR
+
+    hl = half_life or TEMPORAL_DECAY_HALF_LIFE
+    fl = floor or TEMPORAL_DECAY_FLOOR
+    now = datetime.now()
+    trace = {"applied": True, "half_life_days": hl, "decay_floor": fl,
+             "candidates_decayed": 0, "candidates_skipped": 0}
+
+    for c in candidates:
+        created_at = c.get("created_at", "")
+        if not created_at:
+            c["temporal_factor"] = 1.0
+            trace["candidates_skipped"] += 1
+            continue
+        try:
+            ts = created_at.replace("T", " ").split("+")[0].split(".")[0]
+            dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+            age_days = max(0, (now - dt).days)
+        except Exception:
+            c["temporal_factor"] = 1.0
+            trace["candidates_skipped"] += 1
+            continue
+
+        factor = fl + (1.0 - fl) * math.exp(-age_days / hl)
+        c["pre_decay_score"] = round(c.get("score", 0.0), 4)
+        c["score"] = c.get("score", 0.0) * factor
+        c["temporal_factor"] = round(factor, 4)
+        c["age_days"] = age_days
+        trace["candidates_decayed"] += 1
+
+    candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+    return candidates, trace
+
+
 def _needs_rag(message: str) -> bool:
     """Decide whether a message warrants RAG retrieval.
 
@@ -480,6 +539,14 @@ def _build_rag_context(user_message: str,
             logger.debug("Graph ranking unavailable: %s", e)
             metrics["graph_trace"] = {}
 
+        # R28: Temporal decay — recency-weight candidates
+        temporal_trace = {"applied": False, "reason": "decay disabled"}
+        if _TEMPORAL_REFERENCE.search(user_message):
+            temporal_trace = {"applied": False, "reason": "historical query detected"}
+        else:
+            results, temporal_trace = _apply_temporal_decay(results)
+        metrics["temporal_trace"] = temporal_trace
+
         metrics["hit_count"] = len(results)
         metrics["collections_searched"] = list({r.get("source_collection", "unknown") for r in results})
 
@@ -521,6 +588,10 @@ def _build_rag_context(user_message: str,
                 "chunk_index": r.get("chunk_index"),
                 "chunk_total": r.get("chunk_total"),
                 "chunk_position": r.get("chunk_position", ""),
+                # R28 temporal decay
+                "temporal_factor": r.get("temporal_factor", 1.0),
+                "age_days": r.get("age_days"),
+                "pre_decay_score": r.get("pre_decay_score"),
             }
 
             # Filter 1: Minimum text length — reject short stubs (domain
@@ -1335,6 +1406,7 @@ def chat(message: str, history: list[dict],
                     },
                     "prompt_layers": prompt_layers,
                     "graph_trace": rag_metrics.get("graph_trace", {}),
+                    "temporal_trace": rag_metrics.get("temporal_trace", {}),
                     "rag_query": message,
                     "history_turns_sent": len(history) // 2,
                     "precognition": precog_directives,  # R25
