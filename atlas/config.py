@@ -88,6 +88,13 @@ WEAVE_CYCLE_INTERVAL = 5         # Weave every Nth slumber cycle (same as Dream)
 TEMPORAL_DECAY_HALF_LIFE = 30    # Days until temporal bonus is halved
 TEMPORAL_DECAY_FLOOR = 0.3       # Minimum multiplier (old content never fully suppressed)
 
+# --- Entity Extraction (R29: The Troubadour) ---
+EXTRACTION_BATCH_SIZE = 10          # Messages per Slumber cycle
+EXTRACTION_MIN_QUALITY = 0.3        # Minimum quality_score to attempt extraction
+EXTRACTION_TEMPERATURE = 0.2        # Low temperature for consistent extraction
+EXTRACTION_MAX_PER_MESSAGE = 8      # Max entities from a single message
+EXTRACTION_CYCLE_INTERVAL = 3       # Extract every Nth slumber cycle
+
 # --- Pre-Cognition (R25) ---
 PRECOGNITION_TIMEOUT_MS = 3000   # Max wait for Gemini pre-pass (ms)
 PRECOGNITION_WEIGHT_MIN = 0.0    # Floor for layer weights

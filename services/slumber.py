@@ -30,7 +30,7 @@ _slumber_thread = None
 
 # --- Slumber activity state (R22) — read by UI via get_slumber_status() ---
 _slumber_status = {
-    "state": "idle",           # idle | ingesting | evaluating | propagating | relating | pruning | dreaming | weaving
+    "state": "idle",           # idle | ingesting | evaluating | propagating | relating | pruning | extracting | dreaming | weaving
     "last_cycle_at": None,     # ISO timestamp of last completed cycle
     "last_evaluated": 0,       # Messages evaluated in last cycle
     "last_propagated": 0,      # Messages propagated in last cycle
@@ -47,6 +47,10 @@ _slumber_status = {
     "last_woven": 0,           # Edges woven in last cycle
     "total_woven": 0,          # Cumulative edges since startup
     "_cycle_count": 4,         # Internal: starts at INTERVAL-1 so first dream/weave fires on first eligible cycle
+    # Entity Extraction (R29)
+    "last_extracted": 0,       # Entities created/updated in last cycle
+    "total_extracted": 0,      # Cumulative entities since startup
+    "_extract_cycle_count": 2, # Internal: starts at INTERVAL-1 so first extraction fires on first eligible cycle
 }
 
 # Words too common to be meaningful keywords
@@ -87,7 +91,8 @@ def get_slumber_status() -> dict:
         Dict with keys: state, last_cycle_at, last_evaluated,
         last_propagated, last_related, last_pruned, eval_method,
         total_evaluated, last_dreamed, dream_edges, total_dreams,
-        last_woven, total_woven, error.
+        last_woven, total_woven, last_extracted, total_extracted,
+        error.
     """
     return dict(_slumber_status)
 
@@ -618,8 +623,47 @@ def _weave_batch():
         )
 
 
+def _should_extract() -> bool:
+    """Check if entity extraction should run this cycle.
+
+    Uses its own counter (_extract_cycle_count) independent of dream/weave
+    so intervals don't interfere with each other.
+    """
+    from services.settings import get_setting
+    from atlas.config import EXTRACTION_CYCLE_INTERVAL
+
+    enabled = (get_setting("slumber_eval_enabled") or "true").lower() == "true"
+    if not enabled:
+        return False
+
+    _slumber_status["_extract_cycle_count"] = _slumber_status.get(
+        "_extract_cycle_count", EXTRACTION_CYCLE_INTERVAL - 1
+    ) + 1
+    return _slumber_status["_extract_cycle_count"] % EXTRACTION_CYCLE_INTERVAL == 0
+
+
+def _extract_batch():
+    """Sub-cycle 5: Entity Extraction — extract entities from scored messages."""
+    from atlas.entity_extraction import run_extraction_cycle
+    from atlas.config import EXTRACTION_BATCH_SIZE
+
+    result = run_extraction_cycle(batch_size=EXTRACTION_BATCH_SIZE)
+    created = result.get("entities_created", 0)
+    updated = result.get("entities_updated", 0)
+    _slumber_status["last_extracted"] = created + updated
+    _slumber_status["total_extracted"] += created + updated
+    if result.get("messages_processed", 0) > 0:
+        logger.info(
+            "Entity Extraction: %d messages -> %d created, %d updated, %d errors",
+            result["messages_processed"],
+            created,
+            updated,
+            result.get("errors", 0),
+        )
+
+
 def _slumber_cycle():
-    """Background thread: Ingest → Evaluate → Propagate → Relate → Prune → Dream → Weave during idle."""
+    """Background thread: Ingest → Evaluate → Propagate → Relate → Prune → Extract → Dream → Weave during idle."""
     while True:
         time.sleep(CYCLE_INTERVAL_SECONDS)
         if not _is_idle():
@@ -678,7 +722,16 @@ def _slumber_cycle():
             _slumber_status["error"] = str(e)
             logger.debug("Slumber prune error: %s", e)
 
-        # Sub-cycle 5: Dream Synthesis (R24)
+        # Sub-cycle 5: Entity Extraction (R29)
+        if _should_extract():
+            _slumber_status["state"] = "extracting"
+            try:
+                _extract_batch()
+            except Exception as e:
+                _slumber_status["error"] = str(e)
+                logger.debug("Slumber extraction error: %s", e)
+
+        # Sub-cycle 6: Dream Synthesis (R24)
         if _should_dream():
             _slumber_status["state"] = "dreaming"
             try:
@@ -687,7 +740,7 @@ def _slumber_cycle():
                 _slumber_status["error"] = str(e)
                 logger.debug("Slumber dream error: %s", e)
 
-        # Sub-cycle 6: Graph Weave (R27)
+        # Sub-cycle 7: Graph Weave (R27)
         if _should_weave():
             _slumber_status["state"] = "weaving"
             try:

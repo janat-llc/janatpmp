@@ -25,6 +25,8 @@ def init_graph_schema(driver) -> None:
         # Identity graph (R17-H)
         "CREATE CONSTRAINT person_name IF NOT EXISTS FOR (n:Person) REQUIRE n.name IS UNIQUE",
         "CREATE CONSTRAINT identity_name IF NOT EXISTS FOR (n:Identity) REQUIRE n.name IS UNIQUE",
+        # Entity extraction (R29: The Troubadour)
+        "CREATE CONSTRAINT entity_id IF NOT EXISTS FOR (n:Entity) REQUIRE n.id IS UNIQUE",
     ]
 
     indexes = [

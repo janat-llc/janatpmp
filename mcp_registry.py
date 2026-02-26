@@ -76,6 +76,8 @@ from db.file_registry_ops import (
 )
 from services.auto_ingest import get_ingestion_progress
 from atlas.temporal import get_temporal_context
+# --- Entity extraction (R29: The Troubadour) — 3 functions ---
+from db.entity_ops import list_entities, get_entity, search_entities
 # --- Chat pipeline (R28: diagnostic MCP endpoint) — 1 function ---
 from services.chat import chat_with_janus
 # --- Slumber status (R22: First Light) — 1 function ---
@@ -116,6 +118,8 @@ ALL_MCP_TOOLS: list = [
     backfill_graph, seed_identity_graph, weave_conversation_graph,
     get_file_registry_stats, list_registered_files, search_file_registry,
     get_ingestion_progress,
+    # Entity extraction (R29: The Troubadour)
+    list_entities, get_entity, search_entities,
 
     # --- Admin page: operations + platform (6) ---
     get_stats, get_schema_info,

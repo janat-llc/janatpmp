@@ -24,7 +24,7 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 ```
 JANATPMP/
 ├── app.py                    # Thin launcher: startup calls, gr.Blocks, banner, demo.launch()
-├── mcp_registry.py           # MCP Tool Registry — all 76 gr.api() function imports + ALL_MCP_TOOLS list
+├── mcp_registry.py           # MCP Tool Registry — all 81 gr.api() function imports + ALL_MCP_TOOLS list
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── pages/
 │   ├── __init__.py
@@ -48,6 +48,7 @@ JANATPMP/
 │   ├── operations.py         # All CRUD + lifecycle functions (28 operations)
 │   ├── chat_operations.py    # Conversation + message CRUD (Phase 4B)
 │   ├── chunk_operations.py   # Chunk CRUD, stats, FTS search (R16)
+│   ├── entity_ops.py         # Entity + mention CRUD, FTS search (R29)
 │   ├── file_registry_ops.py  # File registry MCP tools (R17)
 │   ├── test_operations.py    # Tests
 │   ├── migrations/           # Versioned schema migrations
@@ -62,7 +63,8 @@ JANATPMP/
 │   │   ├── 0.9.0_file_registry.sql
 │   │   ├── 1.0.0_cognition_trace.sql
 │   │   ├── 1.1.0_slumber_eval.sql
-│   │   └── 1.2.0_precognition.sql
+│   │   ├── 1.2.0_precognition.sql
+│   │   └── 1.3.0_entities.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
 │   ├── exports/              # Portable project data exports (JSON)
@@ -78,6 +80,7 @@ JANATPMP/
 │   ├── on_write.py           # On-write: chunk + embed for messages/documents/items/tasks (R13/R16/R27)
 │   ├── graph_ranking.py       # Graph-aware RAG ranking — topology boost (R21)
 │   ├── dream_synthesis.py      # Dream Synthesis — cross-conversation insight generation (R24)
+│   ├── entity_extraction.py    # Entity extraction engine — Gemini-powered (R29)
 │   ├── pipeline.py           # Search pipeline: ANN → salience (rerank decommissioned)
 │   └── temporal.py           # Temporal Affinity Engine — time/location context (R17)
 ├── graph/                    # Knowledge graph layer — Neo4j (R13)
@@ -160,7 +163,7 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.Navbar(main_page_name="Projects")
     build_page()                          # Projects + Work
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)                   # 76 MCP tools (registered on main Blocks only)
+        gr.api(tool_fn)                   # 81 MCP tools (registered on main Blocks only)
 
 with demo.route("Knowledge", "/knowledge"):
     gr.Navbar(main_page_name="Projects")
@@ -310,7 +313,7 @@ auto-dismisses via `gr.Timer` polling `is_auto_ingest_complete()` every 2 second
 
 ### MCP Tool Registry (`mcp_registry.py`)
 
-All 76 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
+All 81 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
 page ownership (Projects, Knowledge, Admin, cross-cutting). `app.py` loops over this list:
 `for tool_fn in ALL_MCP_TOOLS: gr.api(tool_fn)`. Registered on the main Blocks only —
 accessible from all routes. Keeps `app.py` thin (~100 lines).
@@ -660,20 +663,22 @@ from mcp_registry import ALL_MCP_TOOLS
 with gr.Blocks() as demo:
     build_page()
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)  # 76 MCP tools from registry
+        gr.api(tool_fn)  # 81 MCP tools from registry
 
 demo.launch(mcp_server=True)
 ```
 
-76 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
+81 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
 28 from `db/operations.py` (including domain CRUD + export/import), 16 from
 `db/chat_operations.py` (including Janus lifecycle + conversation stream + metadata backfill),
-4 from `db/chunk_operations.py` (chunk CRUD + stats + search), 3 from `db/file_registry_ops.py`
-(R17 file registry), 10 vector/embedding/chunking operations from `services/`, 2 import
-pipelines, 2 ingestion orchestrators, 6 graph operations from `graph/` (including identity
-seeding + semantic edge weaving), 2 from R17 (ingestion progress + temporal context),
-1 from R22 (Slumber status), and 3 from R26 backfill orchestrator (run/progress/cancel).
-All MUST have Google-style docstrings with Args/Returns for MCP tool generation.
+4 from `db/chunk_operations.py` (chunk CRUD + stats + search), 3 from `db/entity_ops.py`
+(R29 entity extraction), 3 from `db/file_registry_ops.py` (R17 file registry),
+10 vector/embedding/chunking operations from `services/`, 2 import pipelines,
+2 ingestion orchestrators, 6 graph operations from `graph/` (including identity seeding +
+semantic edge weaving), 2 from R17 (ingestion progress + temporal context), 1 from R22
+(Slumber status), 1 from R28 (chat diagnostics), and 3 from R26 backfill orchestrator
+(run/progress/cancel). All MUST have Google-style docstrings with Args/Returns for MCP
+tool generation.
 
 ### Common Mistakes to Avoid
 
@@ -921,7 +926,7 @@ same tokenizer = consistent chars-per-token ratio). Fallback: ~4 chars/token est
 - `touch_activity()` called in all chat handlers to reset idle timer
 - Settings: `slumber_idle_threshold`, `slumber_batch_size`, `slumber_evaluator`, `slumber_prune_age_days`
 - Started at app boot in `app.py` via `start_slumber()`
-- Seven sub-cycles run in sequence during each idle period:
+- Eight sub-cycles run in sequence during each idle period:
 
 | Sub-cycle | Function | Purpose |
 |-----------|----------|---------|
@@ -930,6 +935,7 @@ same tokenizer = consistent chars-per-token ratio). Fallback: ~4 chars/token est
 | Propagate | `_propagate_batch()` | Bridge `quality_score` → Qdrant `salience` (decay garbage, boost quality) |
 | Relate | `_relate_batch()` | Create SIMILAR_TO edges in Neo4j via cross-conversation keyword overlap |
 | Prune | `_prune_batch()` | Remove dead-weight vectors from Qdrant (quality < 0.1, salience < 0.1, never retrieved, older than N days) |
+| Extract | `_extract_batch()` | Extract entities from scored messages via Gemini, persist to SQLite + Qdrant + Neo4j (R29, every 3rd cycle) |
 | Dream | `_dream_batch()` | Select high-quality message clusters, synthesize cross-conversation insights via Gemini, persist as documents + graph edges (R24) |
 | Weave | `_weave_batch()` | Incremental SIMILAR_TO edges for new conversations via vector centroid similarity (R27) |
 
@@ -1733,7 +1739,66 @@ selection via `_load_synthesis_data()`. Three sections:
 Left sidebar shows dream count, Slumber cycle count, and current state. Updates via existing
 `slumber_timer` polling.
 
-## Current Platform State (Post-R28)
+## Phase R29: The Troubadour — Entity Extraction
+
+R29 adds entity extraction to the Slumber Cycle. The knowledge graph had 35K+ structural
+nodes but no understanding of what messages *contain*. Entity extraction turns messages
+into meaning — when the system encounters "C-Theory" across 47 conversations, it creates
+an Entity node with that name, links it to every source message, and embeds it for
+retrieval. Six entity types: concept, decision, milestone, person, reference, emotional_state.
+
+### Entity Extraction Pipeline (`atlas/entity_extraction.py`)
+
+3 public functions following the `atlas/dream_synthesis.py` pattern:
+
+- `extract_entities()` — sends message triplet to Gemini with structured extraction prompt,
+  parses JSON response (fence-stripping + validation), returns entity dicts
+- `persist_entities()` — for each entity: normalize name, dedup by (type, name), create or
+  update in SQLite, create mention record, embed to Qdrant, create Neo4j Entity node +
+  MENTIONS edge (Message→Entity) + DISCUSSED_IN edge (Entity→Conversation)
+- `run_extraction_cycle()` — batch processor for Slumber: queries unextracted scored messages
+  (quality >= 0.3, extracted_at IS NULL), runs extract + persist, marks extracted_at
+
+### Entity Tables (Migration 1.3.0)
+
+- `entities` — id, entity_type (CHECK constraint), name, description, first_seen_at,
+  last_seen_at, mention_count, attributes JSON, metadata JSON. FTS5 via `entities_fts`
+  with INSERT/UPDATE/DELETE sync triggers.
+- `entity_mentions` — join table linking entities to messages with relevance score and
+  context snippet. UNIQUE(entity_id, message_id) prevents duplicate mentions.
+- `messages_metadata.extracted_at` — extraction tracking column (same pattern as `embedded_at`).
+
+### Entity CRUD (`db/entity_ops.py`)
+
+8 functions: `create_entity`, `get_entity` (with mentions JOIN), `list_entities`,
+`search_entities` (FTS5), `update_entity`, `create_entity_mention`, `find_entity_by_name`,
+`get_entity_stats`. 3 exposed as MCP tools (list, get, search).
+
+### Slumber Integration
+
+Sub-cycle 5 (Extract) fires every 3rd cycle via `_should_extract()` with its own counter
+(`_extract_cycle_count`), independent of Dream/Weave intervals. 10 messages per batch
+(~15s). Status tracked in `_slumber_status` with `last_extracted`, `total_extracted` fields.
+
+### Architecture Decisions
+
+- **No CDC** — direct Neo4j writes (same pattern as dream_synthesis.py), avoids ~300 LOC
+  migration to recreate ALL triggers for adding 'entity' to the CDC CHECK constraint
+- **Simple merging** — duplicate entities update `last_seen_at`, increment `mention_count`,
+  append description with ` | ` separator (no Gemini synthesis for merges)
+- **Triad persistence** — every entity lives in SQLite, Qdrant, and Neo4j simultaneously
+
+### Constants (`atlas/config.py`)
+
+5 constants: `EXTRACTION_BATCH_SIZE` (10), `EXTRACTION_MIN_QUALITY` (0.3),
+`EXTRACTION_TEMPERATURE` (0.2), `EXTRACTION_MAX_PER_MESSAGE` (8),
+`EXTRACTION_CYCLE_INTERVAL` (3).
+
+### Graph Schema
+
+Entity uniqueness constraint: `CREATE CONSTRAINT entity_id IF NOT EXISTS FOR (n:Entity) REQUIRE n.id IS UNIQUE`.
+
+## Current Platform State (Post-R29)
 
 ### What Works
 
@@ -1758,12 +1823,14 @@ Left sidebar shows dream count, Slumber cycle count, and current state. Updates 
   Cross-encoder reranking decommissioned (rerank=False default).
 - **Content corpus** — 659 Claude conversations (10,271 messages), 40 markdown documents,
   78 items, 13 domains, 3 tasks. All embedded in Qdrant, synced to Neo4j.
-- **Background intelligence** — Slumber Cycle: ingest → evaluate → propagate → relate → prune → dream → weave.
-  Seven sub-cycles run in sequence during idle periods. New content auto-discovered and fully
+- **Background intelligence** — Slumber Cycle: ingest → evaluate → propagate → relate → prune → extract → dream → weave.
+  Eight sub-cycles run in sequence during idle periods. New content auto-discovered and fully
   processed in a single idle cycle. Evaluate sub-cycle uses Gemini Flash Lite for LLM-powered
-  quality scoring with heuristic fallback (R22). Dream sub-cycle synthesizes cross-conversation
-  insights from high-quality message clusters (R24). Weave sub-cycle incrementally connects
-  new conversations via SIMILAR_TO edges using vector centroid similarity (R27).
+  quality scoring with heuristic fallback (R22). Extract sub-cycle discovers entities (concepts,
+  decisions, milestones, people, references, emotional states) from scored messages via Gemini
+  and persists to the Triad (R29). Dream sub-cycle synthesizes cross-conversation insights
+  from high-quality message clusters (R24). Weave sub-cycle incrementally connects new
+  conversations via SIMILAR_TO edges using vector centroid similarity (R27).
 - **Ingestion pipelines** — Claude export, Google AI Studio, markdown. Auto-embed + dedup.
   Auto-ingestion scanner for hands-free operation.
 - **Sovereign multipage architecture** — 4 purpose-built pages (Projects, Knowledge, Admin,
@@ -1780,7 +1847,7 @@ Left sidebar shows dream count, Slumber cycle count, and current state. Updates 
 - **Semantic graph topology** — `weave_conversation_graph()` (R20) bridges Qdrant vector
   similarity into Neo4j SIMILAR_TO edges between Conversation nodes. Transforms isolated
   conversation chains into a connected semantic network. MERGE-based, idempotent.
-- **76 MCP tools** — full CRUD + search + graph + embedding + chunks + file registry + temporal + semantic edge weaving + Slumber status + metadata backfill + backfill orchestrator exposed for external AI clients.
+- **81 MCP tools** — full CRUD + search + graph + embedding + chunks + entities + file registry + temporal + semantic edge weaving + Slumber status + metadata backfill + backfill orchestrator + chat diagnostics exposed for external AI clients.
 - **Graph-aware RAG** — SIMILAR_TO edges boost candidates from the query's topic
   neighborhood. Additive scoring ensures graph promotes borderline candidates without
   making irrelevant content appear relevant.
@@ -1802,6 +1869,12 @@ Left sidebar shows dream count, Slumber cycle count, and current state. Updates 
   tone adaptation without knowledge retrieval noise.
 - **Backfill orchestrator** — phased pipeline runs existing tools in dependency order with
   progress tracking, cancellation, and checkpoint resume.
+- **Entity extraction** — Gemini-powered extraction of 6 entity types (concept, decision,
+  milestone, person, reference, emotional_state) from scored messages during Slumber. Entities
+  persist to the Triad: SQLite (entities + entity_mentions tables), Qdrant (single-vector
+  embed), Neo4j (Entity nodes + MENTIONS/DISCUSSED_IN edges). Dedup by normalized name within
+  type. 3 MCP tools (list, get with inline mentions, FTS search). Gated every 3rd Slumber
+  cycle, 10 messages per batch (R29).
 
 ### What's Missing (Architectural Gaps)
 
@@ -1829,7 +1902,8 @@ composer, R19/R25), a connected graph topology (conversation-level SIMILAR_TO ed
 graph-aware retrieval (topology-boosted RAG, R21), a visible thought pipeline (Cognition tab,
 R21), synthesized cross-conversation insight (Dream Synthesis, R24), adaptive self-expression
 (Gemini pre-cognition modulating how each prompt layer is constructed, R25), and temporal
-gravity (recency-weighted retrieval, R28) with a visible Synthesis Surface (R28).
+gravity (recency-weighted retrieval, R28) with a visible Synthesis Surface (R28), and
+extracted entities turning messages into structured knowledge (R29: The Troubadour).
 She still cannot act (tool use was removed because the previous 8B model couldn't handle
 it — may be revisited with the 32B model). The Modelfile intelligence stack is the right
 direction — specialized sub-models for classification, scoring, synthesis — but those are
@@ -1840,8 +1914,10 @@ layers of intelligence on a foundation that is rapidly gaining self-awareness.
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R29 candidates)
+### Near-Term (R30 candidates)
 
+- **Entity-aware RAG routing** — "Tell me about C-Theory" routes to `search_entities()`
+  and returns the synthesized description directly, bypassing vector similarity search.
 - **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
   system-injected, or verified. Give the model metadata to distinguish recall from hearsay.
 - **Chunk-level semantic edges** — RESONATES_WITH edges between individual chunks for
