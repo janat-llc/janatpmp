@@ -502,6 +502,105 @@ def _scan_markdown_dir(directory: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Watched Files — living docs that update in place on change
+# ---------------------------------------------------------------------------
+
+# Repo-root files Janus should always have current knowledge of.
+# Paths are relative to the app root (/app in Docker).
+_WATCHED_FILES = ["CLAUDE.md", "README.md"]
+
+
+def _scan_watched_files() -> dict:
+    """Ingest or update watched repo-root files as documents.
+
+    Unlike directory scanners, watched files use UPDATE semantics:
+    if the document already exists and content changed, the document
+    content is updated in place and old chunks are deleted so the
+    embed phase picks up the new text.
+
+    Returns:
+        Dict with files_ingested, files_updated, files_skipped.
+    """
+    from services.ingestion.markdown_ingest import ingest_markdown
+    from db.operations import create_document, get_connection
+    from db.chunk_operations import delete_chunks
+
+    app_root = Path(__file__).resolve().parent.parent
+    ingested = 0
+    updated = 0
+    skipped = 0
+
+    for filename in _WATCHED_FILES:
+        file_path = app_root / filename
+        if not file_path.is_file():
+            continue
+
+        file_str = str(file_path)
+        file_hash = _compute_file_hash(file_path)
+        file_size = file_path.stat().st_size
+
+        # Check registry — skip if hash unchanged
+        if is_file_registered(file_str, file_hash):
+            skipped += 1
+            continue
+
+        # Parse the file
+        parsed = ingest_markdown(file_str)
+        if not parsed:
+            continue
+
+        title = parsed["title"]
+        content = parsed["content"]
+
+        # Check if a document with this title already exists
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM documents WHERE title = ?", (title,)
+            ).fetchone()
+
+        if row:
+            # UPDATE existing document content + re-chunk
+            doc_id = row["id"]
+            with get_connection() as conn:
+                conn.execute(
+                    "UPDATE documents SET content = ?, updated_at = datetime('now') WHERE id = ?",
+                    (content, doc_id),
+                )
+                conn.commit()
+            # Delete old chunks so embed phase re-processes
+            delete_chunks("document", doc_id)
+            updated += 1
+            logger.info("Watched file updated: %s (doc %s)", filename, doc_id[:8])
+        else:
+            # CREATE new document
+            create_document(
+                doc_type="file",
+                source="upload",
+                title=title,
+                content=content,
+            )
+            ingested += 1
+            logger.info("Watched file ingested: %s", filename)
+
+        # Register / update in file registry
+        register_file(
+            file_path=file_str,
+            content_hash=file_hash,
+            file_size=file_size,
+            ingestion_type="markdown",
+            entity_type="document",
+            entity_count=1,
+            status="ingested",
+        )
+
+    if ingested or updated:
+        logger.info("Watched files: %d ingested, %d updated, %d unchanged",
+                     ingested, updated, skipped)
+
+    return {"files_ingested": ingested, "files_updated": updated, "files_skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
 # Auto-Import Platform Export (empty DB recovery)
 # ---------------------------------------------------------------------------
 
@@ -658,11 +757,20 @@ def scan_and_ingest(auto_embed: bool = True, source: str = "startup") -> dict:
         total_docs += md_result.get("documents_created", 0)
         all_errors.extend(md_result.get("errors", []))
 
+    # --- Scan watched files (CLAUDE.md, README.md) ---
+    _update_progress(status="ingesting", current_phase="watched_files",
+                     phase_detail="Checking repo root docs")
+    watched_result = _scan_watched_files()
+    total_ingested += watched_result["files_ingested"]
+    total_docs += watched_result["files_ingested"] + watched_result["files_updated"]
+    total_skipped += watched_result["files_skipped"]
+
     _current_progress["files_found"] = total_ingested + total_skipped + total_failed
 
-    # --- Chunk + Embed if new content was ingested ---
+    # --- Chunk + Embed if new content was ingested or updated ---
+    has_new_content = total_ingested > 0 or watched_result["files_updated"] > 0
     embed_result = {}
-    if auto_embed and total_ingested > 0:
+    if auto_embed and has_new_content:
         try:
             from services.bulk_embed import (
                 chunk_all_messages, chunk_all_documents,
