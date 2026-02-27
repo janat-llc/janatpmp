@@ -145,6 +145,7 @@ def _insert_chunks_for(
                      chunk["char_start"], chunk["char_end"],
                      chunk["position"], point_id),
                 )
+            conn.commit()
     except Exception as e:
         logger.warning("on_write chunk insert failed for %s: %s", entity_id[:12], e)
 

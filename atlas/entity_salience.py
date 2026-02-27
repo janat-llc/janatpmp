@@ -117,6 +117,7 @@ def run_entity_decay_cycle(batch_size: int = 0) -> dict:
                     "UPDATE entities SET salience = ?, updated_at = ? WHERE id = ?",
                     updates,
                 )
+                conn.commit()
         except Exception as e:
             logger.debug("Entity decay SQLite batch update failed: %s", e)
             result["errors"] += len(updates)

@@ -460,6 +460,7 @@ def _embed_document(
                      chunk["char_start"], chunk["char_end"],
                      chunk["position"], point_id),
                 )
+            conn.commit()
 
         logger.debug(
             "Dream embed: doc %s -> %d chunk(s) in Qdrant",

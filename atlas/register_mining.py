@@ -170,6 +170,7 @@ def _store_exemplar(
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
+            conn.commit()
     except Exception as e:
         logger.warning("Register exemplar SQLite write failed: %s", e)
         return None
