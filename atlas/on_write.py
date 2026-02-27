@@ -381,6 +381,8 @@ def on_item_write(
         return
 
     try:
+        from datetime import datetime, timezone
+
         from services.embedding import embed_passages
         from services.vector_store import COLLECTION_DOCUMENTS, upsert_point
 
@@ -393,6 +395,7 @@ def on_item_write(
             "domain": domain or "",
             "status": "not_started",
             "priority": 3,
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         upsert_point(COLLECTION_DOCUMENTS, item_id, vectors[0], payload)
 
@@ -431,6 +434,8 @@ def on_task_write(
         return
 
     try:
+        from datetime import datetime, timezone
+
         from services.embedding import embed_passages
         from services.vector_store import COLLECTION_DOCUMENTS, upsert_point
 
@@ -442,6 +447,7 @@ def on_task_write(
             "title": title or "",
             "assigned_to": "",
             "status": "not_started",
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         upsert_point(COLLECTION_DOCUMENTS, task_id, vectors[0], payload)
 

@@ -660,7 +660,8 @@ def embed_all_items() -> dict:
 
     with get_connection() as conn:
         cursor = conn.execute("""
-            SELECT id, entity_type, domain, title, description, status, priority
+            SELECT id, entity_type, domain, title, description, status, priority,
+                   created_at
             FROM items
             WHERE title IS NOT NULL AND length(title) > 0
         """)
@@ -709,6 +710,7 @@ def embed_all_items() -> dict:
                         "domain": row["domain"] or "",
                         "status": row["status"] or "",
                         "priority": row["priority"],
+                        "created_at": row["created_at"] or "",
                     },
                 )
                 for (row, text), vec in zip(valid_rows, vectors)
@@ -753,7 +755,7 @@ def embed_all_tasks() -> dict:
     with get_connection() as conn:
         cursor = conn.execute("""
             SELECT id, task_type, title, description, assigned_to, status,
-                   agent_instructions
+                   agent_instructions, created_at
             FROM tasks
             WHERE title IS NOT NULL AND length(title) > 0
         """)
@@ -804,6 +806,7 @@ def embed_all_tasks() -> dict:
                         "title": row["title"] or "",
                         "assigned_to": row["assigned_to"] or "",
                         "status": row["status"] or "",
+                        "created_at": row["created_at"] or "",
                     },
                 )
                 for (row, text), vec in zip(valid_rows, vectors)
