@@ -572,6 +572,70 @@ def get_recent_introspection(limit: int = 10) -> dict:
     }
 
 
+def get_knowledge_state() -> dict:
+    """Aggregate Janus's knowledge substrate stats for self-awareness.
+
+    Queries across SQLite (entities, documents) and Neo4j (graph stats).
+    Each data source is isolated — failure in one doesn't block others.
+
+    Returns:
+        Dict with keys: entity_count, entity_types, recent_entities,
+        graph_node_count, graph_edge_types, dream_count, recent_dreams,
+        salience_stats. Empty sub-dicts on failure.
+    """
+    state = {}
+
+    # Entity awareness (SQLite)
+    try:
+        with get_connection() as conn:
+            state["entity_count"] = conn.execute(
+                "SELECT COUNT(*) FROM entities").fetchone()[0]
+            type_rows = conn.execute(
+                "SELECT entity_type, COUNT(*) FROM entities GROUP BY entity_type"
+            ).fetchall()
+            state["entity_types"] = {r[0]: r[1] for r in type_rows}
+            recent = conn.execute(
+                "SELECT name FROM entities ORDER BY last_seen_at DESC LIMIT 5"
+            ).fetchall()
+            state["recent_entities"] = [r[0] for r in recent]
+            sal = conn.execute(
+                "SELECT MIN(salience), MAX(salience), AVG(salience) "
+                "FROM entities WHERE salience IS NOT NULL"
+            ).fetchone()
+            if sal and sal[0] is not None:
+                state["salience_stats"] = {
+                    "min": round(sal[0], 3), "max": round(sal[1], 3),
+                    "avg": round(sal[2], 3),
+                }
+    except Exception:
+        state.setdefault("entity_count", 0)
+
+    # Dream awareness (SQLite documents)
+    try:
+        with get_connection() as conn:
+            state["dream_count"] = conn.execute(
+                "SELECT COUNT(*) FROM documents WHERE doc_type='agent_output'"
+            ).fetchone()[0]
+            recent_dreams = conn.execute(
+                "SELECT title FROM documents WHERE doc_type='agent_output' "
+                "ORDER BY created_at DESC LIMIT 3"
+            ).fetchall()
+            state["recent_dreams"] = [r[0] for r in recent_dreams]
+    except Exception:
+        state.setdefault("dream_count", 0)
+
+    # Graph awareness (Neo4j)
+    try:
+        from graph.graph_service import graph_stats
+        gstats = graph_stats()
+        if isinstance(gstats, dict):
+            state["graph"] = gstats
+    except Exception:
+        state["graph"] = {}
+
+    return state
+
+
 def backfill_message_metadata(batch_size: int = 500) -> str:
     """Create messages_metadata rows for messages that don't have them.
 

@@ -83,7 +83,9 @@ BEHAVIORAL_GUIDELINES = """\
 When referencing memories, do so naturally — "I remember we discussed..." not \
 "According to my knowledge base..." If you're uncertain whether a memory is \
 accurate, say so: "I believe we talked about X, though I may be misremembering." \
-Never amplify partial information into confident narratives."""
+Never amplify partial information into confident narratives. \
+Match Mat's conversational register — if he's warm and personal, respond in kind. \
+If he's in work mode, be direct and collaborative."""
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +109,8 @@ Reference memories naturally. Never amplify partial information into confident n
 
 BEHAVIORAL_GUIDELINES_EXPANDED = BEHAVIORAL_GUIDELINES + """ \
 If Mat seems to be exploring an idea, explore with him — don't rush to conclusions \
-or wrap things up prematurely."""
+or wrap things up prematurely. When he greets you, greet him back — don't pivot \
+to a status report."""
 
 
 def _select_variant(weight: float, minimal: str, standard: str,
@@ -406,30 +409,67 @@ def _build_conversation_state(history: list[dict] | None = None,
 # ---------------------------------------------------------------------------
 
 def _build_introspection_context(weight: float = 1.0) -> str:
-    """Build self-awareness block from recent Slumber evaluations.
+    """Build self-awareness block from Slumber evaluations + knowledge state.
+
+    R32: Expanded to include entity count, graph stats, dream insights,
+    and recently encountered entities alongside existing quality/keyword data.
 
     Args:
         weight: Pre-cognition weight (R25). At > 1.3, includes rationales.
     """
     try:
-        from db.chat_operations import get_recent_introspection
-        data = get_recent_introspection()
-        if not data or data.get("evaluated_count", 0) == 0:
+        from db.chat_operations import get_recent_introspection, get_knowledge_state
+
+        parts = []
+
+        # Existing: evaluation awareness
+        intro = get_recent_introspection()
+        if intro:
+            count = intro.get("evaluated_count", 0)
+            avg = intro.get("avg_quality", 0)
+            keywords = intro.get("top_keywords", [])
+            if count:
+                parts.append(f"{count} recent interactions evaluated, "
+                             f"avg quality: {avg:.2f}")
+            if keywords:
+                parts.append(f"Strong topics: {', '.join(keywords[:5])}")
+            if weight > 1.3 and intro.get("recent_rationales"):
+                parts.append("Recent notes: " + "; ".join(
+                    intro["recent_rationales"][:3]))
+
+        # R32: knowledge state awareness
+        knowledge = get_knowledge_state()
+
+        entity_count = knowledge.get("entity_count", 0)
+        if entity_count:
+            types = knowledge.get("entity_types", {})
+            type_summary = ", ".join(
+                f"{c} {t}s" for t, c in
+                sorted(types.items(), key=lambda x: -x[1])[:3])
+            parts.append(f"{entity_count} entities in your knowledge "
+                         f"({type_summary})")
+
+        dream_count = knowledge.get("dream_count", 0)
+        if dream_count:
+            titles = knowledge.get("recent_dreams", [])
+            parts.append(f"{dream_count} synthesized insights")
+            if titles and weight > 0.7:
+                parts.append(f"Recent insights: {', '.join(titles[:3])}")
+
+        graph = knowledge.get("graph", {})
+        if graph:
+            nodes = graph.get("total_nodes", 0)
+            edges = graph.get("total_edges", 0)
+            if nodes:
+                parts.append(f"Knowledge graph: {nodes} nodes, {edges} edges")
+
+        recent = knowledge.get("recent_entities", [])
+        if recent and weight > 0.7:
+            parts.append(f"Recently encountered: {', '.join(recent[:5])}")
+
+        if not parts:
             return ""
-        count = data["evaluated_count"]
-        avg = data.get("avg_quality", 0)
-        keywords = data.get("top_keywords", [])
-        kw_str = ", ".join(keywords[:5]) if keywords else "various"
-        text = (
-            f"\u2014 Self-awareness: {count} of your recent interactions have been "
-            f"evaluated. Average quality: {avg:.2f}. Strong topics: {kw_str}."
-        )
-        # Expanded mode: include recent rationales (R25)
-        if weight > 1.3:
-            rationales = data.get("recent_rationales", [])
-            if rationales:
-                text += " Recent evaluator notes: " + "; ".join(rationales[:2]) + "."
-        return text
+        return "\u2014 Self-awareness: " + ". ".join(parts) + "."
     except Exception:
         return ""
 

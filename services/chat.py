@@ -509,7 +509,8 @@ def _needs_rag(message: str) -> bool:
 
 def _build_rag_context(user_message: str,
                        skip_gate: bool = False,
-                       entity_ids: list[str] | None = None) -> tuple[str, dict]:
+                       entity_ids: list[str] | None = None,
+                       intent: str = "") -> tuple[str, dict]:
     """Hybrid search: Qdrant vectors + SQLite FTS keyword matching.
 
     Two-source retrieval ensures both semantic similarity AND keyword matches
@@ -735,26 +736,41 @@ def _build_rag_context(user_message: str,
             if doc_type == "agent_output":
                 source = "synthesized insight"
 
-            # Build attribution line
-            attr_parts = [f"[{source}]"]
-            if title:
-                attr_parts.append(f'"{title}"')
-            if pos_label:
-                attr_parts.append(f"({pos_label}")
-                if chunk_idx is not None and chunk_total and chunk_total > 1:
-                    attr_parts[-1] += f", chunk {chunk_idx + 1}/{chunk_total}"
-                    if age_label:
-                        attr_parts[-1] += f", {age_label})"
-                    else:
-                        attr_parts[-1] += ")"
+            # R32: Intent-gated attribution — narrative for relational,
+            # clinical for analytical intents
+            _RELATIONAL_INTENTS = {"greeting", "emotional", "farewell",
+                                   "continuation"}
+            if intent in _RELATIONAL_INTENTS:
+                # Narrative attribution — conversational framing
+                time_phrase = f" ({age_label})" if age_label else ""
+                if title:
+                    attribution = (f"From a conversation about "
+                                   f"{title}{time_phrase}")
                 else:
-                    if age_label:
-                        attr_parts[-1] += f", {age_label})"
+                    attribution = f"From memory{time_phrase}"
+            else:
+                # Clinical attribution — structured metadata
+                attr_parts = [f"[{source}]"]
+                if title:
+                    attr_parts.append(f'"{title}"')
+                if pos_label:
+                    attr_parts.append(f"({pos_label}")
+                    if (chunk_idx is not None and chunk_total
+                            and chunk_total > 1):
+                        attr_parts[-1] += (
+                            f", chunk {chunk_idx + 1}/{chunk_total}")
+                        if age_label:
+                            attr_parts[-1] += f", {age_label})"
+                        else:
+                            attr_parts[-1] += ")"
                     else:
-                        attr_parts[-1] += ")"
-            elif age_label:
-                attr_parts.append(f"({age_label})")
-            attribution = " ".join(attr_parts)
+                        if age_label:
+                            attr_parts[-1] += f", {age_label})"
+                        else:
+                            attr_parts[-1] += ")"
+                elif age_label:
+                    attr_parts.append(f"({age_label})")
+                attribution = " ".join(attr_parts)
 
             # Inject the A (response) portion with brief Q context
             if q_part and a_part != full_text:
@@ -1493,7 +1509,8 @@ def chat(message: str, history: list[dict],
         with timer.span("rag"):
             if effective_rag_depth == RAGDepth.FULL:
                 rag_context, rag_metrics = _build_rag_context(
-                    message, skip_gate=True, entity_ids=entity_ids)
+                    message, skip_gate=True, entity_ids=entity_ids,
+                    intent=intent_result.intent.value)
             elif effective_rag_depth == RAGDepth.LIGHT:
                 rag_context, rag_metrics = _build_light_rag_context(message)
             else:
