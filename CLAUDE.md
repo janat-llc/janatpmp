@@ -64,14 +64,15 @@ JANATPMP/
 │   │   ├── 1.0.0_cognition_trace.sql
 │   │   ├── 1.1.0_slumber_eval.sql
 │   │   ├── 1.2.0_precognition.sql
-│   │   └── 1.3.0_entities.sql
+│   │   ├── 1.3.0_entities.sql
+│   │   └── 1.4.0_entity_salience.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
 │   ├── exports/              # Portable project data exports (JSON)
 │   └── __init__.py
 ├── atlas/                    # ATLAS model infrastructure (R9, offloaded R10)
 │   ├── __init__.py
-│   ├── config.py             # Model names, dimensions, service URLs, Neo4j + salience constants
+│   ├── config.py             # Model names, dimensions, service URLs, Neo4j + salience + co-occurrence constants
 │   ├── chunking.py           # Paragraph-aware text splitter for messages + documents (R16)
 │   ├── embedding_service.py  # Qwen3-Embedding-0.6B via Ollama HTTP (OpenAI client)
 │   ├── reranking_service.py  # DECOMMISSIONED — vLLM reranker removed, rerank defaults to False
@@ -82,6 +83,8 @@ JANATPMP/
 │   ├── dream_synthesis.py      # Dream Synthesis — cross-conversation insight generation (R24)
 │   ├── entity_extraction.py    # Entity extraction engine — Gemini-powered (R29)
 │   ├── graph_retrieval.py      # Graph-based retrieval — entity edge traversal (R30)
+│   ├── cooccurrence.py         # Entity co-occurrence linking — shared-message edges (R31)
+│   ├── entity_salience.py      # Entity salience decay — temporal fade + mention boost (R31)
 │   ├── pipeline.py           # Search pipeline: ANN → salience (rerank decommissioned)
 │   └── temporal.py           # Temporal Affinity Engine — time/location context (R17)
 ├── graph/                    # Knowledge graph layer — Neo4j (R13)
@@ -96,7 +99,7 @@ JANATPMP/
 │   ├── chat.py               # Multi-provider chat (Anthropic/Gemini/Ollama) — no tools for in-app Ollama
 │   ├── prompt_composer.py    # 9-layer adaptive Janus identity system prompt (R19/R25)
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
-│   ├── slumber.py            # Background daemon — 7-stage Slumber Cycle (R12/R27)
+│   ├── slumber.py            # Background daemon — 10-stage Slumber Cycle (R12/R27/R31)
 │   ├── slumber_eval.py        # Gemini-powered message evaluation (R22: First Light)
 │   ├── precognition.py        # Gemini pre-cognition — adaptive prompt shaping (R25)
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (directory scanner)
@@ -424,6 +427,8 @@ CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where 
 - `1.0.0_cognition_trace.sql` — Cognition trace columns on messages_metadata (R21)
 - `1.1.0_slumber_eval.sql` — Slumber LLM evaluation columns on messages_metadata (R22)
 - `1.2.0_precognition.sql` — Pre-cognition trace column on messages_metadata (R25)
+- `1.3.0_entities.sql` — Entities + entity_mentions tables, FTS, CDC triggers (R29)
+- `1.4.0_entity_salience.sql` — Salience column on entities table (R31)
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
 the fresh-DB/existing-DB if/else branch (after both branches complete). Placing inside `else`
@@ -547,8 +552,8 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
   - External URL: `http://localhost:7474` (Neo4j Browser)
   - Volume: `neo4j_data` (local)
   - Auth: `neo4j/janatpmp_graph`
-  - Node labels: Item, Task, Document, Conversation, Message, Domain, MessageMetadata, Chunk, Person, Identity
-  - Edge types: IN_DOMAIN, TARGETS_ITEM, BELONGS_TO, FOLLOWS, DESCRIBES, INFORMED_BY, SIMILAR_TO, PART_OF, BECAME, INHERITS_MEMORY_OF, PARTICIPATED_IN, SPOKE, SYNTHESIZED_FROM
+  - Node labels: Item, Task, Document, Conversation, Message, Domain, MessageMetadata, Chunk, Person, Identity, Entity
+  - Edge types: IN_DOMAIN, TARGETS_ITEM, BELONGS_TO, FOLLOWS, DESCRIBES, INFORMED_BY, SIMILAR_TO, PART_OF, BECAME, INHERITS_MEMORY_OF, PARTICIPATED_IN, SPOKE, SYNTHESIZED_FROM, MENTIONS, CO_OCCURS_WITH
 - **Ollama:** `janatpmp-ollama` container on port 11435, shares `ollama_data` external volume
   - Internal URL: `http://ollama:11434/v1` (Docker DNS)
   - External URL: `http://localhost:11435` (host access for testing)
@@ -743,9 +748,10 @@ Every new message, document, item, and task fans out to three stores:
 3. **Neo4j** — structural edges via CDC consumer (BELONGS_TO, FOLLOWS, IN_DOMAIN);
    INFORMED_BY edges from on_write (RAG provenance, fire-and-forget)
 
-### Slumber Cycle (8 Sub-cycles)
+### Slumber Cycle (10 Sub-cycles)
 
 Background daemon activates after idle threshold (default 5 min). `touch_activity()` resets timer.
+Deep idle (10 min) gates Gemini-heavy phases (Extract, Dream) so they don't fire during light idle.
 
 | # | Sub-cycle | Frequency | Purpose |
 |---|-----------|-----------|---------|
@@ -754,9 +760,11 @@ Background daemon activates after idle threshold (default 5 min). `touch_activit
 | 2 | Propagate | every cycle | Bridge quality_score → Qdrant salience |
 | 3 | Relate | every cycle | Message SIMILAR_TO edges via keyword overlap |
 | 4 | Prune | every cycle | Remove dead-weight vectors from Qdrant |
-| 5 | Extract | every 3rd | Entity extraction via Gemini (R29) |
-| 6 | Dream | every 5th | Cross-conversation insight synthesis (R24) |
+| 5 | Extract | every 3rd (deep idle) | Entity extraction via Gemini (R29) |
+| 6 | Dream | every 5th (deep idle) | Cross-conversation insight synthesis (R24) |
 | 7 | Weave | every 5th | Conversation SIMILAR_TO edges via vector centroids |
+| 8 | Link | every 3rd | Entity co-occurrence edges from shared messages (R31) |
+| 9 | Decay | every 5th | Entity salience decay — temporal fade + mention boost (R31) |
 
 ### Prompt Composer (9 Layers)
 
@@ -820,7 +828,7 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 - **Asymmetric embedding** — Qwen3-Embedding-0.6B uses instruction prefix for queries,
   plain text for passages. Client-side `[:1024]` truncation for safety.
 
-## Current Platform State (Post-R30)
+## Current Platform State (Post-R31)
 
 ### What Works
 
@@ -829,7 +837,11 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 - **RAG pipeline** — hybrid FTS + vector search, graph-aware ranking, temporal decay, salience
 - **Entity-aware RAG routing** — entity detection + graph retrieval before vector search (R30)
 - **9-layer adaptive prompt composer** — pre-cognition modulates layer weights per-turn
-- **8-stage Slumber Cycle** — ingest, evaluate, propagate, relate, prune, extract, dream, weave
+- **10-stage Slumber Cycle** — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay
+- **Entity co-occurrence web** — entities sharing messages get CO_OCCURS_WITH edges, watermarked incremental (R31)
+- **Entity salience decay** — temporal fade with mention boost, SQLite-first with Qdrant propagation (R31)
+- **Dream attribution** — synthesized insights labeled distinctly in RAG context (R31)
+- **Deep idle guard** — Gemini-heavy phases (extract, dream) gated by 10-min idle threshold (R31)
 - **Entity extraction** — 6 types extracted from scored messages, persisted across the Triad
 - **Temporal grounding** — time, season, sunrise/sunset, elapsed time injected per-turn
 - **Auto-ingestion** — file scanner at startup + Slumber, SHA-256 dedup, source files untouched
@@ -866,7 +878,8 @@ graph-aware retrieval (topology-boosted RAG, R21), a visible thought pipeline (C
 R21), synthesized cross-conversation insight (Dream Synthesis, R24), adaptive self-expression
 (Gemini pre-cognition modulating how each prompt layer is constructed, R25), and temporal
 gravity (recency-weighted retrieval, R28) with a visible Synthesis Surface (R28), and
-extracted entities turning messages into structured knowledge (R29: The Troubadour).
+extracted entities turning messages into structured knowledge (R29: The Troubadour),
+and now a web of entity-to-entity co-occurrence edges with temporal salience decay (R31: The Web).
 She still cannot act (tool use was removed because the previous 8B model couldn't handle
 it — may be revisited with the 32B model). The Modelfile intelligence stack is the right
 direction — specialized sub-models for classification, scoring, synthesis — but those are
@@ -877,15 +890,18 @@ layers of intelligence on a foundation that is rapidly gaining self-awareness.
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R31 candidates)
+### Near-Term (R32 candidates)
 
 - **Janus self-query** — give Janus the ability to query her own memory (specific retrieval
-  on demand), not just passively receive RAG context. Entity-to-Entity semantic edges
-  (RELATED_TO) so concepts that co-occur get linked.
+  on demand), not just passively receive RAG context.
 - **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
   system-injected, or verified. Give the model metadata to distinguish recall from hearsay.
+- **Attribute Mining** — extract entity attributes from messages (needs prompt design, dedup,
+  conflict handling with existing persona settings). Brainstorming-stage.
 - **Chunk-level semantic edges** — RESONATES_WITH edges between individual chunks for
   fine-grained cross-conversation linking (expensive: requires batched pairwise comparison).
+- **WorldEngine refactor** — replace linear Slumber cycle with tick-based Phase protocol.
+  Deferred from R31 — phases are already shaped for it (incremental, checkpointed, idle-aware).
 
 ### Longer-Term
 

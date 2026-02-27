@@ -102,6 +102,17 @@ ENTITY_MAX_MATCHES = 3               # Maximum entities per query
 ENTITY_CONTEXT_BUDGET = 2000         # Max chars for entity context block
 ENTITY_MAX_SNIPPETS = 3              # Max source snippets per entity
 
+# --- Co-Occurrence Linking (R31: The Web) ---
+COOCCURRENCE_CYCLE_INTERVAL = 3      # Link every Nth slumber cycle
+COOCCURRENCE_BATCH_SIZE = 100        # Max entity pairs per cycle
+COOCCURRENCE_MIN_SHARED = 2          # Min shared messages to create edge
+
+# --- Entity Salience Decay (R31: The Web) ---
+ENTITY_DECAY_HALF_LIFE = 45          # Days until entity salience halves
+ENTITY_DECAY_FLOOR = 0.15            # Entities never fully disappear
+ENTITY_DECAY_BATCH_SIZE = 50         # Entities per cycle
+ENTITY_DECAY_CYCLE_INTERVAL = 5      # Decay every Nth slumber cycle
+
 # --- Pre-Cognition (R25) ---
 PRECOGNITION_TIMEOUT_MS = 3000   # Max wait for Gemini pre-pass (ms)
 PRECOGNITION_WEIGHT_MIN = 0.0    # Floor for layer weights

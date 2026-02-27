@@ -251,6 +251,21 @@ def init_database():
                     conn.executescript(migration_sql)
                     logger.info("Applied migration 1.3.0: entity extraction tables")
 
+        # Migration 1.4.0: Entity salience column for R31
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='1.3.0'"
+        )
+        if cursor.fetchone() is not None:
+            cursor = conn.execute(
+                "SELECT version FROM schema_version WHERE version='1.4.0'"
+            )
+            if cursor.fetchone() is None:
+                migration_path = Path(__file__).parent / "migrations" / "1.4.0_entity_salience.sql"
+                if migration_path.exists():
+                    migration_sql = migration_path.read_text(encoding="utf-8")
+                    conn.executescript(migration_sql)
+                    logger.info("Applied migration 1.4.0: entity salience column")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

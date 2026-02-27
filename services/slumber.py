@@ -30,7 +30,7 @@ _slumber_thread = None
 
 # --- Slumber activity state (R22) — read by UI via get_slumber_status() ---
 _slumber_status = {
-    "state": "idle",           # idle | ingesting | evaluating | propagating | relating | pruning | extracting | dreaming | weaving
+    "state": "idle",           # idle | ingesting | evaluating | propagating | relating | pruning | extracting | dreaming | weaving | linking | decaying
     "last_cycle_at": None,     # ISO timestamp of last completed cycle
     "last_evaluated": 0,       # Messages evaluated in last cycle
     "last_propagated": 0,      # Messages propagated in last cycle
@@ -51,6 +51,14 @@ _slumber_status = {
     "last_extracted": 0,       # Entities created/updated in last cycle
     "total_extracted": 0,      # Cumulative entities since startup
     "_extract_cycle_count": 2, # Internal: starts at INTERVAL-1 so first extraction fires on first eligible cycle
+    # Co-Occurrence Linking (R31)
+    "last_cooccurred": 0,      # Edges created/updated in last cycle
+    "total_cooccurred": 0,     # Cumulative edges since startup
+    "_cooccur_cycle_count": 2, # Internal: starts at INTERVAL-1 (COOCCURRENCE_CYCLE_INTERVAL=3)
+    # Entity Salience Decay (R31)
+    "last_decayed": 0,         # Entities decayed in last cycle
+    "total_decayed": 0,        # Cumulative decays since startup
+    "_decay_cycle_count": 4,   # Internal: starts at INTERVAL-1 (ENTITY_DECAY_CYCLE_INTERVAL=5)
 }
 
 # Words too common to be meaningful keywords
@@ -92,6 +100,7 @@ def get_slumber_status() -> dict:
         last_propagated, last_related, last_pruned, eval_method,
         total_evaluated, last_dreamed, dream_edges, total_dreams,
         last_woven, total_woven, last_extracted, total_extracted,
+        last_cooccurred, total_cooccurred, last_decayed, total_decayed,
         error.
     """
     return dict(_slumber_status)
@@ -108,6 +117,18 @@ def _is_idle() -> bool:
     except Exception:
         pass
     return (time.monotonic() - _last_activity) > threshold
+
+
+DEEP_IDLE_THRESHOLD_SECONDS = 600  # 10 minutes — for Gemini-heavy phases
+
+
+def _is_deep_idle() -> bool:
+    """Check if system has been idle long enough for Gemini-heavy phases.
+
+    Deep idle requires 10 minutes of inactivity (vs 5 min for light phases).
+    Gates extract, dream, and weave to avoid competing with active chat.
+    """
+    return (time.monotonic() - _last_activity) > DEEP_IDLE_THRESHOLD_SECONDS
 
 
 def _get_batch_size() -> int:
@@ -564,7 +585,12 @@ def _ingest_scan():
 
 
 def _should_dream() -> bool:
-    """Check if dream synthesis should run this cycle."""
+    """Check if dream synthesis should run this cycle.
+
+    Gated by deep idle (10 min) — Gemini-heavy phase.
+    Counter is advanced in _slumber_cycle() before this is called,
+    shared with _should_weave().
+    """
     from services.settings import get_setting
     from atlas.config import DREAM_CYCLE_INTERVAL
 
@@ -572,11 +598,10 @@ def _should_dream() -> bool:
     if not enabled:
         return False
 
-    # Initialized to INTERVAL-1 in _slumber_status so first dream fires on
-    # first eligible idle cycle after startup (not delayed by INTERVAL cycles).
-    _slumber_status["_cycle_count"] = _slumber_status.get(
-        "_cycle_count", DREAM_CYCLE_INTERVAL - 1
-    ) + 1
+    # R31: Deep idle guard — skip Gemini-heavy phase during light idle
+    if not _is_deep_idle():
+        return False
+
     return _slumber_status["_cycle_count"] % DREAM_CYCLE_INTERVAL == 0
 
 
@@ -628,12 +653,17 @@ def _should_extract() -> bool:
 
     Uses its own counter (_extract_cycle_count) independent of dream/weave
     so intervals don't interfere with each other.
+    Gated by deep idle (10 min) — Gemini-heavy phase.
     """
     from services.settings import get_setting
     from atlas.config import EXTRACTION_CYCLE_INTERVAL
 
     enabled = (get_setting("slumber_eval_enabled") or "true").lower() == "true"
     if not enabled:
+        return False
+
+    # R31: Deep idle guard — skip Gemini-heavy phase during light idle
+    if not _is_deep_idle():
         return False
 
     _slumber_status["_extract_cycle_count"] = _slumber_status.get(
@@ -662,8 +692,48 @@ def _extract_batch():
         )
 
 
+def _should_cooccur() -> bool:
+    """Check if co-occurrence linking should run this cycle (R31)."""
+    from atlas.config import COOCCURRENCE_CYCLE_INTERVAL
+    _slumber_status["_cooccur_cycle_count"] += 1
+    return _slumber_status["_cooccur_cycle_count"] % COOCCURRENCE_CYCLE_INTERVAL == 0
+
+
+def _cooccur_batch():
+    """Sub-cycle 8: Entity Co-occurrence Linking (R31)."""
+    from atlas.cooccurrence import run_cooccurrence_cycle
+    from atlas.config import COOCCURRENCE_BATCH_SIZE
+
+    result = run_cooccurrence_cycle(batch_size=COOCCURRENCE_BATCH_SIZE)
+    count = result.get("processed", 0)
+    _slumber_status["last_cooccurred"] = count
+    _slumber_status["total_cooccurred"] += count
+    if count:
+        logger.info("Slumber co-occurrence: %d edges processed", count)
+
+
+def _should_entity_decay() -> bool:
+    """Check if entity salience decay should run this cycle (R31)."""
+    from atlas.config import ENTITY_DECAY_CYCLE_INTERVAL
+    _slumber_status["_decay_cycle_count"] += 1
+    return _slumber_status["_decay_cycle_count"] % ENTITY_DECAY_CYCLE_INTERVAL == 0
+
+
+def _entity_decay_batch():
+    """Sub-cycle 9: Entity Salience Decay (R31)."""
+    from atlas.entity_salience import run_entity_decay_cycle
+    from atlas.config import ENTITY_DECAY_BATCH_SIZE
+
+    result = run_entity_decay_cycle(batch_size=ENTITY_DECAY_BATCH_SIZE)
+    count = result.get("processed", 0)
+    _slumber_status["last_decayed"] = count
+    _slumber_status["total_decayed"] += count
+    if count:
+        logger.info("Slumber entity decay: %d entities processed", count)
+
+
 def _slumber_cycle():
-    """Background thread: Ingest → Evaluate → Propagate → Relate → Prune → Extract → Dream → Weave during idle."""
+    """Background thread: Ingest → Evaluate → Propagate → Relate → Prune → Extract → Dream → Weave → Link → Decay during idle."""
     while True:
         time.sleep(CYCLE_INTERVAL_SECONDS)
         if not _is_idle():
@@ -731,6 +801,14 @@ def _slumber_cycle():
                 _slumber_status["error"] = str(e)
                 logger.debug("Slumber extraction error: %s", e)
 
+        # Advance shared cycle counter for dream/weave interval gating.
+        # Placed here (not inside _should_dream) so _should_weave can
+        # read the same counter reliably even when dream is skipped.
+        from atlas.config import DREAM_CYCLE_INTERVAL
+        _slumber_status["_cycle_count"] = _slumber_status.get(
+            "_cycle_count", DREAM_CYCLE_INTERVAL - 1
+        ) + 1
+
         # Sub-cycle 6: Dream Synthesis (R24)
         if _should_dream():
             _slumber_status["state"] = "dreaming"
@@ -748,6 +826,24 @@ def _slumber_cycle():
             except Exception as e:
                 _slumber_status["error"] = str(e)
                 logger.debug("Slumber weave error: %s", e)
+
+        # Sub-cycle 8: Entity Co-occurrence Linking (R31)
+        if _should_cooccur():
+            _slumber_status["state"] = "linking"
+            try:
+                _cooccur_batch()
+            except Exception as e:
+                _slumber_status["error"] = str(e)
+                logger.debug("Slumber co-occurrence error: %s", e)
+
+        # Sub-cycle 9: Entity Salience Decay (R31)
+        if _should_entity_decay():
+            _slumber_status["state"] = "decaying"
+            try:
+                _entity_decay_batch()
+            except Exception as e:
+                _slumber_status["error"] = str(e)
+                logger.debug("Slumber entity decay error: %s", e)
 
         _slumber_status["state"] = "idle"
         _slumber_status["last_cycle_at"] = datetime.now().isoformat()

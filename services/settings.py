@@ -198,6 +198,9 @@ SETTINGS_REGISTRY = {
     "janus_lifecycle_state":   ("sleeping", False, "system", None),
     "janus_identity_version":  ("r19-v1", False, "system", None),
 
+    # Co-occurrence Linking (R31)
+    "cooccurrence_watermark":  ("0", False, "system", None),
+
     # Persona (R18 structured schema)
     "user_full_name":       ("", False, "persona", None),
     "user_preferred_name":  ("Mat", False, "persona", None),

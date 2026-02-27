@@ -690,6 +690,11 @@ def _build_rag_context(user_message: str,
             created_at = r.get("created_at", "")
             age_label = _format_relative_time(created_at) if created_at else ""
 
+            # R31: Dream attribution — label synthesized insights distinctly
+            doc_type = r.get("doc_type", "")
+            if doc_type == "agent_output":
+                source = "synthesized insight"
+
             # Build attribution line
             attr_parts = [f"[{source}]"]
             if title:

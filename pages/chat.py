@@ -792,6 +792,30 @@ def build_chat_page():
                             key="cog-entity-graph-ret",
                         )
 
+                    # R31: Entity co-occurrence neighbors
+                    if entities_matched:
+                        try:
+                            from atlas.cooccurrence import (
+                                get_cooccurrence_neighbors,
+                            )
+                            for ent in entities_matched[:2]:
+                                neighbors = get_cooccurrence_neighbors(
+                                    ent.get("entity_id", ""), limit=3,
+                                )
+                                if neighbors:
+                                    neighbor_text = ", ".join(
+                                        f"{n['name']} ({n['weight']})"
+                                        for n in neighbors
+                                    )
+                                    gr.Markdown(
+                                        f"*{ent.get('name', '?')}* "
+                                        f"co-occurs with: {neighbor_text}",
+                                        key=f"cog-cooccur-"
+                                        f"{ent.get('entity_id', '')[:8]}",
+                                    )
+                        except Exception:
+                            pass
+
                     gr.Markdown("---", key="cog-entity-sep")
 
                 # --- Section 0: Pre-Cognition (R25) ---

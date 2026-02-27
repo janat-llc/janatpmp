@@ -39,6 +39,8 @@ def init_graph_schema(driver) -> None:
         "CREATE INDEX conv_similar_score IF NOT EXISTS FOR ()-[r:SIMILAR_TO]-() ON (r.score)",
         # R24: Dream synthesis provenance edges
         "CREATE INDEX synth_from_method IF NOT EXISTS FOR ()-[r:SYNTHESIZED_FROM]-() ON (r.method)",
+        # R31: Entity co-occurrence linking
+        "CREATE INDEX cooccurs_weight IF NOT EXISTS FOR ()-[r:CO_OCCURS_WITH]-() ON (r.weight)",
     ]
 
     with driver.session() as session:

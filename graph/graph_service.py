@@ -116,6 +116,43 @@ def create_edge(
         session.run(query, from_id=from_id, to_id=to_id, props=props)
 
 
+def merge_cooccurrence_edge(
+    entity_a_id: str, entity_b_id: str,
+    shared_messages: int,
+) -> None:
+    """MERGE a CO_OCCURS_WITH edge between two entities.
+
+    Uses ON CREATE/ON MATCH to set weight idempotently. Weight is always
+    set to the current shared_messages count (not incremented), making
+    the operation safe to re-run.
+
+    Edge is undirected by convention — always created a→b where
+    a < b lexicographically to avoid duplicate edges.
+
+    Args:
+        entity_a_id: First entity ID.
+        entity_b_id: Second entity ID.
+        shared_messages: Number of messages both entities appear in.
+    """
+    # Canonical ordering — always create edge from lower to higher ID
+    if entity_a_id > entity_b_id:
+        entity_a_id, entity_b_id = entity_b_id, entity_a_id
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+
+    driver = _get_driver()
+    with driver.session(database=NEO4J_DATABASE) as session:
+        session.run(
+            "MERGE (a:Entity {id: $a_id}) "
+            "MERGE (b:Entity {id: $b_id}) "
+            "MERGE (a)-[r:CO_OCCURS_WITH]-(b) "
+            "ON CREATE SET r.weight = $weight, r.first_seen = $now, r.last_seen = $now "
+            "ON MATCH SET r.weight = $weight, r.last_seen = $now",
+            a_id=entity_a_id, b_id=entity_b_id, weight=shared_messages, now=now,
+        )
+
+
 def get_neighbors(
     label: str, id: str,
     rel_type: str = "", direction: str = "both",
