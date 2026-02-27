@@ -71,3 +71,6 @@ TODO*.md
 
 # Completed archive (historical TODOs + dead code)
 completed/
+
+# Git worktrees (isolated workspaces)
+.worktrees/
