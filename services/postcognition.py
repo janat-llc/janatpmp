@@ -171,7 +171,8 @@ def _call_gemini(
 def _parse_response(text: str) -> dict | None:
     """Parse Gemini JSON response into postcognition signal.
 
-    Strips markdown fences, validates structure, clamps scores to [0.0, 1.0].
+    Strips markdown fences, extracts JSON from surrounding text,
+    validates structure, clamps scores to [0.0, 1.0].
 
     Args:
         text: Raw response text from Gemini.
@@ -180,6 +181,7 @@ def _parse_response(text: str) -> dict | None:
         Parsed signal dict, or None on failure.
     """
     clean = text.strip()
+    logger.debug("Post-cognition raw response: %s", clean[:500])
 
     # Strip markdown code fences
     if clean.startswith("```"):
@@ -187,15 +189,28 @@ def _parse_response(text: str) -> dict | None:
         lines = lines[1:]
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
-        clean = "\n".join(lines)
+        clean = "\n".join(lines).strip()
 
+    # Try direct parse first
+    data = None
     try:
         data = json.loads(clean)
-    except (json.JSONDecodeError, ValueError) as e:
-        logger.debug("Post-cognition JSON parse failed: %s", e)
-        return None
+    except (json.JSONDecodeError, ValueError):
+        pass
 
-    if not isinstance(data, dict):
+    # Fallback: extract first JSON object from surrounding text
+    if data is None:
+        start = clean.find("{")
+        end = clean.rfind("}")
+        if start != -1 and end > start:
+            try:
+                data = json.loads(clean[start:end + 1])
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.debug("Post-cognition JSON parse failed: %s", e)
+                return None
+
+    if data is None or not isinstance(data, dict):
+        logger.debug("Post-cognition: no JSON object found in response")
         return None
 
     if not isinstance(data, dict):
