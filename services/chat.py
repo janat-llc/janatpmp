@@ -1486,6 +1486,16 @@ def chat(message: str, history: list[dict],
         except Exception:
             pass
 
+    # R33: Inject previous turn's Post-Cognition corrective signal
+    try:
+        from db.chat_operations import get_latest_postcognition_signal
+        last_postcog = get_latest_postcognition_signal(conversation_id)
+        if last_postcog and last_postcog.get("corrective_directive"):
+            precog_directives["postcognition_correction"] = (
+                last_postcog["corrective_directive"])
+    except Exception:
+        pass
+
     system_prompt, prompt_layers = _build_system_prompt(
         history, conversation_id, directives=precog_directives)
     if system_prompt_append and system_prompt_append.strip():
@@ -1736,6 +1746,27 @@ def chat_with_janus(message: str) -> dict:
         except Exception:
             pass
 
+    # R33: Post-Cognition — evaluate response, store corrective signal
+    postcog_signal = {}
+    if msg_id:
+        try:
+            from services.postcognition import run_postcognition
+            tone_dir = cognition_trace.get("precognition", {}).get(
+                "tone_directive", "")
+            postcog_signal = run_postcognition(
+                janus_response=clean_response or raw_response,
+                user_message=message,
+                tone_directive=tone_dir,
+                precognition_signals=cognition_trace.get("precognition"),
+            )
+            if postcog_signal.get("postcognition_used"):
+                update_message_metadata(
+                    msg_id,
+                    cognition_postcognition=json.dumps(postcog_signal),
+                )
+        except Exception:
+            pass
+
     # Build diagnostic return — everything an architect needs
     return {
         "response": clean_response or raw_response,
@@ -1747,6 +1778,7 @@ def chat_with_janus(message: str) -> dict:
         "timings": timings,
         "token_counts": token_counts,
         "cognition_trace": cognition_trace,
+        "postcognition": postcog_signal,
         "rag_summary": {
             "hit_count": rag_metrics.get("hit_count", 0),
             "hits_used": rag_metrics.get("hits_used", 0),

@@ -658,4 +658,10 @@ def compose_system_prompt(history: list[dict] | None = None,
     if tone_dir:
         _add("tone_directive", f"[Tone for this turn: {tone_dir}]")
 
+    # --- R33: Post-Cognition Corrective Signal ---
+    postcog_dir = (directives or {}).get("postcognition_correction", "")
+    if postcog_dir:
+        _add("postcognition_correction",
+             f"[Self-observation from last turn: {postcog_dir}]")
+
     return "\n\n".join(sections), layers

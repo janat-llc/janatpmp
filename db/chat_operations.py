@@ -360,6 +360,7 @@ def add_message_metadata(
     eval_provider: str = "",
     eval_model: str = "",
     cognition_precognition: str = "",
+    cognition_postcognition: str = "",
 ) -> str:
     """Add metadata for a message (timing, RAG snapshot, labels, pipeline observability).
 
@@ -387,6 +388,7 @@ def add_message_metadata(
         eval_provider: Provider that performed evaluation (R22)
         eval_model: Model that performed evaluation (R22)
         cognition_precognition: JSON of pre-cognition trace (R25)
+        cognition_postcognition: JSON of post-cognition corrective signal (R33)
 
     Returns:
         The ID of the created metadata record
@@ -402,8 +404,8 @@ def add_message_metadata(
                  system_prompt_length, rag_context_text, rag_synthesized,
                  cognition_prompt_layers, cognition_graph_trace,
                  eval_rationale, eval_emotional_register, eval_provider, eval_model,
-                 cognition_precognition)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cognition_precognition, cognition_postcognition)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             message_id, latency_total_ms, latency_rag_ms, latency_inference_ms,
             rag_hit_count, rag_hits_used, rag_collections,
@@ -412,7 +414,7 @@ def add_message_metadata(
             system_prompt_length, rag_context_text, rag_synthesized,
             cognition_prompt_layers, cognition_graph_trace,
             eval_rationale, eval_emotional_register, eval_provider, eval_model,
-            cognition_precognition,
+            cognition_precognition, cognition_postcognition,
         ))
         conn.commit()
         cursor.execute("SELECT id FROM messages_metadata WHERE rowid = ?", (cursor.lastrowid,))
@@ -450,6 +452,7 @@ def update_message_metadata(
     eval_emotional_register: str = "",
     eval_provider: str = "",
     eval_model: str = "",
+    cognition_postcognition: str = "",
 ) -> str:
     """Update metadata fields for a message.
 
@@ -464,6 +467,7 @@ def update_message_metadata(
         eval_emotional_register: Detected emotional tone (empty = no change, R22)
         eval_provider: Provider that performed evaluation (empty = no change, R22)
         eval_model: Model that performed evaluation (empty = no change, R22)
+        cognition_postcognition: JSON of post-cognition corrective signal (empty = no change, R33)
 
     Returns:
         Success or error message
@@ -499,6 +503,9 @@ def update_message_metadata(
         if eval_model:
             updates.append("eval_model = ?")
             params.append(eval_model)
+        if cognition_postcognition:
+            updates.append("cognition_postcognition = ?")
+            params.append(cognition_postcognition)
         if not updates:
             return "No updates provided"
         params.append(message_id)
@@ -506,6 +513,39 @@ def update_message_metadata(
         cursor.execute(query, params)
         conn.commit()
         return f"Updated metadata for message {message_id}" if cursor.rowcount > 0 else f"Metadata for message {message_id} not found"
+
+
+def get_latest_postcognition_signal(conversation_id: str) -> dict | None:
+    """Get the most recent Post-Cognition signal for a conversation.
+
+    Reads the latest message's cognition_postcognition from metadata.
+    Used by chat() to inject the previous turn's corrective directive
+    into the next turn's system prompt.
+
+    Args:
+        conversation_id: The conversation to query.
+
+    Returns:
+        Parsed JSON dict with postcognition signal, or None if unavailable.
+    """
+    import json
+    try:
+        with get_connection() as conn:
+            row = conn.execute("""
+                SELECT mm.cognition_postcognition
+                FROM messages m
+                JOIN messages_metadata mm ON mm.message_id = m.id
+                WHERE m.conversation_id = ?
+                  AND mm.cognition_postcognition IS NOT NULL
+                  AND mm.cognition_postcognition != ''
+                ORDER BY m.sequence DESC
+                LIMIT 1
+            """, (conversation_id,)).fetchone()
+            if row and row["cognition_postcognition"]:
+                return json.loads(row["cognition_postcognition"])
+    except Exception:
+        pass
+    return None
 
 
 def get_recent_introspection(limit: int = 10) -> dict:

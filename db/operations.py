@@ -277,6 +277,16 @@ def init_database():
                 conn.executescript(migration_sql)
                 logger.info("Applied migration 1.5.0: register exemplars table")
 
+        # Migration 1.6.0: Post-cognition column on messages_metadata (R33)
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='1.6.0'"
+        )
+        if cursor.fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "1.6.0_postcognition.sql"
+            if migration_path.exists():
+                conn.executescript(migration_path.read_text(encoding="utf-8"))
+                logger.info("Applied migration 1.6.0: postcognition")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

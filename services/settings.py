@@ -194,6 +194,9 @@ SETTINGS_REGISTRY = {
     "precognition_enabled":    ("true", False, "system", None),
     "precognition_timeout_ms": ("3000", False, "system", _validate_positive_int),
 
+    # Post-Cognition (R33)
+    "postcognition_enabled":   ("true", False, "system", None),
+
     # Janus Identity (R19)
     "janus_lifecycle_state":   ("sleeping", False, "system", None),
     "janus_identity_version":  ("r19-v1", False, "system", None),
