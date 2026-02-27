@@ -1,13 +1,14 @@
-"""Chat service — Multi-provider AI chat for JANATPMP.
+"""Chat service — Multi-provider AI chat with self-query tools for JANATPMP.
 
 Supported providers:
 - anthropic: Claude models (Opus 4, Sonnet 4, Haiku) — native tool use (MCP clients)
 - gemini: Google Gemini models (Flash, Pro) — function calling (MCP clients)
-- ollama: Local models via OpenAI-compatible API — conversational only (no tools)
+- ollama: Local models via OpenAI-compatible API — self-query tools for active retrieval
 
-The in-app Janus chat (Ollama) does NOT use database tools. RAG provides retrieved
-knowledge and get_context_snapshot() provides live project state. Tools are exposed
-to external MCP clients (Claude Desktop, etc.) via gr.api() in app.py.
+R32: Ollama in-app chat now has 6 read-only self-query tools (search_memories,
+search_entities, get_entity, get_cooccurrence_neighbors, graph_neighbors,
+search_conversations). RAG still provides passive context; tools add active
+retrieval on demand. Database CRUD tools remain MCP-only (external clients).
 
 Settings (provider, model, API key, etc.) are read from the settings DB on each
 chat() call — no restart needed when settings change.
@@ -18,7 +19,7 @@ import logging
 import re
 from typing import Any
 from db import operations as db_ops
-from shared.constants import MAX_TOOL_ITERATIONS, RAG_SCORE_THRESHOLD
+from shared.constants import MAX_TOOL_ITERATIONS, MAX_TOOL_RESULT_CHARS, RAG_SCORE_THRESHOLD
 from services.settings import get_setting
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,65 @@ def _parse_docstring_args(docstring: str) -> dict[str, str]:
     return descriptions
 
 
+def _tool_def_from_fn(name: str, fn: callable) -> dict:
+    """Build a single Anthropic-format tool definition from any callable.
+
+    Introspects signature and Google-style docstring to produce JSON schema.
+    Reusable for both MCP-exposed db ops and Janus self-query tools.
+
+    Args:
+        name: Tool name (used in API calls and TOOL_REGISTRY).
+        fn: The callable to introspect.
+
+    Returns:
+        Dict with name, description, input_schema keys.
+    """
+    sig = inspect.signature(fn)
+    doc = inspect.getdoc(fn) or ""
+    arg_descriptions = _parse_docstring_args(doc)
+
+    properties = {}
+    required = []
+    for param_name, param in sig.parameters.items():
+        if param_name in ("self", "cls"):
+            continue
+
+        annotation = param.annotation
+        if annotation != inspect.Parameter.empty:
+            type_name = getattr(annotation, "__name__", str(annotation))
+            origin = getattr(annotation, "__origin__", None)
+            if origin is not None:
+                args = getattr(annotation, "__args__", ())
+                if type(None) in args:
+                    for a in args:
+                        if a is not type(None):
+                            type_name = getattr(a, "__name__", str(a))
+                            break
+            json_type = TYPE_MAP.get(type_name, "string")
+        else:
+            json_type = "string"
+
+        prop: dict[str, Any] = {"type": json_type}
+        if param_name in arg_descriptions:
+            prop["description"] = arg_descriptions[param_name]
+        properties[param_name] = prop
+
+        if param.default is inspect.Parameter.empty:
+            required.append(param_name)
+
+    description = doc.split("\n")[0] if doc else name.replace("_", " ").title()
+
+    return {
+        "name": name,
+        "description": description,
+        "input_schema": {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        },
+    }
+
+
 def _build_tool_definitions() -> list[dict]:
     """Build Anthropic tool definitions from db/operations.py functions.
 
@@ -89,74 +149,54 @@ def _build_tool_definitions() -> list[dict]:
         if fn is None:
             continue
         TOOL_REGISTRY[name] = fn
-
-        sig = inspect.signature(fn)
-        doc = inspect.getdoc(fn) or ""
-        arg_descriptions = _parse_docstring_args(doc)
-
-        # Build properties from function signature
-        properties = {}
-        required = []
-        for param_name, param in sig.parameters.items():
-            if param_name in ("self", "cls"):
-                continue
-
-            # Determine JSON schema type from annotation
-            annotation = param.annotation
-            if annotation != inspect.Parameter.empty:
-                type_name = getattr(annotation, "__name__", str(annotation))
-                # Handle Optional types
-                origin = getattr(annotation, "__origin__", None)
-                if origin is not None:
-                    args = getattr(annotation, "__args__", ())
-                    if type(None) in args:
-                        # Optional[X] — use the non-None type
-                        for a in args:
-                            if a is not type(None):
-                                type_name = getattr(a, "__name__", str(a))
-                                break
-                json_type = TYPE_MAP.get(type_name, "string")
-            else:
-                json_type = "string"
-
-            prop: dict[str, Any] = {"type": json_type}
-            if param_name in arg_descriptions:
-                prop["description"] = arg_descriptions[param_name]
-
-            properties[param_name] = prop
-
-            # Required if no default value
-            if param.default is inspect.Parameter.empty:
-                required.append(param_name)
-
-        # First line of docstring as tool description
-        description = doc.split("\n")[0] if doc else name.replace("_", " ").title()
-
-        tool_def = {
-            "name": name,
-            "description": description,
-            "input_schema": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-            },
-        }
-        tools.append(tool_def)
-
+        tools.append(_tool_def_from_fn(name, fn))
     return tools
 
 
 # Pre-build tool definitions at import time
 TOOL_DEFINITIONS = _build_tool_definitions()
 
+
+# --- Self-Query Tools for Ollama In-App Chat (R32: The Mirror) ---
+
+def _build_self_query_tools() -> list[dict]:
+    """Build tool definitions for Janus self-query (Ollama in-app chat).
+
+    Read-only tools only — no CRUD, no destructive operations.
+    These let Janus actively search her own memory during conversation.
+    """
+    from services.vector_store import search_all
+    from db.entity_ops import search_entities, get_entity
+    from atlas.cooccurrence import get_cooccurrence_neighbors
+    from graph.graph_service import get_neighbors
+    from db.chat_operations import search_conversations
+
+    ops = {
+        "search_memories": search_all,
+        "search_entities": search_entities,
+        "get_entity": get_entity,
+        "get_cooccurrence_neighbors": get_cooccurrence_neighbors,
+        "graph_neighbors": get_neighbors,
+        "search_conversations": search_conversations,
+    }
+    tools = []
+    for name, fn in ops.items():
+        TOOL_REGISTRY[name] = fn
+        tools.append(_tool_def_from_fn(name, fn))
+    return tools
+
+
+SELF_QUERY_DEFINITIONS = _build_self_query_tools()
+
+
 # --- System Prompt (R19: superseded by services/prompt_composer.py) ---
 
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = """You are Janus, an AI collaborator embedded in JANATPMP (Janat Project Management Platform).
 You help Mat manage projects, tasks, and documents across multiple domains.
 
-You have NO tools or functions available. Do NOT generate tool calls, function calls,
-or JSON tool invocations. All the context you need is provided below — answer directly
-from it. If you don't have enough context to answer, say so plainly.
+You can search your own memory when you need to recall something specific.
+All the context you need is provided below — answer directly from it when possible.
+If you don't have enough context to answer, say so plainly.
 
 {context_block}
 
@@ -995,6 +1035,16 @@ def _tools_gemini() -> list:
     return [types.Tool(function_declarations=declarations)]
 
 
+# --- Ollama Self-Query Tool Format (R32: The Mirror) ---
+
+def _tools_ollama() -> list[dict]:
+    """Return self-query tool definitions in OpenAI format for Ollama."""
+    return [{"type": "function", "function": {
+        "name": t["name"], "description": t["description"],
+        "parameters": t["input_schema"],
+    }} for t in SELF_QUERY_DEFINITIONS]
+
+
 # --- Shared Helpers ---
 
 def _build_api_messages(history: list[dict], include_system: str = "") -> list[dict]:
@@ -1041,6 +1091,8 @@ def _execute_tool(tool_name: str, tool_input: dict) -> tuple[str, bool]:
             result = json.dumps(result, indent=2, default=str)
         else:
             result = str(result)
+        if len(result) > MAX_TOOL_RESULT_CHARS:
+            result = result[:MAX_TOOL_RESULT_CHARS] + f"\n... (truncated, {len(result)} total chars)"
         logger.info("Tool executed: %s", tool_name)
         return result, False
     except Exception as e:
@@ -1230,15 +1282,15 @@ def _chat_gemini(api_key: str, model: str, history: list[dict], system_prompt: s
 def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: str,
                  temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 8192,
                  num_ctx: int = 0, keep_alive: str = "") -> tuple[list[dict], dict]:
-    """Run chat using Ollama via OpenAI-compatible API.
+    """Run chat using Ollama via OpenAI-compatible API with self-query tools.
 
-    No tools — Janus gets knowledge from RAG context injection and
-    get_context_snapshot() in the system prompt. Tools are for MCP clients
-    (Claude Desktop, etc.) via gr.api(). think=True captures reasoning.
+    R32: Janus can now search her own memory via 6 read-only self-query tools.
+    RAG still provides passive context; tools add active retrieval on demand.
+    think=True captures reasoning. Max 3 tool iterations to bound token budget.
 
     Args:
         base_url: Ollama OpenAI-compatible endpoint URL.
-        model: Model identifier (e.g. 'qwen3-vl:8b').
+        model: Model identifier (e.g. 'qwen3:32b').
         history: Chat history in gr.Chatbot message format.
         system_prompt: Full system prompt string.
         temperature: Sampling temperature (0.0-1.0).
@@ -1254,19 +1306,20 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
     client = OpenAI(api_key="ollama", base_url=base_url)
     messages = _build_api_messages(history, include_system=system_prompt)
     ollama_opts = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive, "think": True}
+    ollama_tools = _tools_ollama()
+    tool_calls_used = []  # Track for cognition trace
 
     def make_call():
         return client.chat.completions.create(
             model=model, messages=messages,
             temperature=temperature, top_p=top_p, max_tokens=max_tokens,
+            tools=ollama_tools if ollama_tools else None,
             extra_body=ollama_opts,
         )
 
     def parse(response):
         msg = response.choices[0].message
         # Ollama returns thinking via different field names depending on API version.
-        # Check: reasoning_content (OpenAI convention), thinking (Ollama native),
-        # and model_extra (Pydantic catch-all for unknown fields).
         extras = getattr(msg, "model_extra", {}) or {}
         reasoning = (
             getattr(msg, "reasoning_content", None)
@@ -1281,12 +1334,39 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
             text_parts.append(f"<think>{reasoning}</think>")
         if msg.content:
             text_parts.append(msg.content)
-        # No sanitizer for hallucinated tool JSON in text_parts — by design,
-        # broken behavior surfaces visibly rather than being silently stripped (R15).
-        return text_parts, []  # Never return tool_calls — no tools for in-app chat
+        # Extract tool calls if present
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        return text_parts, tool_calls
 
     def handle_tools(response, tool_calls, history):
-        pass  # No tools — this is never called
+        msg = response.choices[0].message
+        # Append assistant message (with tool_calls) to API messages
+        assistant_msg = {"role": "assistant", "content": msg.content or ""}
+        if msg.tool_calls:
+            assistant_msg["tool_calls"] = [
+                {"id": tc.id or f"call_{tc.function.name}_{len(tool_calls_used)}",
+                 "type": "function",
+                 "function": {"name": tc.function.name,
+                              "arguments": tc.function.arguments}}
+                for tc in msg.tool_calls
+            ]
+        messages.append(assistant_msg)
+
+        # Execute each tool and append results
+        for tc in tool_calls:
+            fn_name = tc.function.name
+            tc_id = tc.id or f"call_{fn_name}_{len(tool_calls_used)}"
+            try:
+                args = json.loads(tc.function.arguments)
+            except json.JSONDecodeError:
+                args = {}
+            result, is_error = _execute_tool(fn_name, args)
+            messages.append({"role": "tool", "tool_call_id": tc_id, "content": result})
+            tool_calls_used.append(fn_name)
+            # Friendly message in UI history
+            args_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:3])
+            history.append({"role": "assistant",
+                            "content": f"*Searching: {fn_name}({args_str})*"})
 
     resp_container = {}
     history = _run_tool_loop(make_call, parse, handle_tools, history, resp_container)
@@ -1298,6 +1378,9 @@ def _chat_ollama(base_url: str, model: str, history: list[dict], system_prompt: 
         tokens["prompt"] = getattr(resp.usage, "prompt_tokens", 0) or 0
         tokens["response"] = getattr(resp.usage, "completion_tokens", 0) or 0
         tokens["total"] = tokens["prompt"] + tokens["response"]
+    # Attach tool call trace for cognition tracking
+    if tool_calls_used:
+        tokens["_tool_calls"] = tool_calls_used
 
     return history, tokens
 
@@ -1483,6 +1566,7 @@ def chat(message: str, history: list[dict],
                     "rag_query": message,
                     "history_turns_sent": len(history) // 2,
                     "precognition": precog_directives,  # R25
+                    "tool_calls": token_counts.pop("_tool_calls", []),  # R32
                 },
             }
         except Exception as e:
