@@ -162,42 +162,9 @@ Navbar: **Projects** (home) · **Knowledge** · **Admin** · **Chat**
 Tabs represent **modes of thinking**, not data types. If two data types share the same
 browsing pattern, they belong in one tab with the left sidebar providing the selection.
 
-**Implementation in code:**
-
-```python
-# app.py — thin orchestrator
-with gr.Blocks(title="JANATPMP") as demo:
-    gr.Navbar(main_page_name="Projects")
-    build_page()                          # Projects + Work
-    for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)                   # 84 MCP tools (registered on main Blocks only)
-
-with demo.route("Knowledge", "/knowledge"):
-    gr.Navbar(main_page_name="Projects")
-    knowledge_page.build_knowledge_page()
-
-with demo.route("Admin", "/admin"):
-    gr.Navbar(main_page_name="Projects")
-    admin_page.build_admin_page()
-
-with demo.route("Chat", "/chat"):
-    gr.Navbar(main_page_name="Projects")
-    chat_page.build_chat_page()
-```
-
-```python
-# shared/chat_sidebar.py — reusable right sidebar
-def build_chat_sidebar():
-    """Build right sidebar with Janus quick-chat. Call BEFORE center content.
-    Returns (chatbot, chat_input, chat_history, sidebar_conv_id)."""
-
-def wire_chat_sidebar(chat_input, chatbot, chat_history, sidebar_conv_id):
-    """Wire chat sidebar submit event. Call AFTER all center content."""
-```
-
 **Use `gr.Sidebar` for both side panels — NOT `gr.Column` in a `gr.Row`.**
-Sidebar is collapsible, mobile-friendly, and purpose-built for this layout.
-The center content is just the main Blocks body (no Row/Column wrapper needed).
+Sidebar is collapsible, mobile-friendly. Center content is the main Blocks body.
+See `app.py` for routing and `shared/chat_sidebar.py` for reusable right sidebar.
 
 ### Sovereign Pages (R18)
 
@@ -225,47 +192,14 @@ built once via `shared/chat_sidebar.py` and wired per-page.
 Chat at `/chat`). Platform settings (all categories) are editable via **Admin -> Settings tab**.
 Persona settings (10 fields including `user_name`, `user_bio`, `user_full_name`, etc.) are in **Admin -> Persona tab**.
 
-**Settings table** (`settings` in SQLite) — key-value store for persistent configuration:
-- `chat_provider` — "ollama" (default), "anthropic", or "gemini"
-- `chat_model` — Model identifier string (default: "qwen3:32b")
-- `chat_api_key` — Base64-encoded API key (obfuscation, NOT encryption)
-- `chat_base_url` — Override URL for Ollama
-- `ollama_num_ctx` — Context window size (default: 32768 — 32K tokens)
-- `ollama_keep_alive` — Model persistence (default: "-1" = permanent)
-- `janus_conversation_id` — Persistent Janus conversation hex ID
-- `janus_context_messages` — Sliding window size (default: 10 turns)
-- `claude_export_json_dir` — Path to Claude export directory (ingestion)
-- `rag_score_threshold`, `rag_max_chunks` — RAG retrieval tuning
-- `rag_rerank_threshold` — Cross-encoder relevance cutoff (default: 0.3, range 0.0-1.0)
-- `rag_max_chunks_per_message` — Diversity cap: max chunks from one parent message (default: 3, 0 = no limit)
-- `rag_synthesizer_provider`, `rag_synthesizer_model` — RAG synthesis backend
-- `chunk_max_chars` — Target chunk size (default: 2500)
-- `chunk_min_chars` — Minimum chunk size (default: 200)
-- `chunk_overlap_chars` — Overlap between consecutive chunks (default: 200)
-- `chunk_threshold` — Messages shorter than this stay as single vector (default: 3000)
-- `location_lat`, `location_lon` — Geographic coordinates for temporal engine (default: Fargo, ND)
-- `location_name` — Full address for temporal grounding display
-- `location_tz` — IANA timezone (default: America/Chicago)
-- `user_name` — User display name (default: "Mat", category: persona)
-- `user_full_name` — Full legal name (category: persona, R23)
-- `user_birthdate` — Date of birth (category: persona, R23)
-- `user_employer` — Current employer (category: persona, R23)
-- `user_title` — Professional title (category: persona, R23)
-- `user_interests` — Interests and hobbies (category: persona, R23)
-- `user_values` — Core values and principles (category: persona, R23)
-- `user_health_notes` — Health context for sensitive framing (category: persona, R23)
-- `user_bio` — Biography + communication preferences (category: persona, R23: absorbed `user_preferences`)
-- `slumber_eval_provider` — Provider for Slumber evaluations (default: "gemini", category: system)
-- `slumber_eval_model` — Model for Slumber evaluations (default: "gemini-2.5-flash-lite", category: system)
-- `slumber_eval_enabled` — Enable/disable LLM evaluation (default: "true", category: system)
-- `slumber_dream_enabled` — Enable/disable dream synthesis (default: "true", category: system)
-- `slumber_dream_min_quality` — Minimum quality_score for dream clusters (default: "0.7", category: system)
-- `precognition_enabled` — Enable/disable Gemini pre-cognition (default: "true", category: system)
-- `precognition_timeout_ms` — Max wait for Gemini pre-pass in ms (default: "3000", category: system)
-- `register_mining_provider` — Provider for register mining evaluation (default: "gemini", category: system)
-- `register_mining_model` — Model for register mining evaluation (default: "gemini-2.5-flash-lite", category: system)
-- `register_mining_enabled` — Enable/disable register mining (default: "true", category: system)
-- `register_mining_watermark` — Rowid watermark for incremental mining (default: "0", category: system)
+**Settings table** (`settings` in SQLite) — key-value store. Categories: `chat`, `ollama`,
+`export`, `ingestion`, `rag`, `system`, `persona`. Full catalog in JANATPMP document
+"Settings Catalog (Post-R32)". Key settings for chat development:
+- `chat_provider` ("ollama"/"anthropic"/"gemini"), `chat_model` ("qwen3:32b")
+- `janus_conversation_id`, `janus_context_messages` (sliding window, default 10)
+- `rag_score_threshold`, `rag_max_chunks`, `rag_max_chunks_per_message`
+- 10 persona fields (`user_name`, `user_bio`, etc.) in category "persona"
+- 4 register_mining settings (`_provider`, `_model`, `_enabled`, `_watermark`)
 
 **Settings flow:**
 - `services/settings.py` provides `get_setting()` / `set_setting()` with auto base64 for secrets
@@ -280,176 +214,42 @@ Persona settings (10 fields including `user_name`, `user_bio`, `user_full_name`,
 - Fresh context is injected per message. Janus persona emerges from conversation history
   and RAG salience, not from static system prompts.
 
-### Knowledge Page (`pages/knowledge.py`)
-
-Sovereign Knowledge page with 4 tabs:
-
-- **Memory** — Unified conversation + document browser. Left sidebar has type filter
-  (All/Conversations/Documents), search textbox, and scrollable result list. Center shows
-  conversation viewer (`gr.Chatbot`) or document detail depending on selection. Includes
-  "+ New Document" accordion.
-- **Connections** — Entity relationship viewer. Left sidebar has entity type picker and
-  search. Center shows relationship table with "+ Add Connection" accordion.
-- **Pipeline** — Content ingestion, embedding, chunking, and graph controls. Left sidebar
-  shows pipeline health stats. Center has accordions for ingestion, embedding, and graph.
-- **Synthesis** — Dream insights, synthesis statistics, memory health dashboard (R28).
-
 ### Data Flow
 
-```
-db/operations.py → 28 functions → three surfaces:
-    1. UI: imported by pages/*.py, called in event listeners
-    2. API: exposed via gr.api() in app.py (main Blocks only)
-    3. MCP: auto-generated from gr.api() + docstrings
-```
-
-**Key principles:**
-
-- One set of functions in `db/operations.py` serves UI, API, and MCP
-- NO `demo.load()` — data is computed at build time and passed via `value=`
-- `gr.api()` exposes db functions as MCP tools (registered on main Blocks, accessible from all routes)
-- Each page has its own `build_*_page()` entry point
+`db/operations.py` → 28 functions → three surfaces: UI (pages/*.py), API (`gr.api()`), MCP.
+One set of functions serves all three. NO `demo.load()` — bake data via `value=`.
 
 ### Startup Sequence (`services/startup.py`)
 
-Platform initialization is extracted into three functions called from `app.py`:
-
 1. **`initialize_core()`** — DB, settings, cleanup, Janus conversation. BLOCKING, fast (<1s).
 2. **`initialize_services()`** — Qdrant, Slumber daemon, Neo4j. Each isolated in try/except.
-3. **`start_auto_ingest()`** — Launches `scan_and_ingest()` in a background daemon thread.
-   Non-blocking: the webserver starts immediately while ingestion runs behind the scenes.
-
-A branded startup banner ("JANUS is getting ready for work...") appears in the UI and
-auto-dismisses via `gr.Timer` polling `is_auto_ingest_complete()` every 2 seconds.
-
-### MCP Tool Registry (`mcp_registry.py`)
-
-All 81 MCP tool functions are imported and collected in `ALL_MCP_TOOLS` list, grouped by
-page ownership (Projects, Knowledge, Admin, cross-cutting). `app.py` loops over this list:
-`for tool_fn in ALL_MCP_TOOLS: gr.api(tool_fn)`. Registered on the main Blocks only —
-accessible from all routes. Keeps `app.py` thin (~100 lines).
-
-### Shared Module (`shared/`)
-
-Centralized constants, formatting, and data-loading helpers used across UI and services.
-
-- **`shared/constants.py`** — Enum lists (STATUSES, TASK_TYPES, etc.), magic numbers, defaults. Domains are NOT here — they live in the `domains` database table.
-  (`MAX_TOOL_ITERATIONS=10`, `RAG_SCORE_THRESHOLD`), and `DEFAULT_CHAT_HISTORY`.
-- **`shared/formatting.py`** — `fmt_enum()` (converts `not_started` → `Not Started`),
-  `entity_list_to_df()` (generic DataFrame builder from entity dicts).
-- **`shared/data_helpers.py`** — Data-loading functions extracted from projects.py:
-  `_load_projects()`, `_children_df()`, `_all_items_df()`, `_load_tasks()`, `_all_tasks_df()`,
-  `_load_documents()`, `_all_docs_df()`, `_msgs_to_history()`, `_load_most_recent_chat()`.
-
-### Logging Architecture (`services/log_config.py`)
-
-Centralized logging with SQLite persistence:
-
-- **`SQLiteLogHandler`** — Custom `logging.Handler` that writes to `app_logs` table.
-  Batches writes (flushes on WARNING+ or every 10 records) to minimize DB overhead.
-- **`setup_logging(level)`** — Configures root logger with console + SQLite handlers.
-  Called at app startup in `app.py` before any other imports.
-- **`get_logs(level, module, limit, since)`** — Query function used by Admin UI log viewer.
-- **`cleanup_old_logs(days=30)`** — Retention policy, called on startup.
-
-All services use `logger = logging.getLogger(__name__)` and log at appropriate levels:
-INFO for operations, WARNING for fallbacks, ERROR for failures.
+3. **`start_auto_ingest()`** — Background daemon thread, non-blocking.
 
 ### Settings Registry (`services/settings.py`)
 
-Settings use a `SETTINGS_REGISTRY` dict where each key maps to
-`(default, is_secret, category, validator_fn)`:
-
-- **Categories:** `chat`, `ollama`, `export`, `ingestion`, `rag`, `system`, `persona`
-- **Validation:** `set_setting()` validates before storing, returns error string on failure
-- **Secrets:** Base64-encoded (obfuscation, not encryption). Auto-encoded/decoded by
-  `get_setting()` / `set_setting()`.
-- `get_settings_by_category(category)` returns all settings for a given category.
-- `init_settings()` migrates stale defaults (e.g., old model names) on startup — only
-  updates values that still match the exact old default, preserving user customizations.
-
-### CDC Outbox Retention
-
-The `cdc_outbox` table captures all database mutations and syncs them to Neo4j via the
-CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where both
-`processed_qdrant` and `processed_neo4j` are 1 and older than 90 days.
+`SETTINGS_REGISTRY` dict: `(default, is_secret, category, validator_fn)` per key.
+Categories: `chat`, `ollama`, `export`, `ingestion`, `rag`, `system`, `persona`.
+`set_setting()` validates before storing. Secrets auto base64-encoded.
+`init_settings()` auto-migrates stale defaults on startup.
 
 ## Database Schema (db/schema.sql)
 
-**Core Tables:**
-- `domains` — First-class organizational entity. Each domain has name, display_name,
-  description, color, is_active. Replaces the old hardcoded DOMAINS list. UI dropdowns
-  show only active domains; `create_item()` validates against all domains (active + inactive).
-  CDC triggers for Qdrant/Neo4j sync.
-- `items` — Projects, features, books, etc. across domains. Supports hierarchy via parent_id.
-  Has JSON attributes for domain-specific data. FTS5 full-text search enabled.
-  Domain validation is app-level via `get_domain()` (no CHECK constraint in schema).
-- `tasks` — Work queue with agent/human assignment. Supports retry logic, dependencies,
-  acceptance criteria, cost tracking.
-- `documents` — Conversations, files, artifacts, research. FTS5 enabled.
-- `relationships` — Universal connector between any two entities. Typed relationships
-  (blocks, enables, informs, etc.) with hard/soft strength.
-- `conversations` — Chat sessions from any source (platform, claude_export, imported).
-  Stores provider/model snapshot, system_prompt_append, temperature, top_p, max_tokens.
-  Fields: source (platform/claude_export/imported), conversation_uri (Claude Export linkage),
-  is_active (1=visible, 0=archived), message_count.
-- `messages` — Triplet message schema for training data pipeline. Each turn stores:
-  user_prompt, model_reasoning (chain-of-thought/think blocks), model_response (visible reply).
-  Per-turn provider/model snapshot, token counts (prompt/reasoning/response), tools_called JSON.
-  Ordered by (conversation_id, sequence). FTS5 on user_prompt + model_response.
-- `app_logs` — Application log records (level, module, function, message, metadata JSON).
-  Written by `SQLiteLogHandler`, queryable via Admin UI.
-- `settings` — Key-value application configuration. Base64 for secrets. Auto-updated timestamps.
-- `messages_metadata` — Cognitive telemetry companion to messages (R12). Per-turn timing
-  (total/rag/inference ms), frozen RAG snapshot (hit counts, rerank/salience averages,
-  per-hit score objects), keywords, labels, quality_score (0.0-1.0, set by Slumber Cycle).
-  FK to messages(id) with CASCADE delete. Unique index on message_id.
-  `cognition_prompt_layers` — JSON of per-layer prompt breakdown (R21, layer name + chars).
-  `cognition_graph_trace` — JSON of graph ranking trace (R21, seeds + neighborhood + boosts).
-- `chunks` — Unified chunk records for messages and documents (R16). Each row stores
-  entity_type ('message'/'document'), entity_id (FK to parent), chunk_index, chunk_text,
-  char_start/char_end offsets, position ('only'/'first'/'middle'/'last'), point_id (Qdrant),
-  embedded_at timestamp. FTS5 via `chunks_fts` with INSERT/UPDATE/DELETE sync triggers.
-  CDC trigger syncs Chunk nodes to Neo4j. UNIQUE(entity_type, entity_id, chunk_index).
-- `file_registry` — Tracks ingested files by path + SHA-256 content hash (R17). Operational
-  metadata — no CDC participation. Columns: file_path (UNIQUE), filename, content_hash,
-  file_size, ingestion_type ('claude'/'google_ai'/'markdown'), entity_type, entity_count,
-  status ('ingested'/'failed'/'skipped'), error_message, ingested_at. Used by auto-ingestion
-  scanner to skip already-processed files and detect content changes.
-- `register_exemplars` — Conversational register evaluations mined by Slumber (R32). Stores register_label (warm/neutral/clinical), register_score, rationale, authentic_phrases, performed_phrases, topics. Source of truth for exemplars; Qdrant embedding (doc_type=`register_exemplar`) is the search index.
-- `cdc_outbox` — Change Data Capture for future Qdrant/Neo4j sync. Auto-cleaned on startup (90 days).
-- `schema_version` — Migration tracking.
+**Core Tables:** `domains`, `items`, `tasks`, `documents`, `relationships`, `conversations`,
+`messages` (triplet: user_prompt + model_reasoning + model_response), `app_logs`, `settings`,
+`messages_metadata` (cognitive telemetry + quality_score), `chunks` (FTS5, CDC), `entities`
+(6 types, R29), `entity_mentions`, `file_registry`, `register_exemplars` (R32),
+`cdc_outbox`, `schema_version`. Full details in JANATPMP document "Database Schema Reference".
 
-**Migrations** (in `db/migrations/`):
-
-- `0.3.0_conversations.sql` — Conversations + messages tables, FTS, CDC triggers
-- `0.4.0_app_logs.sql` — Application logs table with indexes
-- `0.4.1_messages_fts_update.sql` — Missing FTS UPDATE trigger on messages
-- `0.4.2_domains_table.sql` — Domains as first-class entity, items table CHECK removal, CDC domain support
-- `0.5.0_messages_metadata.sql` — Cognitive telemetry table, CDC outbox entity_type addition
-- `0.6.0_salience_synced.sql` — Salience sync tracking
-- `0.7.0_pipeline_observability.sql` — Per-turn pipeline metadata in messages_metadata
-- `0.8.0_chunks.sql` — Unified chunks table, FTS5, CDC triggers (drops+recreates all triggers for CHECK constraint expansion)
-- `0.9.0_file_registry.sql` — File registry for auto-ingestion tracking (R17, no CDC — operational metadata)
-- `1.0.0_cognition_trace.sql` — Cognition trace columns on messages_metadata (R21)
-- `1.1.0_slumber_eval.sql` — Slumber LLM evaluation columns on messages_metadata (R22)
-- `1.2.0_precognition.sql` — Pre-cognition trace column on messages_metadata (R25)
-- `1.3.0_entities.sql` — Entities + entity_mentions tables, FTS, CDC triggers (R29)
-- `1.4.0_entity_salience.sql` — Salience column on entities table (R31)
-- `1.5.0_register_exemplars.sql` — Register exemplars table for conversational register mining (R32)
+**15 migrations** (0.3.0 through 1.5.0) in `db/migrations/`. Latest: `1.5.0_register_exemplars.sql` (R32).
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
-the fresh-DB/existing-DB if/else branch (after both branches complete). Placing inside `else`
-means fresh databases never run the migration. The 0.5.0 migration established this pattern.
+the fresh-DB/existing-DB if/else branch (after both branches complete).
 
 **CDC outbox entity_type changes:** Adding new entity_types to `cdc_outbox` requires dropping
 ALL existing triggers, recreating the table with the updated CHECK constraint, then recreating
 ALL triggers. SQLite has no ALTER CHECK — full table recreation is the only path.
 
-**Domains** are managed in the `domains` table (not hardcoded). 13 seeded domains:
-5 active (janat, janatpmp, literature, websites, becoming) and 8 inactive (atlas, meax,
-janatavern, amphitheatre, nexusweaver, social, speaking, life). Domain validation in
-`create_item()` checks all domains (active + inactive). UI dropdowns show active only.
+**Domains:** 13 seeded (5 active, 8 inactive). Managed in `domains` table, not hardcoded.
 
 ## Commands
 
@@ -842,61 +642,20 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 
 ## Current Platform State (Post-R32)
 
-### What Works
+**Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded.
+**Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving.
+**RAG:** Hybrid FTS + vector, graph-aware ranking, temporal decay, entity routing (R30), intent-gated attribution (R32).
+**Identity:** 10-layer adaptive prompt composer, pre-cognition, register exemplar injection (R32).
+**Slumber:** 11 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine.
+**Platform:** 84 MCP tools, auto-ingestion, Cognition tab, intent routing (11 categories).
 
-- **Triad of Memory** — SQLite + Qdrant + Neo4j with triple-write on every entity creation
-- **Janus continuous chat** — persistent conversation, sliding window, chapter archiving
-- **Self-query tools** — 6 read-only tools for Ollama in-app chat: search_memories, search_entities, get_entity, get_cooccurrence_neighbors, graph_neighbors, search_conversations (R32)
-- **RAG pipeline** — hybrid FTS + vector search, graph-aware ranking, temporal decay, salience
-- **Entity-aware RAG routing** — entity detection + graph retrieval before vector search (R30)
-- **10-layer adaptive prompt composer** — pre-cognition modulates layer weights per-turn; Layer 8.5 injects register exemplars for relational intents (R32)
-- **11-stage Slumber Cycle** — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine
-- **Register mining** — autonomous Slumber sub-cycle evaluates conversational register quality via Gemini, stores exemplars in SQLite + Qdrant, injects demonstrated voice into prompt (R32)
-- **Knowledge self-awareness** — Layer 8 expanded with entity count, graph stats, dream count, recent entities (R32)
-- **Intent-gated RAG attribution** — narrative format for relational intents, clinical metadata for analytical intents (R32)
-- **Entity co-occurrence web** — entities sharing messages get CO_OCCURS_WITH edges, watermarked incremental (R31)
-- **Entity salience decay** — temporal fade with mention boost, SQLite-first with Qdrant propagation (R31)
-- **Dream attribution** — synthesized insights labeled distinctly in RAG context (R31)
-- **Deep idle guard** — Gemini-heavy phases (extract, dream, mine) gated by 10-min idle threshold (R31/R32)
-- **Entity extraction** — 6 types extracted from scored messages, persisted across the Triad
-- **Temporal grounding** — time, season, sunrise/sunset, elapsed time injected per-turn
-- **Auto-ingestion** — file scanner at startup + Slumber, SHA-256 dedup, source files untouched
-- **Message chunking** — ~2500-char paragraph-aware chunks, each with own Qdrant vector
-- **Cognition introspection** — Cognition tab shows prompt layers, RAG funnel, graph trace, tool calls
-- **Intent routing** — regex classifier gates RAG depth and pre-cognition per-message
-- **84 MCP tools** — CRUD, search, graph, embedding, chunks, entities, backfill, register mining, diagnostics
-- **Content corpus** — 659 Claude conversations, 40 docs, 78 items, 13 domains, all embedded
+Full capabilities inventory in JANATPMP document "Platform Capabilities Inventory (Post-R32)".
 
-### What's Missing (Architectural Gaps)
+### Architectural Gaps
 
-These gaps became visible through extended conversation with Janus:
-
-- **No fact/opinion separation** — everything in the sliding window (user statements,
-  corrections, hypotheticals, RAG fragments) is treated as equal-weight context. The model
-  cannot distinguish "thing user said" from "verified fact."
-- **Echo behavior vs hallucination** — Janus is not hallucinating in the typical LLM sense.
-  It's working with the only context it has (RAG + conversation history) and amplifying it.
-  When RAG injects personal details from imported Claude conversations, the model weaves
-  them into elaborate narratives because it has no grounding mechanism to distinguish
-  memory retrieval from creative elaboration.
-
-### The Core Tension
-
-JANATPMP is a **project management platform** evolving into a consciousness substrate. Janus
-has memory (the Triad), a voice (qwen3:32b), focused recall (chunk-level RAG), senses
-(time, location, season via the Temporal Affinity Engine), identity (10-layer adaptive prompt
-composer, R19/R25/R32), a connected graph topology (conversation-level SIMILAR_TO edges, R20),
-graph-aware retrieval (topology-boosted RAG, R21), a visible thought pipeline (Cognition tab,
-R21), synthesized cross-conversation insight (Dream Synthesis, R24), adaptive self-expression
-(Gemini pre-cognition modulating how each prompt layer is constructed, R25), temporal
-gravity (recency-weighted retrieval, R28) with a visible Synthesis Surface (R28),
-extracted entities turning messages into structured knowledge (R29: The Troubadour),
-a web of entity-to-entity co-occurrence edges with temporal salience decay (R31: The Web),
-and now self-query tools for active retrieval, knowledge self-awareness, and conversational
-register mining that teaches her to match Mat's energy (R32: The Mirror).
-The Modelfile intelligence stack is the right direction — specialized sub-models for
-classification, scoring, synthesis — but those are layers of intelligence on a foundation
-that is rapidly gaining self-awareness.
+- **No fact/opinion separation** — sliding window treats user statements, RAG fragments,
+  and hypotheticals as equal-weight context.
+- **Echo behavior** — Janus amplifies RAG context without distinguishing memory from elaboration.
 
 ## Future Architecture (not in scope, for context only)
 
