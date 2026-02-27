@@ -312,7 +312,7 @@ def _fts_search_messages(query: str, limit: int = 10) -> list[dict]:
                 JOIN messages_fts fts ON fts.rowid = m.rowid
                 JOIN conversations c ON c.id = m.conversation_id
                 WHERE messages_fts MATCH ?
-                ORDER BY rank
+                ORDER BY rank, m.created_at DESC
                 LIMIT ?
             """, (fts_query, limit)).fetchall()
 
@@ -321,7 +321,7 @@ def _fts_search_messages(query: str, limit: int = 10) -> list[dict]:
             results.append({
                 "id": row["id"],
                 "text": text,
-                "score": 0.0,
+                "score": 0.5,
                 "source_collection": "messages",
                 "conversation_id": row["conversation_id"],
                 "conv_title": row["conv_title"] or "",
@@ -372,7 +372,7 @@ def _fts_search_chunks(query: str, limit: int = 10) -> list[dict]:
                 LEFT JOIN conversations conv ON m.conversation_id = conv.id
                 WHERE chunks_fts MATCH ?
                 AND c.point_id IS NOT NULL
-                ORDER BY rank
+                ORDER BY rank, m.created_at DESC
                 LIMIT ?
             """, (fts_query, limit)).fetchall()
 
@@ -381,7 +381,7 @@ def _fts_search_chunks(query: str, limit: int = 10) -> list[dict]:
             results.append({
                 "id": row["id"],
                 "text": row["text"],
-                "score": 0.0,
+                "score": 0.5,
                 "source_collection": source,
                 "conversation_id": row["conversation_id"] or "",
                 "conv_title": row["conv_title"] or "",
@@ -1676,7 +1676,7 @@ def chat_with_janus(message: str) -> dict:
         model_reasoning=reasoning or None,
         model_response=clean_response or raw_response,
         provider=provider, model=model,
-        tools_called="[]",
+        tools_called=json.dumps(cognition_trace.get("tool_calls", [])),
         tokens_prompt=token_counts.get("prompt", 0),
         tokens_reasoning=token_counts.get("reasoning", 0),
         tokens_response=token_counts.get("response", 0),

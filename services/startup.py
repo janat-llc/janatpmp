@@ -112,6 +112,18 @@ def initialize_core() -> None:
     # Auto-restore platform data if items table is empty and exports exist
     _auto_restore_platform_data()
 
+    # Bootstrap metadata rows so Slumber can evaluate imported messages
+    from db.chat_operations import backfill_message_metadata
+    total_created = 0
+    while True:
+        result = backfill_message_metadata(batch_size=1000)
+        created = int(result.split()[1]) if result.startswith("Created") else 0
+        total_created += created
+        if created == 0:
+            break
+    if total_created:
+        logger.info("Metadata bootstrap: created %d rows", total_created)
+
     logger.info("Core initialized: database, settings, Janus conversation")
 
 

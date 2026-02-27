@@ -85,8 +85,8 @@ DREAM_TEMPERATURE = 0.7          # Gemini temperature (creative for synthesis)
 WEAVE_CYCLE_INTERVAL = 5         # Weave every Nth slumber cycle (same as Dream)
 
 # --- Temporal Decay (R28: Temporal Gravity) ---
-TEMPORAL_DECAY_HALF_LIFE = 30    # Days until temporal bonus is halved
-TEMPORAL_DECAY_FLOOR = 0.3       # Minimum multiplier (old content never fully suppressed)
+TEMPORAL_DECAY_HALF_LIFE = 14    # Days until temporal bonus is halved
+TEMPORAL_DECAY_FLOOR = 0.15      # Minimum multiplier (old content never fully suppressed)
 
 # --- Entity Extraction (R29: The Troubadour) ---
 EXTRACTION_BATCH_SIZE = 10          # Messages per Slumber cycle

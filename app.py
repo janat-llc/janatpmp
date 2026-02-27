@@ -122,4 +122,5 @@ if __name__ == "__main__":
         theme=JanatTheme(),
         css=JANAT_CSS,
         allowed_paths=["assets"],
+        show_error=True,
     )
