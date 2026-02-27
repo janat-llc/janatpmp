@@ -121,7 +121,7 @@ def _validate_log_level(value: str) -> str | None:
 SETTINGS_REGISTRY = {
     # Chat
     "chat_provider":        ("ollama", False, "chat", _validate_provider),
-    "chat_model":           ("qwen3:32b", False, "chat", None),
+    "chat_model":           ("qwen3.5:27b", False, "chat", None),
     "chat_api_key":         ("", True, "chat", None),
     "chat_base_url":        ("http://ollama:11434/v1", False, "chat", None),
     "chat_system_prompt":   ("", False, "chat", None),
@@ -152,7 +152,7 @@ SETTINGS_REGISTRY = {
     "rag_rerank_threshold": ("0.3", False, "rag", _validate_float_0_1),
     "rag_max_chunks":       ("10", False, "rag", _validate_positive_int),
     "rag_synthesizer_provider": ("ollama", False, "rag", None),
-    "rag_synthesizer_model": ("qwen3:32b", False, "rag", None),
+    "rag_synthesizer_model": ("qwen3.5:27b", False, "rag", None),
     "rag_synthesizer_api_key": ("", True, "rag", None),
 
     # Chunking (R16)
@@ -266,6 +266,8 @@ def init_settings():
         ("slumber_evaluator", "heuristic"),  # R22: superseded by slumber_eval_* settings
         ("slumber_eval_model", "gemini-2.0-flash-lite"),  # R22: deprecated, use 2.5
         ("precognition_timeout_ms", "500"),  # R25: 500ms too aggressive for Gemini cold start
+        ("chat_model", "qwen3:32b"),  # Qwen 3.5 replaces Qwen 3 (smaller, faster, better tools)
+        ("rag_synthesizer_model", "qwen3:32b"),
     ]
 
     with get_connection() as conn:
