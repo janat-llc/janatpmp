@@ -81,6 +81,7 @@ JANATPMP/
 │   ├── graph_ranking.py       # Graph-aware RAG ranking — topology boost (R21)
 │   ├── dream_synthesis.py      # Dream Synthesis — cross-conversation insight generation (R24)
 │   ├── entity_extraction.py    # Entity extraction engine — Gemini-powered (R29)
+│   ├── graph_retrieval.py      # Graph-based retrieval — entity edge traversal (R30)
 │   ├── pipeline.py           # Search pipeline: ANN → salience (rerank decommissioned)
 │   └── temporal.py           # Temporal Affinity Engine — time/location context (R17)
 ├── graph/                    # Knowledge graph layer — Neo4j (R13)
@@ -106,6 +107,7 @@ JANATPMP/
 │   ├── auto_ingest.py        # Startup + Slumber auto-ingestion scanner (R17)
 │   ├── startup.py            # Platform init: initialize_core(), initialize_services(), background auto-ingest
 │   ├── intent_router.py      # Intent classification + pipeline routing (R26)
+│   ├── entity_routing.py     # Entity-aware routing — detect entity refs, inject context (R30)
 │   ├── backfill_orchestrator.py  # Phased data backfill pipeline (R26)
 │   └── ingestion/            # Content ingestion parsers (Phase 6A)
 │       ├── __init__.py
@@ -792,6 +794,19 @@ Pre-cognition weights modulate each layer (skip/minimal/standard/expanded).
 Half-life: 30 days. Floor: 0.3 (old content never fully suppressed).
 Bypassed when query contains temporal references ("last month", "back when").
 
+### Entity-Aware RAG Routing (R30)
+
+Two-track pipeline injected into `chat()` after intent classification:
+
+1. **Entity routing** (`services/entity_routing.py`) — regex candidate extraction +
+   `find_entity_by_name()` exact match + `search_entities()` FTS fallback. <10ms, no LLM.
+   Produces structured context block prepended to RAG context.
+2. **Graph retrieval** (`atlas/graph_retrieval.py`) — walks `(Message)-[:MENTIONS]->(Entity)`
+   edges in Neo4j, pulls source message text from SQLite, merges into RAG candidate pool.
+
+High-confidence entity matches (>=0.7) downgrade RAG depth from FULL to LIGHT.
+Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieval` trace dicts.
+
 ### Key Architecture Decisions
 
 - **Triplet message schema** — each turn stores user_prompt + model_reasoning + model_response
@@ -805,13 +820,14 @@ Bypassed when query contains temporal references ("last month", "back when").
 - **Asymmetric embedding** — Qwen3-Embedding-0.6B uses instruction prefix for queries,
   plain text for passages. Client-side `[:1024]` truncation for safety.
 
-## Current Platform State (Post-R29)
+## Current Platform State (Post-R30)
 
 ### What Works
 
 - **Triad of Memory** — SQLite + Qdrant + Neo4j with triple-write on every entity creation
 - **Janus continuous chat** — persistent conversation, sliding window, chapter archiving
 - **RAG pipeline** — hybrid FTS + vector search, graph-aware ranking, temporal decay, salience
+- **Entity-aware RAG routing** — entity detection + graph retrieval before vector search (R30)
 - **9-layer adaptive prompt composer** — pre-cognition modulates layer weights per-turn
 - **8-stage Slumber Cycle** — ingest, evaluate, propagate, relate, prune, extract, dream, weave
 - **Entity extraction** — 6 types extracted from scored messages, persisted across the Triad
@@ -861,16 +877,15 @@ layers of intelligence on a foundation that is rapidly gaining self-awareness.
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R30 candidates)
+### Near-Term (R31 candidates)
 
-- **Entity-aware RAG routing** — "Tell me about C-Theory" routes to `search_entities()`
-  and returns the synthesized description directly, bypassing vector similarity search.
+- **Janus self-query** — give Janus the ability to query her own memory (specific retrieval
+  on demand), not just passively receive RAG context. Entity-to-Entity semantic edges
+  (RELATED_TO) so concepts that co-occur get linked.
 - **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
   system-injected, or verified. Give the model metadata to distinguish recall from hearsay.
 - **Chunk-level semantic edges** — RESONATES_WITH edges between individual chunks for
   fine-grained cross-conversation linking (expensive: requires batched pairwise comparison).
-- **Janus self-query** — give Janus the ability to query her own memory (specific retrieval
-  on demand), not just passively receive RAG context.
 
 ### Longer-Term
 

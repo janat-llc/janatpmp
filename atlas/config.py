@@ -95,6 +95,13 @@ EXTRACTION_TEMPERATURE = 0.2        # Low temperature for consistent extraction
 EXTRACTION_MAX_PER_MESSAGE = 8      # Max entities from a single message
 EXTRACTION_CYCLE_INTERVAL = 3       # Extract every Nth slumber cycle
 
+# --- Entity-Aware RAG Routing (R30) ---
+ENTITY_CONFIDENCE_THRESHOLD = 0.4    # Minimum confidence to include entity
+ENTITY_HIGH_CONFIDENCE = 0.7         # Threshold to downgrade RAG depth
+ENTITY_MAX_MATCHES = 3               # Maximum entities per query
+ENTITY_CONTEXT_BUDGET = 2000         # Max chars for entity context block
+ENTITY_MAX_SNIPPETS = 3              # Max source snippets per entity
+
 # --- Pre-Cognition (R25) ---
 PRECOGNITION_TIMEOUT_MS = 3000   # Max wait for Gemini pre-pass (ms)
 PRECOGNITION_WEIGHT_MIN = 0.0    # Floor for layer weights

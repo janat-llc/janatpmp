@@ -468,7 +468,8 @@ def _needs_rag(message: str) -> bool:
 
 
 def _build_rag_context(user_message: str,
-                       skip_gate: bool = False) -> tuple[str, dict]:
+                       skip_gate: bool = False,
+                       entity_ids: list[str] | None = None) -> tuple[str, dict]:
     """Hybrid search: Qdrant vectors + SQLite FTS keyword matching.
 
     Two-source retrieval ensures both semantic similarity AND keyword matches
@@ -538,6 +539,32 @@ def _build_rag_context(user_message: str,
         except Exception as e:
             logger.debug("Graph ranking unavailable: %s", e)
             metrics["graph_trace"] = {}
+
+        # R30: Graph retrieval — pull source messages via entity edges
+        graph_retrieval_trace = {}
+        if entity_ids:
+            try:
+                from atlas.graph_retrieval import retrieve_entity_sources
+                graph_msgs, graph_retrieval_trace = retrieve_entity_sources(
+                    entity_ids)
+                for msg in graph_msgs:
+                    msg_id = msg.get("message_id", "")
+                    if msg_id not in seen_ids:
+                        seen_ids.add(msg_id)
+                        results.append({
+                            "id": msg_id,
+                            "text": msg["text"],
+                            "conversation_id": msg.get("conversation_id", ""),
+                            "score": 0.7,
+                            "source_collection": "graph_retrieval",
+                            "_fts_match": False,
+                        })
+                if graph_msgs:
+                    logger.debug("Graph retrieval added %d source messages",
+                                 len(graph_msgs))
+            except Exception as e:
+                logger.debug("Graph retrieval unavailable: %s", e)
+        metrics["graph_retrieval_trace"] = graph_retrieval_trace
 
         # R28: Temporal decay — recency-weight candidates
         temporal_trace = {"applied": False, "reason": "decay disabled"}
@@ -1318,6 +1345,19 @@ def chat(message: str, history: list[dict],
                 intent_result.intent.value, intent_result.confidence * 100,
                 intent_result.rag_depth.value, intent_result.run_precognition)
 
+    # R30: Entity-aware routing (gated by RAG depth, <10ms)
+    entity_result = None
+    if intent_result.rag_depth != RAGDepth.NONE:
+        try:
+            from services.entity_routing import detect_entities
+            entity_result = detect_entities(message)
+            if entity_result and entity_result.entities_found:
+                logger.info("Entity routing: %d entities found (%s)",
+                            len(entity_result.entities_found),
+                            ", ".join(e.name for e in entity_result.entities_found))
+        except Exception as e:
+            logger.debug("Entity routing unavailable: %s", e)
+
     # R25: Pre-cognition — adaptive prompt shaping (gated by intent)
     precog_directives = {}
     if intent_result.run_precognition:
@@ -1345,17 +1385,38 @@ def chat(message: str, history: list[dict],
         }
 
     with TurnTimer() as timer:
-        # R26: RAG depth gated by intent classification
+        # R26/R30: RAG depth gated by intent + entity routing
+        # High-confidence entity matches downgrade FULL → LIGHT
+        effective_rag_depth = intent_result.rag_depth
+        rag_depth_adjusted = ""
+        if (entity_result and effective_rag_depth == RAGDepth.FULL
+                and any(e.confidence >= 0.7
+                        for e in entity_result.entities_found)):
+            effective_rag_depth = RAGDepth.LIGHT
+            rag_depth_adjusted = "FULL \u2192 LIGHT"
+            logger.info("Entity routing downgraded RAG: %s", rag_depth_adjusted)
+
+        # Extract entity_ids for graph retrieval inside _build_rag_context
+        entity_ids = (
+            [e.entity_id for e in entity_result.entities_found]
+            if entity_result and entity_result.entities_found else None
+        )
+
         with timer.span("rag"):
-            if intent_result.rag_depth == RAGDepth.FULL:
+            if effective_rag_depth == RAGDepth.FULL:
                 rag_context, rag_metrics = _build_rag_context(
-                    message, skip_gate=True)
-            elif intent_result.rag_depth == RAGDepth.LIGHT:
+                    message, skip_gate=True, entity_ids=entity_ids)
+            elif effective_rag_depth == RAGDepth.LIGHT:
                 rag_context, rag_metrics = _build_light_rag_context(message)
             else:
                 rag_context = ""
                 rag_metrics = dict(_EMPTY_RAG_METRICS, skipped=True,
                                    skip_reason=intent_result.intent.value)
+
+        # R30: Prepend entity structured context before RAG context
+        if entity_result and entity_result.structured_context:
+            rag_context = entity_result.structured_context + "\n\n" + rag_context
+
         if rag_context:
             system_prompt += rag_context
         logger.debug("System prompt composed (%d chars)", len(system_prompt))
@@ -1404,6 +1465,13 @@ def chat(message: str, history: list[dict],
                         "run_precognition": intent_result.run_precognition,
                         "reasoning": intent_result.reasoning,
                     },
+                    # R30: Entity routing trace
+                    "entity_routing": {
+                        **(entity_result.trace if entity_result else {}),
+                        "rag_depth_adjusted": rag_depth_adjusted,
+                    },
+                    "graph_retrieval": rag_metrics.get(
+                        "graph_retrieval_trace", {}),
                     "prompt_layers": prompt_layers,
                     "graph_trace": rag_metrics.get("graph_trace", {}),
                     "temporal_trace": rag_metrics.get("temporal_trace", {}),

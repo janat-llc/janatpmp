@@ -643,6 +643,25 @@ def get_messages(conversation_id: str, limit: int = 100, latest: bool = False) -
         return [dict(row) for row in cursor.fetchall()]
 
 
+def get_message(message_id: str) -> dict:
+    """Get a single message by ID with full triplet fields.
+
+    Args:
+        message_id: The message ID to retrieve.
+
+    Returns:
+        Dict with all message fields (id, conversation_id, sequence,
+        user_prompt, model_reasoning, model_response, provider, model,
+        tokens_prompt, tokens_reasoning, tokens_response, tools_called,
+        created_at). Empty dict if not found.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM messages WHERE id = ?", (message_id,)
+        ).fetchone()
+    return dict(row) if row else {}
+
+
 # =============================================================================
 # JANUS — Continuous Chat Lifecycle
 # =============================================================================

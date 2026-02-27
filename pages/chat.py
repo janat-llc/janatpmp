@@ -726,6 +726,74 @@ def build_chat_page():
                     )
                     gr.Markdown("---", key="cog-intent-sep")
 
+                # --- Section: Entity Routing (R30) ---
+                entity_routing = trace.get("entity_routing", {})
+                entities_matched = entity_routing.get(
+                    "entities_matched", [])
+                candidates_extracted = entity_routing.get(
+                    "candidates_extracted", [])
+                if entity_routing and (
+                        entities_matched or candidates_extracted):
+                    gr.Markdown(
+                        "### Entity Routing",
+                        key="cog-entity-header",
+                    )
+                    if entities_matched:
+                        match_lines = []
+                        for ent in entities_matched:
+                            conf = ent.get("confidence", 0)
+                            conf_bar = (
+                                "\u2588" * int(conf * 10)
+                                + "\u2591" * (10 - int(conf * 10))
+                            )
+                            match_lines.append(
+                                f"- **{ent.get('name', '?')}** "
+                                f"({ent.get('entity_type', '?')}) "
+                                f"{conf_bar} {conf:.0%} | "
+                                f"{ent.get('mention_count', 0)} mentions"
+                            )
+                        gr.Markdown(
+                            "\n".join(match_lines),
+                            key="cog-entity-matches",
+                        )
+
+                        ctx_chars = entity_routing.get(
+                            "structured_context_chars", 0)
+                        depth_adj = entity_routing.get(
+                            "rag_depth_adjusted", "")
+                        info_parts = []
+                        if ctx_chars:
+                            info_parts.append(
+                                f"Context injected: **{ctx_chars:,}** chars")
+                        if depth_adj:
+                            info_parts.append(
+                                f"RAG depth: {depth_adj}")
+                        if info_parts:
+                            gr.Markdown(
+                                " | ".join(info_parts),
+                                key="cog-entity-info",
+                            )
+                    else:
+                        gr.Markdown(
+                            f"*{len(candidates_extracted)} candidates "
+                            f"extracted, no entity matches*",
+                            key="cog-entity-none",
+                        )
+
+                    # Graph retrieval stats
+                    graph_ret = trace.get("graph_retrieval", {})
+                    gr_msgs = graph_ret.get("messages_retrieved", 0)
+                    gr_convs = graph_ret.get(
+                        "conversations_touched", 0)
+                    if gr_msgs > 0:
+                        gr.Markdown(
+                            f"Graph retrieval: **{gr_msgs}** source "
+                            f"messages from **{gr_convs}** conversations",
+                            key="cog-entity-graph-ret",
+                        )
+
+                    gr.Markdown("---", key="cog-entity-sep")
+
                 # --- Section 0: Pre-Cognition (R25) ---
                 precog = trace.get("precognition", {})
                 if precog.get("precognition_used"):
@@ -829,8 +897,16 @@ def build_chat_page():
                 gr.Markdown("---", key="cog-rag-sep")
                 gr.Markdown("### RAG Pipeline", key="cog-rag-header")
 
+                # R30: graph-retrieved count
+                gr_retrieved = trace.get(
+                    "graph_retrieval", {}).get("messages_retrieved", 0)
+
                 if hit_count > 0:
                     funnel_parts = [f"**{hit_count}** candidates retrieved"]
+                    if gr_retrieved > 0:
+                        funnel_parts.append(
+                            f"**{gr_retrieved}** graph-retrieved"
+                        )
                     if boosted > 0:
                         funnel_parts.append(
                             f"**{boosted}** graph-boosted"
