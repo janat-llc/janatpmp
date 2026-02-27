@@ -475,6 +475,36 @@ def _build_introspection_context(weight: float = 1.0) -> str:
 
 
 # ---------------------------------------------------------------------------
+# R32: Register Exemplar Formatting
+# ---------------------------------------------------------------------------
+
+def _format_register_exemplars(exemplars: list[dict]) -> str:
+    """Format register exemplars as demonstrated voice examples.
+
+    Reads user_prompt and model_response from separate Qdrant payload fields
+    (stored separately at embedding time by register mining).
+    """
+    if not exemplars:
+        return ""
+    lines = ["[Voice \u2014 how you speak at your best]"]
+    for ex in exemplars[:3]:
+        user_part = ex.get("user_prompt", "")
+        response_part = ex.get("model_response", "")
+        label = ex.get("register_label", "")
+        if not user_part or not response_part:
+            continue
+        user_part = user_part[:100] + ("..." if len(user_part) > 100 else "")
+        response_part = response_part[:200] + ("..." if len(response_part) > 200 else "")
+        if label == "warm":
+            lines.append(f'When Mat said: "{user_part}"')
+            lines.append(f'You responded well: "{response_part}"')
+        elif label == "clinical":
+            lines.append(f'When Mat said: "{user_part}"')
+            lines.append(f'You defaulted to reporting: "{response_part}" (avoid this)')
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+# ---------------------------------------------------------------------------
 # Main Composer
 # ---------------------------------------------------------------------------
 
@@ -604,6 +634,13 @@ def compose_system_prompt(history: list[dict] | None = None,
         introspection = _build_introspection_context(weight=w)
         if introspection:
             _add("self_introspection", introspection)
+
+    # --- Layer 8.5: Register Exemplars (R32: The Mirror) ---
+    exemplars = (directives or {}).get("register_exemplars", [])
+    if exemplars:
+        exemplar_text = _format_register_exemplars(exemplars)
+        if exemplar_text:
+            _add("register_exemplars", exemplar_text)
 
     # --- Behavioral Guidelines ---
     w = _w("behavioral_guidelines")

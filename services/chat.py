@@ -1472,6 +1472,19 @@ def chat(message: str, history: list[dict],
         except Exception as e:
             logger.debug("Pre-cognition unavailable: %s", e)
 
+    # R32: Thread intent and register exemplars through directives
+    precog_directives["intent"] = intent_result.intent.value
+    _RELATIONAL_INTENTS_SET = {"greeting", "emotional", "farewell",
+                                "continuation"}
+    if intent_result.intent.value in _RELATIONAL_INTENTS_SET:
+        try:
+            from atlas.register_mining import search_register_exemplars
+            exemplars = search_register_exemplars(message, limit=3)
+            if exemplars:
+                precog_directives["register_exemplars"] = exemplars
+        except Exception:
+            pass
+
     system_prompt, prompt_layers = _build_system_prompt(
         history, conversation_id, directives=precog_directives)
     if system_prompt_append and system_prompt_append.strip():

@@ -266,6 +266,17 @@ def init_database():
                     conn.executescript(migration_sql)
                     logger.info("Applied migration 1.4.0: entity salience column")
 
+        # Migration 1.5.0: Register exemplars table for R32
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='1.5.0'"
+        )
+        if cursor.fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "1.5.0_register_exemplars.sql"
+            if migration_path.exists():
+                migration_sql = migration_path.read_text(encoding="utf-8")
+                conn.executescript(migration_sql)
+                logger.info("Applied migration 1.5.0: register exemplars table")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

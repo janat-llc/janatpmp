@@ -30,7 +30,7 @@ _slumber_thread = None
 
 # --- Slumber activity state (R22) — read by UI via get_slumber_status() ---
 _slumber_status = {
-    "state": "idle",           # idle | ingesting | evaluating | propagating | relating | pruning | extracting | dreaming | weaving | linking | decaying
+    "state": "idle",           # idle | ingesting | evaluating | propagating | relating | pruning | extracting | dreaming | weaving | linking | decaying | mining
     "last_cycle_at": None,     # ISO timestamp of last completed cycle
     "last_evaluated": 0,       # Messages evaluated in last cycle
     "last_propagated": 0,      # Messages propagated in last cycle
@@ -59,6 +59,9 @@ _slumber_status = {
     "last_decayed": 0,         # Entities decayed in last cycle
     "total_decayed": 0,        # Cumulative decays since startup
     "_decay_cycle_count": 4,   # Internal: starts at INTERVAL-1 (ENTITY_DECAY_CYCLE_INTERVAL=5)
+    # Register Mining (R32)
+    "last_mined": 0,           # Exemplars mined in last cycle
+    "total_mined": 0,          # Cumulative exemplars since startup
 }
 
 # Words too common to be meaningful keywords
@@ -732,8 +735,36 @@ def _entity_decay_batch():
         logger.info("Slumber entity decay: %d entities processed", count)
 
 
+def _should_mine_register() -> bool:
+    """Check if register mining should run this cycle (R32)."""
+    from atlas.config import REGISTER_MINING_CYCLE_INTERVAL
+    from services.settings import get_setting
+    enabled = get_setting("register_mining_enabled") != "false"
+    if not enabled:
+        return False
+    if not _is_deep_idle():
+        return False
+    _slumber_status["_mine_cycle_count"] = _slumber_status.get(
+        "_mine_cycle_count", REGISTER_MINING_CYCLE_INTERVAL - 1
+    ) + 1
+    return _slumber_status["_mine_cycle_count"] % REGISTER_MINING_CYCLE_INTERVAL == 0
+
+
+def _register_mine_batch():
+    """Sub-cycle 10: Register Mining (R32)."""
+    from atlas.register_mining import run_register_mining_cycle
+    from atlas.config import REGISTER_MINING_BATCH_SIZE
+
+    result = run_register_mining_cycle(batch_size=REGISTER_MINING_BATCH_SIZE)
+    count = result.get("processed", 0)
+    _slumber_status["last_mined"] = count
+    _slumber_status["total_mined"] += count
+    if count:
+        logger.info("Slumber register mining: %d exemplars processed", count)
+
+
 def _slumber_cycle():
-    """Background thread: Ingest → Evaluate → Propagate → Relate → Prune → Extract → Dream → Weave → Link → Decay during idle."""
+    """Background thread: Ingest → Evaluate → Propagate → Relate → Prune → Extract → Dream → Weave → Link → Decay → Mine during idle."""
     while True:
         time.sleep(CYCLE_INTERVAL_SECONDS)
         if not _is_idle():
@@ -844,6 +875,15 @@ def _slumber_cycle():
             except Exception as e:
                 _slumber_status["error"] = str(e)
                 logger.debug("Slumber entity decay error: %s", e)
+
+        # Sub-cycle 10: Register Mining (R32)
+        if _should_mine_register():
+            _slumber_status["state"] = "mining"
+            try:
+                _register_mine_batch()
+            except Exception as e:
+                _slumber_status["error"] = str(e)
+                logger.debug("Slumber register mining error: %s", e)
 
         _slumber_status["state"] = "idle"
         _slumber_status["last_cycle_at"] = datetime.now().isoformat()

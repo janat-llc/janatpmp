@@ -201,6 +201,12 @@ SETTINGS_REGISTRY = {
     # Co-occurrence Linking (R31)
     "cooccurrence_watermark":  ("0", False, "system", None),
 
+    # Register Mining (R32: The Mirror)
+    "register_mining_provider":  ("gemini", False, "system", None),
+    "register_mining_model":     ("gemini-2.5-flash-lite", False, "system", None),
+    "register_mining_enabled":   ("true", False, "system", None),
+    "register_mining_watermark": ("0", False, "system", None),
+
     # Persona (R18 structured schema)
     "user_full_name":       ("", False, "persona", None),
     "user_preferred_name":  ("Mat", False, "persona", None),
