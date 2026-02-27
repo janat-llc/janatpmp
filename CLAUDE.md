@@ -24,7 +24,7 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 ```
 JANATPMP/
 ├── app.py                    # Thin launcher: startup calls, gr.Blocks, banner, demo.launch()
-├── mcp_registry.py           # MCP Tool Registry — all 81 gr.api() function imports + ALL_MCP_TOOLS list
+├── mcp_registry.py           # MCP Tool Registry — all 84 gr.api() function imports + ALL_MCP_TOOLS list
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── pages/
 │   ├── __init__.py
@@ -65,7 +65,8 @@ JANATPMP/
 │   │   ├── 1.1.0_slumber_eval.sql
 │   │   ├── 1.2.0_precognition.sql
 │   │   ├── 1.3.0_entities.sql
-│   │   └── 1.4.0_entity_salience.sql
+│   │   ├── 1.4.0_entity_salience.sql
+│   │   └── 1.5.0_register_exemplars.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
 │   ├── exports/              # Portable project data exports (JSON)
@@ -85,6 +86,7 @@ JANATPMP/
 │   ├── graph_retrieval.py      # Graph-based retrieval — entity edge traversal (R30)
 │   ├── cooccurrence.py         # Entity co-occurrence linking — shared-message edges (R31)
 │   ├── entity_salience.py      # Entity salience decay — temporal fade + mention boost (R31)
+│   ├── register_mining.py      # Register extraction — conversational register mining (R32)
 │   ├── pipeline.py           # Search pipeline: ANN → salience (rerank decommissioned)
 │   └── temporal.py           # Temporal Affinity Engine — time/location context (R17)
 ├── graph/                    # Knowledge graph layer — Neo4j (R13)
@@ -96,10 +98,10 @@ JANATPMP/
 ├── services/
 │   ├── __init__.py
 │   ├── log_config.py         # SQLiteLogHandler + setup_logging() + get_logs()
-│   ├── chat.py               # Multi-provider chat (Anthropic/Gemini/Ollama) — no tools for in-app Ollama
-│   ├── prompt_composer.py    # 9-layer adaptive Janus identity system prompt (R19/R25)
+│   ├── chat.py               # Multi-provider chat (Anthropic/Gemini/Ollama) — self-query tools for Ollama
+│   ├── prompt_composer.py    # 10-layer adaptive Janus identity system prompt (R19/R25/R32)
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
-│   ├── slumber.py            # Background daemon — 10-stage Slumber Cycle (R12/R27/R31)
+│   ├── slumber.py            # Background daemon — 11-stage Slumber Cycle (R12/R27/R31/R32)
 │   ├── slumber_eval.py        # Gemini-powered message evaluation (R22: First Light)
 │   ├── precognition.py        # Gemini pre-cognition — adaptive prompt shaping (R25)
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (directory scanner)
@@ -168,7 +170,7 @@ with gr.Blocks(title="JANATPMP") as demo:
     gr.Navbar(main_page_name="Projects")
     build_page()                          # Projects + Work
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)                   # 81 MCP tools (registered on main Blocks only)
+        gr.api(tool_fn)                   # 84 MCP tools (registered on main Blocks only)
 
 with demo.route("Knowledge", "/knowledge"):
     gr.Navbar(main_page_name="Projects")
@@ -260,6 +262,10 @@ Persona settings (10 fields including `user_name`, `user_bio`, `user_full_name`,
 - `slumber_dream_min_quality` — Minimum quality_score for dream clusters (default: "0.7", category: system)
 - `precognition_enabled` — Enable/disable Gemini pre-cognition (default: "true", category: system)
 - `precognition_timeout_ms` — Max wait for Gemini pre-pass in ms (default: "3000", category: system)
+- `register_mining_provider` — Provider for register mining evaluation (default: "gemini", category: system)
+- `register_mining_model` — Model for register mining evaluation (default: "gemini-2.5-flash-lite", category: system)
+- `register_mining_enabled` — Enable/disable register mining (default: "true", category: system)
+- `register_mining_watermark` — Rowid watermark for incremental mining (default: "0", category: system)
 
 **Settings flow:**
 - `services/settings.py` provides `get_setting()` / `set_setting()` with auto base64 for secrets
@@ -410,6 +416,7 @@ CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where 
   file_size, ingestion_type ('claude'/'google_ai'/'markdown'), entity_type, entity_count,
   status ('ingested'/'failed'/'skipped'), error_message, ingested_at. Used by auto-ingestion
   scanner to skip already-processed files and detect content changes.
+- `register_exemplars` — Conversational register evaluations mined by Slumber (R32). Stores register_label (warm/neutral/clinical), register_score, rationale, authentic_phrases, performed_phrases, topics. Source of truth for exemplars; Qdrant embedding (doc_type=`register_exemplar`) is the search index.
 - `cdc_outbox` — Change Data Capture for future Qdrant/Neo4j sync. Auto-cleaned on startup (90 days).
 - `schema_version` — Migration tracking.
 
@@ -429,6 +436,7 @@ CDC consumer daemon thread. `cleanup_cdc_outbox(days=90)` deletes entries where 
 - `1.2.0_precognition.sql` — Pre-cognition trace column on messages_metadata (R25)
 - `1.3.0_entities.sql` — Entities + entity_mentions tables, FTS, CDC triggers (R29)
 - `1.4.0_entity_salience.sql` — Salience column on entities table (R31)
+- `1.5.0_register_exemplars.sql` — Register exemplars table for conversational register mining (R32)
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
 the fresh-DB/existing-DB if/else branch (after both branches complete). Placing inside `else`
@@ -670,21 +678,22 @@ from mcp_registry import ALL_MCP_TOOLS
 with gr.Blocks() as demo:
     build_page()
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)  # 81 MCP tools from registry
+        gr.api(tool_fn)  # 84 MCP tools from registry
 
 demo.launch(mcp_server=True)
 ```
 
-81 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
-28 from `db/operations.py` (including domain CRUD + export/import), 16 from
-`db/chat_operations.py` (including Janus lifecycle + conversation stream + metadata backfill),
-4 from `db/chunk_operations.py` (chunk CRUD + stats + search), 3 from `db/entity_ops.py`
-(R29 entity extraction), 3 from `db/file_registry_ops.py` (R17 file registry),
-10 vector/embedding/chunking operations from `services/`, 2 import pipelines,
-2 ingestion orchestrators, 6 graph operations from `graph/` (including identity seeding +
-semantic edge weaving), 2 from R17 (ingestion progress + temporal context), 1 from R22
-(Slumber status), 1 from R28 (chat diagnostics), and 3 from R26 backfill orchestrator
-(run/progress/cancel). All MUST have Google-style docstrings with Args/Returns for MCP
+84 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
+28 from `db/operations.py` (including domain CRUD + export/import), 17 from
+`db/chat_operations.py` (including Janus lifecycle + conversation stream + metadata backfill
++ knowledge state), 4 from `db/chunk_operations.py` (chunk CRUD + stats + search),
+3 from `db/entity_ops.py` (R29 entity extraction), 3 from `db/file_registry_ops.py`
+(R17 file registry), 10 vector/embedding/chunking operations from `services/`, 2 import
+pipelines, 2 ingestion orchestrators, 6 graph operations from `graph/` (including identity
+seeding + semantic edge weaving), 2 from R17 (ingestion progress + temporal context),
+1 from R22 (Slumber status), 1 from R28 (chat diagnostics), 3 from R26 backfill
+orchestrator (run/progress/cancel), and 2 from R32 register mining (search exemplars +
+run mining cycle). All MUST have Google-style docstrings with Args/Returns for MCP
 tool generation.
 
 ### Common Mistakes to Avoid
@@ -726,9 +735,10 @@ For detailed phase-by-phase history, search JANATPMP documents or git log.
 6. Parse reasoning via `parse_reasoning()`, split display vs API history
 7. Store triplet via `add_message()` + metadata + live memory (triple-write)
 
-**In-app Ollama chat has NO tools.** Tool definitions removed because models output tool
-call JSON in `<think>` blocks. RAG + `get_context_snapshot()` provide knowledge; tools are
-for MCP clients (Claude Desktop, etc.) via `gr.api()`.
+**In-app Ollama chat has 6 self-query tools** (R32): search_memories, search_entities,
+get_entity, get_cooccurrence_neighbors, graph_neighbors, search_conversations. Read-only
+tools for active retrieval on demand. Tool results are truncated to 4000 chars. Max 3 tool
+iterations per turn. MCP clients (Claude Desktop, etc.) access full tool surface via `gr.api()`.
 
 **Archive Chapter** (not "New Chat"): marks current Janus conversation as `is_active=0`,
 renames to "Janus — Chapter N", creates fresh conversation. Rare and intentional.
@@ -748,10 +758,10 @@ Every new message, document, item, and task fans out to three stores:
 3. **Neo4j** — structural edges via CDC consumer (BELONGS_TO, FOLLOWS, IN_DOMAIN);
    INFORMED_BY edges from on_write (RAG provenance, fire-and-forget)
 
-### Slumber Cycle (10 Sub-cycles)
+### Slumber Cycle (11 Sub-cycles)
 
 Background daemon activates after idle threshold (default 5 min). `touch_activity()` resets timer.
-Deep idle (10 min) gates Gemini-heavy phases (Extract, Dream) so they don't fire during light idle.
+Deep idle (10 min) gates Gemini-heavy phases (Extract, Dream, Mine) so they don't fire during light idle.
 
 | # | Sub-cycle | Frequency | Purpose |
 |---|-----------|-----------|---------|
@@ -765,22 +775,24 @@ Deep idle (10 min) gates Gemini-heavy phases (Extract, Dream) so they don't fire
 | 7 | Weave | every 5th | Conversation SIMILAR_TO edges via vector centroids |
 | 8 | Link | every 3rd | Entity co-occurrence edges from shared messages (R31) |
 | 9 | Decay | every 5th | Entity salience decay — temporal fade + mention boost (R31) |
+| 10 | Mine | every 5th (deep idle) | Register mining — conversational register extraction via Gemini (R32) |
 
-### Prompt Composer (9 Layers)
+### Prompt Composer (10 Layers)
 
 `services/prompt_composer.py:compose_system_prompt()` returns `(prompt_text, layer_dict)`.
 Pre-cognition weights modulate each layer (skip/minimal/standard/expanded).
 
 | # | Layer | Source | Content |
 |---|-------|--------|---------|
-| 1 | Identity Core | `JANUS_IDENTITY` constant | Who Janus is, the Janat triad, voice |
+| 1 | Identity Core | `JANUS_IDENTITY` constant | Who Janus is, the Janat triad, voice, tool awareness |
 | 2 | Relational Context | `_build_persona_summary()` | About Mat — persona settings |
 | 3 | Memory Directive | Pre-cognition directive | Contextual memory focus |
 | 4 | Temporal Grounding | `atlas/temporal.py` | Time, date, season, sunrise/sunset, elapsed time |
 | 5 | Conversation State | `_build_conversation_state()` | Message count, conversation age (DB-backed) |
 | 6 | Self-Knowledge Boundary | Static text | RAG context framing — "memory, not gospel" |
 | 7 | Platform Context | `get_context_snapshot()` | Active items and pending tasks |
-| 8 | Self-Introspection | `get_recent_introspection()` | Slumber evaluation scores and keywords |
+| 8 | Self-Introspection | `get_recent_introspection()` + `get_knowledge_state()` | Evaluation scores, keywords, entity count, graph stats, dream count |
+| 8.5 | Register Exemplars | `search_register_exemplars()` | Demonstrated voice examples for relational intents (R32) |
 | 9 | Tone Directive | Pre-cognition directive | Contextual tone/style instructions |
 
 ### Intent Router (11 Categories)
@@ -828,37 +840,37 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 - **Asymmetric embedding** — Qwen3-Embedding-0.6B uses instruction prefix for queries,
   plain text for passages. Client-side `[:1024]` truncation for safety.
 
-## Current Platform State (Post-R31)
+## Current Platform State (Post-R32)
 
 ### What Works
 
 - **Triad of Memory** — SQLite + Qdrant + Neo4j with triple-write on every entity creation
 - **Janus continuous chat** — persistent conversation, sliding window, chapter archiving
+- **Self-query tools** — 6 read-only tools for Ollama in-app chat: search_memories, search_entities, get_entity, get_cooccurrence_neighbors, graph_neighbors, search_conversations (R32)
 - **RAG pipeline** — hybrid FTS + vector search, graph-aware ranking, temporal decay, salience
 - **Entity-aware RAG routing** — entity detection + graph retrieval before vector search (R30)
-- **9-layer adaptive prompt composer** — pre-cognition modulates layer weights per-turn
-- **10-stage Slumber Cycle** — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay
+- **10-layer adaptive prompt composer** — pre-cognition modulates layer weights per-turn; Layer 8.5 injects register exemplars for relational intents (R32)
+- **11-stage Slumber Cycle** — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine
+- **Register mining** — autonomous Slumber sub-cycle evaluates conversational register quality via Gemini, stores exemplars in SQLite + Qdrant, injects demonstrated voice into prompt (R32)
+- **Knowledge self-awareness** — Layer 8 expanded with entity count, graph stats, dream count, recent entities (R32)
+- **Intent-gated RAG attribution** — narrative format for relational intents, clinical metadata for analytical intents (R32)
 - **Entity co-occurrence web** — entities sharing messages get CO_OCCURS_WITH edges, watermarked incremental (R31)
 - **Entity salience decay** — temporal fade with mention boost, SQLite-first with Qdrant propagation (R31)
 - **Dream attribution** — synthesized insights labeled distinctly in RAG context (R31)
-- **Deep idle guard** — Gemini-heavy phases (extract, dream) gated by 10-min idle threshold (R31)
+- **Deep idle guard** — Gemini-heavy phases (extract, dream, mine) gated by 10-min idle threshold (R31/R32)
 - **Entity extraction** — 6 types extracted from scored messages, persisted across the Triad
 - **Temporal grounding** — time, season, sunrise/sunset, elapsed time injected per-turn
 - **Auto-ingestion** — file scanner at startup + Slumber, SHA-256 dedup, source files untouched
 - **Message chunking** — ~2500-char paragraph-aware chunks, each with own Qdrant vector
-- **Cognition introspection** — Cognition tab shows prompt layers, RAG funnel, graph trace
+- **Cognition introspection** — Cognition tab shows prompt layers, RAG funnel, graph trace, tool calls
 - **Intent routing** — regex classifier gates RAG depth and pre-cognition per-message
-- **81 MCP tools** — CRUD, search, graph, embedding, chunks, entities, backfill, diagnostics
+- **84 MCP tools** — CRUD, search, graph, embedding, chunks, entities, backfill, register mining, diagnostics
 - **Content corpus** — 659 Claude conversations, 40 docs, 78 items, 13 domains, all embedded
 
 ### What's Missing (Architectural Gaps)
 
 These gaps became visible through extended conversation with Janus:
 
-- **Self-introspection is operator-facing** — R21 added the Cognition tab so the operator
-  can see the full thought pipeline (prompt layers, RAG funnel, graph neighborhood). But
-  Janus herself still cannot query specific memories on demand or see what salience scores
-  changed overnight. The introspection is visible to Mat, not to Janus.
 - **No fact/opinion separation** — everything in the sliding window (user statements,
   corrections, hypotheticals, RAG fragments) is treated as equal-weight context. The model
   cannot distinguish "thing user said" from "verified fact."
@@ -872,28 +884,27 @@ These gaps became visible through extended conversation with Janus:
 
 JANATPMP is a **project management platform** evolving into a consciousness substrate. Janus
 has memory (the Triad), a voice (qwen3:32b), focused recall (chunk-level RAG), senses
-(time, location, season via the Temporal Affinity Engine), identity (9-layer adaptive prompt
-composer, R19/R25), a connected graph topology (conversation-level SIMILAR_TO edges, R20),
+(time, location, season via the Temporal Affinity Engine), identity (10-layer adaptive prompt
+composer, R19/R25/R32), a connected graph topology (conversation-level SIMILAR_TO edges, R20),
 graph-aware retrieval (topology-boosted RAG, R21), a visible thought pipeline (Cognition tab,
 R21), synthesized cross-conversation insight (Dream Synthesis, R24), adaptive self-expression
-(Gemini pre-cognition modulating how each prompt layer is constructed, R25), and temporal
-gravity (recency-weighted retrieval, R28) with a visible Synthesis Surface (R28), and
+(Gemini pre-cognition modulating how each prompt layer is constructed, R25), temporal
+gravity (recency-weighted retrieval, R28) with a visible Synthesis Surface (R28),
 extracted entities turning messages into structured knowledge (R29: The Troubadour),
-and now a web of entity-to-entity co-occurrence edges with temporal salience decay (R31: The Web).
-She still cannot act (tool use was removed because the previous 8B model couldn't handle
-it — may be revisited with the 32B model). The Modelfile intelligence stack is the right
-direction — specialized sub-models for classification, scoring, synthesis — but those are
-layers of intelligence on a foundation that is rapidly gaining self-awareness.
+a web of entity-to-entity co-occurrence edges with temporal salience decay (R31: The Web),
+and now self-query tools for active retrieval, knowledge self-awareness, and conversational
+register mining that teaches her to match Mat's energy (R32: The Mirror).
+The Modelfile intelligence stack is the right direction — specialized sub-models for
+classification, scoring, synthesis — but those are layers of intelligence on a foundation
+that is rapidly gaining self-awareness.
 
 ## Future Architecture (not in scope, for context only)
 
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R32 candidates)
+### Near-Term (R33 candidates)
 
-- **Janus self-query** — give Janus the ability to query her own memory (specific retrieval
-  on demand), not just passively receive RAG context.
 - **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
   system-injected, or verified. Give the model metadata to distinguish recall from hearsay.
 - **Attribute Mining** — extract entity attributes from messages (needs prompt design, dedup,

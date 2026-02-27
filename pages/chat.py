@@ -866,6 +866,16 @@ def build_chat_page():
                     )
                     gr.Markdown("---", key="cog-precog-sep")
 
+                # --- Section 0b: Tool Calls (R32: The Mirror) ---
+                tools_called = trace.get("tool_calls", [])
+                if tools_called:
+                    tool_list = ", ".join(f"`{t}`" for t in tools_called)
+                    gr.Markdown(
+                        f"### Self-Query Tools\n{tool_list}",
+                        key="cog-tools-header",
+                    )
+                    gr.Markdown("---", key="cog-tools-sep")
+
                 # --- Section 1: Prompt Assembly ---
                 layer_count = len(prompt_layers)
                 total_chars = sum(
@@ -887,6 +897,7 @@ def build_chat_page():
                     "knowledge_boundary": "Knowledge Boundary",
                     "platform_context": "Platform Context",
                     "self_introspection": "Self-Introspection",
+                    "register_exemplars": "Register Exemplars",
                     "behavioral_guidelines": "Behavioral Guidelines",
                     "tone_directive": "Tone Directive",
                 }
