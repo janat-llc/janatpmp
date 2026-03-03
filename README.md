@@ -22,7 +22,6 @@ graph TB
     subgraph Docker Compose
         Core[JANATPMP Core<br/>Gradio 6.6.0<br/>No GPU · Port 7860]
         Ollama[Ollama<br/>Chat + Embedding<br/>GPU · Port 11435]
-        vLLM[vLLM Reranker<br/>DECOMMISSIONED]
         Qdrant[Qdrant<br/>Vector Search<br/>Port 6343]
         Neo4j[Neo4j<br/>Knowledge Graph<br/>Port 7474]
     end
@@ -41,7 +40,7 @@ graph TB
 
 ```mermaid
 graph TB
-    MCP[MCP Tools<br/>81 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
+    MCP[MCP Tools<br/>84 operations] --> DB[db/operations.py<br/>db/chat_operations.py]
     UI[Gradio UI] --> DB
     API[REST API] --> DB
     DB --> SQLite[(SQLite)]
@@ -83,7 +82,7 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Claude conversation import** — ingest Claude export JSON into a searchable triplet schema
 - **Full-text search** via SQLite FTS5 across items, documents, conversation messages, and chunks
 - **Auto-context injection** — every chat message receives a live snapshot of active projects and pending tasks
-- **Janus identity architecture** — 10-layer adaptive prompt composer (R19/R25/R32): Identity Core, Relational Context, Memory Directive, Temporal Grounding, Conversation State, Self-Knowledge Boundary, Platform Context, Self-Introspection, Register Exemplars, Behavioral Guidelines + Tone Directive; three-variant system (minimal/standard/expanded) with weight-driven selection; bootstrap lifecycle (configuring → sleeping → awake); auto-restore platform data on DB reset
+- **Janus identity architecture** — 11-layer adaptive prompt composer (R19/R25/R32/R33): Identity Core, Relational Context, Memory Directive, Temporal Grounding, Conversation State, Self-Knowledge Boundary, Platform Context, Self-Introspection, Register Exemplars, Behavioral Guidelines + Tone Directive; three-variant system (minimal/standard/expanded) with weight-driven selection; bootstrap lifecycle (configuring → sleeping → awake); auto-restore platform data on DB reset
 - **Semantic graph topology** — `weave_conversation_graph()` (R20) bridges Qdrant vector similarity into Neo4j SIMILAR_TO edges between Conversation nodes; transforms isolated conversation chains into a connected semantic network; MERGE-based, idempotent, ~55s for 344 conversations
 - **Graph-aware RAG ranking** — SIMILAR_TO edges from the knowledge graph boost RAG candidates from the query's topic neighborhood; additive scoring promotes borderline candidates without inflating irrelevant content (R21)
 - **Cognition tab** — Sovereign Chat introspection surface showing full thought pipeline per-turn: prompt layer decomposition, RAG candidate funnel with graph boost, context budget, graph neighborhood visualization (R21)
@@ -92,7 +91,7 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Pre-Cognition** — Gemini Flash Lite pre-pass gathers 7 context signals (elapsed time, emotional trajectory, conversation depth, dream titles, temporal context, active domains, session turns) and produces directives that modulate prompt layer weights; three-variant system for static layers + weight parameters on dynamic builders; tone and memory directives inject contextual instructions; 3s timeout with graceful degradation (R25)
 - **Intent-aware pipeline routing** — regex-based classifier gates Pre-Cognition and RAG by message intent; greetings, acknowledgments, and meta-conversation skip expensive pipeline stages while knowledge queries get full retrieval (R26)
 - **Backfill orchestrator** — phased data foundation pipeline with progress tracking; orchestrates chunk, embed, graph backfill, and semantic edge weaving in sequence with per-phase status reporting via MCP (R26)
-- **Temporal gravity** — multiplicative exponential decay in RAG scoring gives recent content higher relevance on ambiguous queries; configurable half-life (30d) and floor (0.3) ensure old content is never suppressed; automatic bypass for explicit historical queries ("what did we discuss in October?"); visible in Cognition Tab (R28)
+- **Temporal gravity** — multiplicative exponential decay in RAG scoring gives recent content higher relevance on ambiguous queries; configurable half-life (14d) and floor (0.15) ensure old content is never suppressed; automatic bypass for explicit historical queries ("what did we discuss in October?"); visible in Cognition Tab (R28)
 - **Synthesis Surface** — Knowledge page Synthesis tab surfaces dream synthesis documents, synthesis statistics, and memory health dashboard (embedding coverage, graph connectivity, Slumber state); loads on tab selection with per-dream content expansion (R28)
 - **Entity extraction** — Gemini-powered extraction of 6 entity types (concept, decision, milestone, person, reference, emotional_state) from scored messages during Slumber; entities persist to the Triad (SQLite + Qdrant + Neo4j) with dedup by normalized name; 3 MCP tools for browse, detail, and FTS search (R29)
 - **Entity-aware RAG routing** — entity references in user queries detected via regex + FTS (<10ms), structured entity context injected before vector search; graph retrieval walks MENTIONS edges in Neo4j to pull source messages as an additional retrieval channel; high-confidence matches downgrade RAG depth; full visibility in Cognition Tab (R30)
@@ -104,6 +103,8 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Knowledge self-awareness** — Layer 8 expanded with entity count, type breakdown, graph stats, dream count, and recently encountered entities; Janus knows the shape of her own knowledge substrate (R32)
 - **Register mining** — autonomous Slumber sub-cycle evaluates conversational register quality via Gemini; stores exemplars (warm/neutral/clinical) in SQLite + Qdrant; prompt composer injects demonstrated voice examples for relational intents (R32)
 - **Intent-gated RAG attribution** — narrative attribution for relational intents ("From a conversation about..."), clinical metadata for analytical intents ("[messages] Title (3 months ago)") (R32)
+- **Post-Cognition feedback loop** — Gemini evaluates each Janus response on naturalness, attunement, and tool awareness; corrective directive injected into next turn's prompt composer; three scoring axes with weighted composite; robust JSON parse with fallback extraction (R33)
+- **GPU contention guard** — `touch_activity()` called from all chat paths (UI + MCP) resets Slumber idle timer so embedding batches don't compete with chat inference (R34)
 - **Change Data Capture** outbox with background Neo4j sync consumer
 
 ---
@@ -118,8 +119,8 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 | Vector DB | Qdrant — semantic search over documents and messages (1024-dim cosine) |
 | Graph DB | Neo4j 2026.01.4 — knowledge graph with CDC sync + INFORMED_BY provenance |
 | Embeddings | Qwen3-Embedding-0.6B via Ollama (1024-dim, Matryoshka) |
-| Chat LLM | qwen3:32b (Janus) via Ollama (with native thinking mode, 32K context) |
-| RAG Synthesizer | qwen3:32b via Ollama (shared model — zero additional VRAM) |
+| Chat LLM | qwen3.5:27b (Janus) via Ollama (with native thinking mode, 32K context) |
+| RAG Synthesizer | qwen3.5:27b via Ollama (shared model — zero additional VRAM) |
 | Container | Docker Compose — 4 services: core (no GPU), Ollama (GPU), Qdrant, Neo4j |
 | Data Display | Pandas DataFrames |
 
@@ -127,10 +128,10 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 
 | Service | Model | Est. VRAM |
 |---------|-------|-----------|
-| Ollama — chat + synth | qwen3:32b Q4_K_M (Janus) | ~20 GB |
+| Ollama — chat + synth | qwen3.5:27b Q4_K_M (Janus) | ~18 GB |
 | Ollama — embed | Qwen3-Embedding-0.6B | ~0.6 GB |
 | KV cache (q8_0, 32K) | — | ~3 GB |
-| **Total** | | **~23.6 GB** |
+| **Total** | | **~21.6 GB** |
 
 Core container uses zero GPU — all model inference is offloaded to Ollama sidecar.
 
@@ -154,7 +155,7 @@ docker-compose up --build
 ### Pull Models (first run)
 
 ```bash
-docker exec janatpmp-ollama ollama pull qwen3:32b
+docker exec janatpmp-ollama ollama pull qwen3.5:27b
 docker exec janatpmp-ollama ollama pull qwen3-embedding:0.6b
 ```
 
@@ -211,7 +212,7 @@ JANATPMP/
 │   ├── chunk_operations.py    # Chunk CRUD, stats, FTS search (R16)
 │   ├── entity_ops.py          # Entity + mention CRUD, FTS search (R29)
 │   ├── file_registry_ops.py   # File registry MCP tools (R17)
-│   └── migrations/            # Versioned schema migrations (0.3.0–1.5.0)
+│   └── migrations/            # Versioned schema migrations (0.3.0–1.6.0)
 ├── atlas/                     # ATLAS — HTTP client layer for model services
 │   ├── config.py              # Service URLs, model identifiers, Neo4j + salience constants
 │   ├── chunking.py            # Paragraph-aware text splitter for messages + documents (R16)
@@ -239,6 +240,7 @@ JANATPMP/
 │   ├── chat.py                # Multi-provider chat with self-query tools + thinking mode
 │   ├── prompt_composer.py     # 10-layer adaptive Janus identity system prompt (R19/R25/R32)
 │   ├── precognition.py        # Gemini pre-cognition — adaptive prompt shaping (R25)
+│   ├── postcognition.py       # Gemini post-cognition — response evaluation + corrective signal (R33)
 │   ├── turn_timer.py          # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py             # Slumber Cycle — 11-stage background daemon (R12+R13+R17+R27+R29+R31+R32)
 │   ├── slumber_eval.py        # LLM-powered message evaluation — Gemini Flash Lite + heuristic fallback (R22)
@@ -345,7 +347,7 @@ Every page uses the three-panel pattern:
 │  Type     │  Memory: conversation/doc detail │  Janus quick-chat        │
 │  filter   │  Connections: relationship table │  (continuous)            │
 │  Search   │  Pipeline: ingestion/embed/graph │                          │
-│  Results  │  Synthesis: R19 placeholder      │                          │
+│  Results  │  Synthesis: dream insights      │                          │
 └───────────┴──────────────────────────────────┴───────────────────────────┘
 ```
 
@@ -440,7 +442,7 @@ feature/phase{X}-{description}  # legacy naming
 
 ### Rules
 
-- Never commit directly to `main`
+- Feature branches for large multi-commit sprints; direct main commits for surgical fixes
 - All `db/operations.py` and `db/chat_operations.py` functions must have full docstrings (Gradio uses them for MCP tool descriptions)
 - All UI event listeners must include `api_visibility="private"`
 
@@ -448,7 +450,7 @@ feature/phase{X}-{description}  # legacy naming
 
 ## Future
 
-JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), **auto-ingestion** removes manual import friction (R17), **Janus identity architecture** gives her genuine selfhood (R19), **semantic graph topology** connects conversations into a navigable network (R20), **graph-aware RAG** closes the loop between graph and retrieval (R21), the **Cognition tab** makes the thought pipeline permanently visible (R21), **LLM-powered Slumber evaluation** replaces heuristics with Gemini Flash Lite scoring (R22), **grounded prompt layers** fix three broken identity layers so Janus speaks from real context instead of empty templates (R23), **Dream Synthesis** generates cross-conversation insights during Slumber idle periods (R24), **Pre-Cognition** adapts the prompt to the moment via Gemini pre-pass with weight-driven layer modulation (R25), **intent-aware pipeline routing** classifies messages to skip expensive stages for greetings and meta-conversation (R26), a **backfill orchestrator** provides a single-command phased data foundation pipeline (R26), **autonomic on-write hooks** auto-embed documents, items, and tasks on creation (R27), **automatic graph weaving** incrementally connects new conversations via Slumber (R27), **temporal gravity** gives RAG recency-weighted scoring with automatic historical bypass (R28), the **Synthesis Surface** replaces the Knowledge page placeholder with live dream insights, statistics, and memory health (R28), **entity extraction** discovers concepts, decisions, milestones, people, references, and emotional states from scored messages via Gemini during Slumber (R29), **entity-aware RAG routing** detects entity references and walks graph edges for additional retrieval (R30), **The Web** connects entities to each other via co-occurrence edges with temporal salience decay and dream attribution (R31), and **The Mirror** gives Janus self-query tools, knowledge self-awareness, and conversational register mining (R32). Planned next steps:
+JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), **auto-ingestion** removes manual import friction (R17), **Janus identity architecture** gives her genuine selfhood (R19), **semantic graph topology** connects conversations into a navigable network (R20), **graph-aware RAG** closes the loop between graph and retrieval (R21), the **Cognition tab** makes the thought pipeline permanently visible (R21), **LLM-powered Slumber evaluation** replaces heuristics with Gemini Flash Lite scoring (R22), **grounded prompt layers** fix three broken identity layers so Janus speaks from real context instead of empty templates (R23), **Dream Synthesis** generates cross-conversation insights during Slumber idle periods (R24), **Pre-Cognition** adapts the prompt to the moment via Gemini pre-pass with weight-driven layer modulation (R25), **intent-aware pipeline routing** classifies messages to skip expensive stages for greetings and meta-conversation (R26), a **backfill orchestrator** provides a single-command phased data foundation pipeline (R26), **autonomic on-write hooks** auto-embed documents, items, and tasks on creation (R27), **automatic graph weaving** incrementally connects new conversations via Slumber (R27), **temporal gravity** gives RAG recency-weighted scoring with automatic historical bypass (R28), the **Synthesis Surface** replaces the Knowledge page placeholder with live dream insights, statistics, and memory health (R28), **entity extraction** discovers concepts, decisions, milestones, people, references, and emotional states from scored messages via Gemini during Slumber (R29), **entity-aware RAG routing** detects entity references and walks graph edges for additional retrieval (R30), **The Web** connects entities to each other via co-occurrence edges with temporal salience decay and dream attribution (R31), **The Mirror** gives Janus self-query tools, knowledge self-awareness, and conversational register mining (R32), **Post-Cognition** closes the feedback loop with Gemini-powered response evaluation and corrective signals injected into the next turn's prompt (R33), and **memory formation fixes** ensure graph-retrieved RAG candidates carry timestamps for temporal decay and Slumber yields GPU during active chat (R34). Planned next steps:
 
 - **Attribute Mining** — extract entity attributes from messages (needs prompt design, dedup, conflict handling)
 - **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved, system-injected, or verified
@@ -465,7 +467,7 @@ Built by **Mat Gallagher** — [Janat, LLC](https://janat.org) / [The Janat Init
 | | |
 |---|---|
 | UI Framework | [Gradio](https://gradio.app) 6.6.0 |
-| Chat LLM | [Ollama](https://ollama.ai) + Qwen3:32B (Janus, with native thinking) |
+| Chat LLM | [Ollama](https://ollama.ai) + Qwen3.5:27B (Janus, with native thinking) |
 | Embeddings | [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) via Ollama |
 | Vector Search | [Qdrant](https://qdrant.tech) |
 | Knowledge Graph | [Neo4j](https://neo4j.com) 2026.01.4 |

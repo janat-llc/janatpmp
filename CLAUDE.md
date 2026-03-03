@@ -17,7 +17,7 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 - **Pandas** for data display
 - **Qdrant** vector database (semantic search, 1024-dim cosine collections)
 - **Neo4j** 2026.01.4 graph database (entity relationships, knowledge graph)
-- **Ollama** for chat LLM + embedding (qwen3:32b chat, qwen3-embedding:0.6b via `/v1/embeddings`)
+- **Ollama** for chat LLM + embedding (qwen3.5:27b chat, qwen3-embedding:0.6b via `/v1/embeddings`)
 
 ## Project Structure
 
@@ -66,7 +66,8 @@ JANATPMP/
 │   │   ├── 1.2.0_precognition.sql
 │   │   ├── 1.3.0_entities.sql
 │   │   ├── 1.4.0_entity_salience.sql
-│   │   └── 1.5.0_register_exemplars.sql
+│   │   ├── 1.5.0_register_exemplars.sql
+│   │   └── 1.6.0_postcognition.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
 │   ├── exports/              # Portable project data exports (JSON)
@@ -99,11 +100,12 @@ JANATPMP/
 │   ├── __init__.py
 │   ├── log_config.py         # SQLiteLogHandler + setup_logging() + get_logs()
 │   ├── chat.py               # Multi-provider chat (Anthropic/Gemini/Ollama) — self-query tools for Ollama
-│   ├── prompt_composer.py    # 10-layer adaptive Janus identity system prompt (R19/R25/R32)
+│   ├── prompt_composer.py    # 11-layer adaptive Janus identity system prompt (R19/R25/R32/R33)
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py            # Background daemon — 11-stage Slumber Cycle (R12/R27/R31/R32)
 │   ├── slumber_eval.py        # Gemini-powered message evaluation (R22: First Light)
 │   ├── precognition.py        # Gemini pre-cognition — adaptive prompt shaping (R25)
+│   ├── postcognition.py       # Gemini post-cognition — response evaluation + corrective signal (R33)
 │   ├── claude_import.py      # Claude conversations.json import → triplet messages (directory scanner)
 │   ├── embedding.py          # Thin shim → atlas.embedding_service
 │   ├── vector_store.py       # Qdrant vector DB + two-stage search pipeline
@@ -195,7 +197,7 @@ Persona settings (10 fields including `user_name`, `user_bio`, `user_full_name`,
 **Settings table** (`settings` in SQLite) — key-value store. Categories: `chat`, `ollama`,
 `export`, `ingestion`, `rag`, `system`, `persona`. Full catalog in JANATPMP document
 "Settings Catalog (Post-R32)". Key settings for chat development:
-- `chat_provider` ("ollama"/"anthropic"/"gemini"), `chat_model` ("qwen3:32b")
+- `chat_provider` ("ollama"/"anthropic"/"gemini"), `chat_model` ("qwen3.5:27b")
 - `janus_conversation_id`, `janus_context_messages` (sliding window, default 10)
 - `rag_score_threshold`, `rag_max_chunks`, `rag_max_chunks_per_message`
 - 10 persona fields (`user_name`, `user_bio`, etc.) in category "persona"
@@ -240,7 +242,7 @@ Categories: `chat`, `ollama`, `export`, `ingestion`, `rag`, `system`, `persona`.
 (6 types, R29), `entity_mentions`, `file_registry`, `register_exemplars` (R32),
 `cdc_outbox`, `schema_version`. Full details in JANATPMP document "Database Schema Reference".
 
-**15 migrations** (0.3.0 through 1.5.0) in `db/migrations/`. Latest: `1.5.0_register_exemplars.sql` (R32).
+**16 migrations** (0.3.0 through 1.6.0) in `db/migrations/`. Latest: `1.6.0_postcognition.sql` (R33).
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
 the fresh-DB/existing-DB if/else branch (after both branches complete).
@@ -302,16 +304,14 @@ docker-compose logs -f
   items/documents so the platform itself is the source of truth
 
 ### Commit Message Format
-`Phase {version}: {one-line summary}` — examples:
-- `Phase 4B: Chat experience redesign — triplet message schema, conversation persistence, AI Studio layout`
-- `Phase 3: Knowledge tab — documents UI, universal search, connections viewer`
+`R{N}: {one-line summary}` — examples:
+- `R33: The Closing Loop — Post-Cognition feedback for Janus`
+- `R34: Fix graph retrieval created_at + Slumber GPU contention`
 
-For smaller fixes within a phase: `Phase {version}: Fix {description}`
+Legacy format (pre-R12): `Phase {version}: {summary}`
 
 ### Rules
-- Never commit directly to `main` — always use a feature branch
-- One phase = one branch = one merge
-- If a phase has sub-phases (4A, 4B), each gets its own branch
+- Feature branches for large multi-commit sprints; direct main commits for surgical fixes
 - TODO files are local-only planning artifacts — never committed to the repo
 
 ## Conventions
@@ -368,10 +368,10 @@ For smaller fixes within a phase: `Phase {version}: Fix {description}`
   - GPU passthrough via NVIDIA Container Toolkit (~85% VRAM)
   - `OLLAMA_KEEP_ALIVE=-1` keeps models loaded permanently (no unload timeout)
   - `OLLAMA_KV_CACHE_TYPE=q8_0` — quantized KV cache for reduced VRAM usage
-  - Chat model + RAG synthesizer: qwen3:32b (default, "Janus") — shared model, zero extra VRAM
+  - Chat model + RAG synthesizer: qwen3.5:27b (default, "Janus") — shared model, zero extra VRAM
   - Embedding model: Qwen3-Embedding-0.6B (~0.6 GB) — used via `/v1/embeddings`
   - Ollama model list is fetched dynamically via `/api/tags` — no hardcoded model names
-  - Only 2 models loaded: qwen3:32b (chat + synthesis) and qwen3-embedding:0.6b (embed)
+  - Only 2 models loaded: qwen3.5:27b (chat + synthesis) and qwen3-embedding:0.6b (embed)
 - **vLLM Reranker:** DECOMMISSIONED — container commented out in docker-compose.yml.
   Reranking defaults to `rerank=False`. Code in `atlas/reranking_service.py` retained but unused.
 
@@ -515,9 +515,6 @@ tool generation.
 
 - The database starts EMPTY (no seed data). Users build their project landscape from scratch.
 - Every db operation must work from all three surfaces: UI, API, MCP
-- Do NOT add features not specified in the current TODO file
-- Do NOT modify `db/operations.py` or `db/schema.sql` unless the TODO explicitly requires it
-- Do NOT add new pip dependencies unless the TODO explicitly requires it
 - When in doubt, ask — don't guess
 
 ## Key Systems Reference
@@ -577,7 +574,7 @@ Deep idle (10 min) gates Gemini-heavy phases (Extract, Dream, Mine) so they don'
 | 9 | Decay | every 5th | Entity salience decay — temporal fade + mention boost (R31) |
 | 10 | Mine | every 5th (deep idle) | Register mining — conversational register extraction via Gemini (R32) |
 
-### Prompt Composer (10 Layers)
+### Prompt Composer (11 Layers)
 
 `services/prompt_composer.py:compose_system_prompt()` returns `(prompt_text, layer_dict)`.
 Pre-cognition weights modulate each layer (skip/minimal/standard/expanded).
@@ -594,6 +591,7 @@ Pre-cognition weights modulate each layer (skip/minimal/standard/expanded).
 | 8 | Self-Introspection | `get_recent_introspection()` + `get_knowledge_state()` | Evaluation scores, keywords, entity count, graph stats, dream count |
 | 8.5 | Register Exemplars | `search_register_exemplars()` | Demonstrated voice examples for relational intents (R32) |
 | 9 | Tone Directive | Pre-cognition directive | Contextual tone/style instructions |
+| 10 | Post-Cognition Correction | Previous turn's postcognition signal | Self-observation from last turn's evaluation (R33) |
 
 ### Intent Router (11 Categories)
 
@@ -611,7 +609,7 @@ Pre-cognition weights modulate each layer (skip/minimal/standard/expanded).
 ### Temporal Decay in RAG
 
 `factor = floor + (1 - floor) * exp(-age_days / half_life)` — multiplicative after graph ranking.
-Half-life: 30 days. Floor: 0.3 (old content never fully suppressed).
+Half-life: 14 days. Floor: 0.15 (old content never fully suppressed).
 Bypassed when query contains temporal references ("last month", "back when").
 
 ### Entity-Aware RAG Routing (R30)
@@ -636,20 +634,18 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 - **No CDC for entities** — direct Neo4j writes (same pattern as Dream Synthesis). Avoids
   trigger recreation migration
 - **vLLM reranker decommissioned** — `rerank=False` default. ANN results returned directly
-- **Shared chat + synthesis model** — qwen3:32b serves both roles, zero extra VRAM
+- **Shared chat + synthesis model** — qwen3.5:27b serves both roles, zero extra VRAM
 - **Asymmetric embedding** — Qwen3-Embedding-0.6B uses instruction prefix for queries,
   plain text for passages. Client-side `[:1024]` truncation for safety.
 
-## Current Platform State (Post-R32)
+## Current Platform State (Post-R34)
 
 **Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded.
-**Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving.
-**RAG:** Hybrid FTS + vector, graph-aware ranking, temporal decay, entity routing (R30), intent-gated attribution (R32).
-**Identity:** 10-layer adaptive prompt composer, pre-cognition, register exemplar injection (R32).
+**Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`.
+**RAG:** Hybrid FTS + vector, graph-aware ranking, temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval with `created_at` for temporal scoring (R34), intent-gated attribution (R32).
+**Identity:** 11-layer adaptive prompt composer, pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32).
 **Slumber:** 11 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine.
 **Platform:** 84 MCP tools, auto-ingestion, Cognition tab, intent routing (11 categories).
-
-Full capabilities inventory in JANATPMP document "Platform Capabilities Inventory (Post-R32)".
 
 ### Architectural Gaps
 
@@ -662,24 +658,15 @@ Full capabilities inventory in JANATPMP document "Platform Capabilities Inventor
 JANATPMP will eventually become a **Nexus Custom Component** within The Nexus Weaver
 architecture. The platform has transitioned from PMP to consciousness substrate exploration.
 
-### Near-Term (R33 candidates)
+### Planned
 
-- **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
-  system-injected, or verified. Give the model metadata to distinguish recall from hearsay.
 - **Attribute Mining** — extract entity attributes from messages (needs prompt design, dedup,
-  conflict handling with existing persona settings). Brainstorming-stage.
-- **Chunk-level semantic edges** — RESONATES_WITH edges between individual chunks for
-  fine-grained cross-conversation linking (expensive: requires batched pairwise comparison).
-- **WorldEngine refactor** — replace linear Slumber cycle with tick-based Phase protocol.
-  Deferred from R31 — phases are already shaped for it (incremental, checkpointed, idle-aware).
-
-### Longer-Term
-
-- **Ollama Modelfiles pipeline** — janat-synthesizer, janat-scorer, janat-consolidator,
-  janat-classifier as specialized personas on qwen3:32b. Janus receives dynamic system
-  prompts from the synthesizer each turn.
-- **System prompt audit trail** — R21 stores per-layer char counts; next step is full prompt
-  text storage per-turn for historical comparison and drift analysis
+  conflict handling with existing persona settings)
+- **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved,
+  system-injected, or verified
+- **WorldEngine refactor** — replace linear Slumber cycle with tick-based Phase protocol
+- **Ollama Modelfiles pipeline** — specialized personas on qwen3.5:27b for dynamic system
+  prompt generation
 - **Advanced graph traversal** — multi-hop reasoning across INFORMED_BY, SIMILAR_TO, and PART_OF edges
-- **Fine-tuning pipeline** — triplet message schema was designed for this from Phase 4B.
-  Extract prompt→reasoning→response training data from high-quality Janus conversations.
+- **Fine-tuning pipeline** — extract prompt→reasoning→response training data from high-quality
+  Janus conversations (triplet schema designed for this from Phase 4B)
