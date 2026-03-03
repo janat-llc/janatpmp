@@ -1639,6 +1639,13 @@ def chat_with_janus(message: str) -> dict:
     )
     from services.settings import get_setting
 
+    # Signal activity so Slumber yields GPU during chat
+    try:
+        from services.slumber import touch_activity
+        touch_activity()
+    except Exception:
+        pass
+
     conv_id = get_or_create_janus_conversation()
 
     # Load recent history in gr.Chatbot format

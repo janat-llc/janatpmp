@@ -115,6 +115,7 @@ def retrieve_entity_sources(
                 "message_id": msg_id,
                 "text": text,
                 "conversation_id": conv_id,
+                "created_at": msg.get("created_at", ""),
                 "source": "graph_retrieval",
                 "entity_id": ent_id,
             })
