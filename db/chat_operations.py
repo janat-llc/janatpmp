@@ -300,6 +300,7 @@ def add_message(
     tokens_reasoning: int = 0,
     tokens_response: int = 0,
     tools_called: str = "[]",
+    role: str = "turn",
 ) -> str:
     """Add a message (triplet) to a conversation.
 
@@ -314,6 +315,7 @@ def add_message(
         tokens_reasoning: Token count for reasoning
         tokens_response: Token count for response
         tools_called: JSON array of tool names used this turn
+        role: Message role — 'turn' for normal chat, 'system/intent' etc. for cognition
 
     Returns:
         The ID of the created message
@@ -324,11 +326,13 @@ def add_message(
         cursor.execute("""
             INSERT INTO messages
                 (conversation_id, sequence, user_prompt, model_reasoning, model_response,
-                 provider, model, tokens_prompt, tokens_reasoning, tokens_response, tools_called)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 provider, model, tokens_prompt, tokens_reasoning, tokens_response,
+                 tools_called, role)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             conversation_id, seq, user_prompt, model_reasoning, model_response,
-            provider, model, tokens_prompt, tokens_reasoning, tokens_response, tools_called,
+            provider, model, tokens_prompt, tokens_reasoning, tokens_response,
+            tools_called, role,
         ))
         conn.commit()
         cursor.execute("SELECT id FROM messages WHERE rowid = ?", (cursor.lastrowid,))
@@ -766,6 +770,113 @@ def get_message(message_id: str) -> dict:
     return dict(row) if row else {}
 
 
+def add_system_message(
+    conversation_id: str,
+    role: str,
+    content: str,
+) -> str:
+    """Add a system/cognition message to a conversation.
+
+    Thin wrapper around add_message() for system/* roles. Content goes in
+    user_prompt; model_response is empty.
+
+    Args:
+        conversation_id: The conversation this message belongs to
+        role: System role (e.g. 'system/intent', 'system/precognition')
+        content: Message content (typically JSON)
+
+    Returns:
+        The ID of the created message
+    """
+    return add_message(
+        conversation_id=conversation_id,
+        user_prompt=content,
+        model_response="",
+        role=role,
+    )
+
+
+def get_messages_by_role(
+    conversation_id: str,
+    role: str = "",
+    role_prefix: str = "",
+    limit: int = 50,
+) -> list:
+    """Get messages filtered by role or role prefix.
+
+    Args:
+        conversation_id: The conversation ID
+        role: Exact role match (e.g. 'system/intent')
+        role_prefix: Role prefix match (e.g. 'system/' matches all system roles)
+        limit: Maximum messages to return
+
+    Returns:
+        List of message dicts ordered by sequence ascending
+    """
+    with get_connection() as conn:
+        if role:
+            rows = conn.execute(
+                """SELECT * FROM messages
+                   WHERE conversation_id = ? AND role = ?
+                   ORDER BY sequence ASC LIMIT ?""",
+                (conversation_id, role, limit),
+            ).fetchall()
+        elif role_prefix:
+            rows = conn.execute(
+                """SELECT * FROM messages
+                   WHERE conversation_id = ? AND role LIKE ?
+                   ORDER BY sequence ASC LIMIT ?""",
+                (conversation_id, f"{role_prefix}%", limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM messages
+                   WHERE conversation_id = ?
+                   ORDER BY sequence ASC LIMIT ?""",
+                (conversation_id, limit),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_turn_messages(
+    conversation_id: str,
+    limit: int = 100,
+    latest: bool = False,
+) -> list:
+    """Get turn messages only (excludes system/* roles).
+
+    Same as get_messages() but filters to role='turn'. Used by all chat
+    display paths to exclude system cognition messages.
+
+    Args:
+        conversation_id: The conversation ID
+        limit: Maximum messages to return
+        latest: If True, return the last N messages instead of the first N
+
+    Returns:
+        List of message dicts ordered by sequence ascending
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        if latest:
+            cursor.execute("""
+                SELECT * FROM (
+                    SELECT * FROM messages
+                    WHERE conversation_id = ? AND role = 'turn'
+                    ORDER BY sequence DESC
+                    LIMIT ?
+                ) sub ORDER BY sequence ASC
+            """, (conversation_id, limit))
+        else:
+            cursor.execute("""
+                SELECT * FROM messages
+                WHERE conversation_id = ? AND role = 'turn'
+                ORDER BY sequence ASC
+                LIMIT ?
+            """, (conversation_id, limit))
+        return [dict(row) for row in cursor.fetchall()]
+
+
 # =============================================================================
 # JANUS — Continuous Chat Lifecycle
 # =============================================================================
@@ -841,6 +952,14 @@ def archive_janus_conversation(janus_conv_id: str) -> str:
         source="platform",
     )
     set_setting("janus_conversation_id", new_id)
+
+    # R35: Clear cached intent engine for archived conversation
+    try:
+        from services.intent_engine import clear_engine
+        clear_engine(janus_conv_id)
+    except Exception:
+        pass
+
     return new_id
 
 
@@ -848,20 +967,29 @@ def archive_janus_conversation(janus_conv_id: str) -> str:
 # Conversation Stream (real-time message access)
 # ---------------------------------------------------------------------------
 
-def get_conversation_stream(conversation_id: str, limit: int = 20) -> list:
+def get_conversation_stream(
+    conversation_id: str,
+    limit: int = 20,
+    include_system: bool = False,
+) -> list:
     """Get the most recent messages from a conversation, newest first.
 
-    Stream-friendly wrapper around get_messages() with defaults tuned for
-    reading a live conversation tail: small limit, reverse chronological order.
+    Stream-friendly wrapper with defaults tuned for reading a live conversation
+    tail: small limit, reverse chronological order. System/cognition messages
+    are excluded by default to protect MCP consumers from raw JSON blobs.
 
     Args:
         conversation_id: The conversation ID (hex string)
         limit: Maximum number of messages to return (default 20)
+        include_system: If True, include system/* role messages (default False)
 
     Returns:
         List of message dicts, newest first
     """
-    messages = get_messages(conversation_id, limit=limit, latest=True)
+    if include_system:
+        messages = get_messages(conversation_id, limit=limit, latest=True)
+    else:
+        messages = get_turn_messages(conversation_id, limit=limit, latest=True)
     messages.reverse()
     return messages
 

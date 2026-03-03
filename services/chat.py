@@ -1442,13 +1442,32 @@ def chat(message: str, history: list[dict],
         set_setting("janus_lifecycle_state", "awake")
         logger.info("Bootstrap: first chat message, state → awake")
 
-    # R26: Intent classification (< 5ms, no I/O)
+    # R35: Intent Engine (stateful) with fallback to classify_intent (R26)
     from services.intent_router import classify_intent, RAGDepth
-    intent_result = classify_intent(
-        message, conversation_turn_count=len(history) // 2)
-    logger.info("Intent: %s (%.0f%% conf, RAG=%s, precog=%s)",
+    engine_result = None
+    try:
+        from services.intent_engine import get_engine
+        _engine_enabled = (get_setting("intent_engine_enabled") or "true") == "true"
+        if _engine_enabled and conversation_id:
+            _window = int(get_setting("intent_hypothesis_window") or "10")
+            _retro = int(get_setting("intent_retrospective_interval") or "5")
+            _ema = float(get_setting("intent_hypothesis_ema_weight") or "0.3")
+            engine = get_engine(conversation_id, window_size=_window)
+            engine_result = engine.process(
+                message, len(history) // 2,
+                retrospective_interval=_retro, ema_weight=_ema)
+            intent_result = engine_result.intent_result
+        else:
+            intent_result = classify_intent(
+                message, conversation_turn_count=len(history) // 2)
+    except Exception:
+        intent_result = classify_intent(
+            message, conversation_turn_count=len(history) // 2)
+        engine_result = None
+    logger.info("Intent: %s (%.0f%% conf, RAG=%s, precog=%s%s)",
                 intent_result.intent.value, intent_result.confidence * 100,
-                intent_result.rag_depth.value, intent_result.run_precognition)
+                intent_result.rag_depth.value, intent_result.run_precognition,
+                f", engine={len(engine_result.hypotheses)}h" if engine_result else "")
 
     # R30: Entity-aware routing (gated by RAG depth, <10ms)
     entity_result = None
@@ -1593,6 +1612,40 @@ def chat(message: str, history: list[dict],
                         "rag_depth": intent_result.rag_depth.value,
                         "run_precognition": intent_result.run_precognition,
                         "reasoning": intent_result.reasoning,
+                        # R35: Hypothesis data from intent engine
+                        "hypotheses": {
+                            k: {
+                                "confidence": round(v.confidence, 3),
+                                "occurrences": v.occurrences,
+                                "first_seen_turn": v.first_seen_turn,
+                                "last_seen_turn": v.last_seen_turn,
+                            }
+                            for k, v in (engine_result.hypotheses.items()
+                                         if engine_result else {})
+                        } if engine_result else {},
+                        "is_retrospective": (
+                            engine_result.is_retrospective_turn
+                            if engine_result else False),
+                        "retrospective_notes": (
+                            engine_result.retrospective_notes
+                            if engine_result else ""),
+                        "suppress_planning": (
+                            engine_result.suppress_planning
+                            if engine_result else False),
+                        "patience_mode": (
+                            engine_result.patience_mode
+                            if engine_result else False),
+                        "recommended_actions": [
+                            {
+                                "tool": a.tool,
+                                "params": a.params,
+                                "confidence": a.confidence,
+                                "reasoning": a.reasoning,
+                                "executed": a.executed,
+                            }
+                            for a in (engine_result.recommended_actions
+                                      if engine_result else [])
+                        ],
                     },
                     # R30: Entity routing trace
                     "entity_routing": {
@@ -1609,6 +1662,8 @@ def chat(message: str, history: list[dict],
                     "precognition": precog_directives,  # R25
                     "tool_calls": token_counts.pop("_tool_calls", []),  # R32
                 },
+                # R35: Engine result for cognition persistence
+                "engine_result": engine_result,
             }
         except Exception as e:
             logger.error("Chat failed: provider=%s, model=%s — %s", provider, model, e)
@@ -1634,7 +1689,7 @@ def chat_with_janus(message: str) -> dict:
         provider, model, conversation_id, message_id.
     """
     from db.chat_operations import (
-        get_or_create_janus_conversation, get_messages, add_message,
+        get_or_create_janus_conversation, get_turn_messages, add_message,
         add_message_metadata, update_message_metadata, parse_reasoning,
     )
     from services.settings import get_setting
@@ -1648,9 +1703,9 @@ def chat_with_janus(message: str) -> dict:
 
     conv_id = get_or_create_janus_conversation()
 
-    # Load recent history in gr.Chatbot format
+    # Load recent history in gr.Chatbot format (turn messages only — no system/*)
     window = int(get_setting("janus_context_messages") or "10")
-    raw_msgs = get_messages(conv_id, limit=window * 2, latest=True)
+    raw_msgs = get_turn_messages(conv_id, limit=window * 2, latest=True)
     history = []
     for m in raw_msgs:
         if m.get("user_prompt"):
@@ -1676,6 +1731,17 @@ def chat_with_janus(message: str) -> dict:
     cognition_trace = result.get("cognition_trace", {})
     provider = result.get("provider", "")
     model = result.get("model", "")
+
+    # R35: Persist cognition signals BEFORE the turn triplet (gets lower sequence)
+    try:
+        from shared.cognition_persistence import persist_cognition_messages
+        persist_cognition_messages(
+            conv_id,
+            engine_result=result.get("engine_result"),
+            precog_directives=cognition_trace.get("precognition"),
+        )
+    except Exception:
+        pass
 
     # Decompose reasoning tokens if needed
     if reasoning and token_counts.get("reasoning", 0) == 0:

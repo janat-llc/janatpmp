@@ -131,6 +131,18 @@ def _handle_send(message, history, conv_id, provider, model,
 
         timings = result.get("timings", {"rag": 0, "inference": 0, "total": 0})
 
+        # R35: Persist cognition signals BEFORE the turn triplet
+        try:
+            from shared.cognition_persistence import persist_cognition_messages
+            cognition_trace_pre = result.get("cognition_trace", {})
+            persist_cognition_messages(
+                conv_id,
+                engine_result=result.get("engine_result"),
+                precog_directives=cognition_trace_pre.get("precognition"),
+            )
+        except Exception:
+            pass
+
         msg_id = add_message(
             conversation_id=conv_id,
             user_prompt=message,
@@ -215,6 +227,7 @@ def _handle_send(message, history, conv_id, provider, model,
             "turn_count": metrics.get("turn_count", 0) + 1,
             "system_prompt_length": result.get("system_prompt_length", 0),
             "cognition_trace": result.get("cognition_trace", {}),
+            "conversation_id": conv_id,
         }
 
         return display_history, api_history, "", conv_id, new_metrics
@@ -726,6 +739,106 @@ def build_chat_page():
                     )
                     gr.Markdown("---", key="cog-intent-sep")
 
+                # --- Section: Hypothesis Tracking (R35) ---
+                hypotheses = intent_data.get("hypotheses", {})
+                if hypotheses:
+                    gr.Markdown(
+                        "### Hypothesis Tracking",
+                        key="cog-hyp-header",
+                    )
+                    hyp_lines = []
+                    for h_name, h_data in sorted(
+                        hypotheses.items(),
+                        key=lambda x: x[1].get("confidence", 0),
+                        reverse=True,
+                    ):
+                        h_conf = h_data.get("confidence", 0)
+                        h_occ = h_data.get("occurrences", 0)
+                        h_bar = (
+                            "\u2588" * int(h_conf * 10)
+                            + "\u2591" * (10 - int(h_conf * 10))
+                        )
+                        hyp_lines.append(
+                            f"- **{h_name.upper()}** "
+                            f"{h_bar} {h_conf:.0%} "
+                            f"({h_occ} occ, turns "
+                            f"{h_data.get('first_seen_turn', '?')}"
+                            f"-{h_data.get('last_seen_turn', '?')})"
+                        )
+                    gr.Markdown(
+                        "\n".join(hyp_lines),
+                        key="cog-hyp-list",
+                    )
+
+                    # Gates
+                    gate_parts = []
+                    if intent_data.get("suppress_planning"):
+                        gate_parts.append(
+                            "Constitution: **planning suppressed** "
+                            "(emotional state active)")
+                    if intent_data.get("patience_mode"):
+                        gate_parts.append(
+                            "Attribute: **patience mode** "
+                            "(user thinking by talking)")
+                    if gate_parts:
+                        gr.Markdown(
+                            "\n\n".join(gate_parts),
+                            key="cog-hyp-gates",
+                        )
+                    gr.Markdown("---", key="cog-hyp-sep")
+
+                # --- Section: Recommended Actions (R35) ---
+                rec_actions = intent_data.get(
+                    "recommended_actions", [])
+                if rec_actions:
+                    gr.Markdown(
+                        "### Recommended Actions",
+                        key="cog-actions-header",
+                    )
+                    action_lines = []
+                    for act in rec_actions:
+                        a_conf = act.get("confidence", 0)
+                        a_bar = (
+                            "\u2588" * int(a_conf * 10)
+                            + "\u2591" * (10 - int(a_conf * 10))
+                        )
+                        params_str = ", ".join(
+                            f"{k}={v!r}"
+                            for k, v in act.get("params", {}).items()
+                            if v
+                        )
+                        exec_label = (
+                            "executed" if act.get("executed")
+                            else "observe only"
+                        )
+                        action_lines.append(
+                            f"- `{act.get('tool', '?')}` "
+                            f"{a_bar} {a_conf:.0%} "
+                            f"({exec_label})"
+                            + (f"\n  {params_str}" if params_str else "")
+                            + f"\n  *{act.get('reasoning', '')}*"
+                        )
+                    gr.Markdown(
+                        "\n".join(action_lines),
+                        key="cog-actions-list",
+                    )
+                    gr.Markdown("---", key="cog-actions-sep")
+
+                # --- Section: Retrospective (R35) ---
+                if intent_data.get("is_retrospective"):
+                    retro_notes = intent_data.get(
+                        "retrospective_notes", "")
+                    gr.Markdown(
+                        "### Retrospective Analysis",
+                        key="cog-retro-header",
+                    )
+                    gr.Markdown(
+                        retro_notes if retro_notes
+                        else "*No significant patterns detected*",
+                        key="cog-retro-body",
+                    )
+                    gr.Markdown("---", key="cog-retro-sep")
+
                 # --- Section: Entity Routing (R30) ---
                 entity_routing = trace.get("entity_routing", {})
                 entities_matched = entity_routing.get(
@@ -1068,6 +1181,70 @@ def build_chat_page():
                         f"*{graph_trace['error']}*",
                         key="cog-graph-error",
                     )
+
+                # --- Section: Cognition Stream (R35) ---
+                try:
+                    from db.chat_operations import get_messages_by_role
+                    import json as _json
+                    _stream_conv = metrics.get("conversation_id", "")
+                    if _stream_conv:
+                        _sys_msgs = get_messages_by_role(
+                            _stream_conv,
+                            role_prefix="system/",
+                            limit=5,
+                        )
+                        if _sys_msgs:
+                            gr.Markdown("---", key="cog-stream-sep")
+                            gr.Markdown(
+                                "### Cognition Stream",
+                                key="cog-stream-header",
+                            )
+                            for _si, _sm in enumerate(
+                                    reversed(_sys_msgs)):
+                                _role = _sm.get("role", "system")
+                                _seq = _sm.get("sequence", 0)
+                                _content = _sm.get(
+                                    "user_prompt", "")
+                                # Parse JSON for summary
+                                _summary = _role
+                                try:
+                                    _parsed = _json.loads(_content)
+                                    if "fast_classification" in _parsed:
+                                        _fc = _parsed[
+                                            "fast_classification"]
+                                        _summary = (
+                                            f"intent: "
+                                            f"{_fc.get('intent', '?')} "
+                                            f"({_fc.get('confidence', 0):.0%})"
+                                        )
+                                        _n_hyp = len(
+                                            _parsed.get(
+                                                "active_hypotheses", []))
+                                        _n_act = len(
+                                            _parsed.get(
+                                                "recommended_actions", []))
+                                        if _n_hyp:
+                                            _summary += (
+                                                f", {_n_hyp} hypotheses")
+                                        if _n_act:
+                                            _summary += (
+                                                f", {_n_act} actions")
+                                    elif "memory_directive" in _parsed:
+                                        _summary = (
+                                            "precog: "
+                                            + (_parsed.get(
+                                                "tone_directive", "")
+                                                or "active")[:60]
+                                        )
+                                except (ValueError, KeyError):
+                                    _summary = _content[:80]
+                                gr.Markdown(
+                                    f"- **#{_seq}** `{_role}` — "
+                                    f"{_summary}",
+                                    key=f"cog-stream-{_si}",
+                                )
+                except Exception:
+                    pass
 
         # --- Settings Tab (Platform / User level) ---
         with gr.Tab("Settings"):

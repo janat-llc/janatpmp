@@ -2,8 +2,8 @@
 import pandas as pd
 from db.operations import list_items, list_tasks, list_documents, get_connection
 from db.chat_operations import (
-    list_conversations, get_messages, get_message_metadata,
-    get_or_create_janus_conversation,
+    list_conversations, get_messages, get_turn_messages,
+    get_message_metadata, get_or_create_janus_conversation,
 )
 from services.settings import get_setting
 from shared.constants import PROJECT_TYPES, DEFAULT_CHAT_HISTORY
@@ -87,7 +87,7 @@ def _load_most_recent_chat() -> tuple[str, list[dict]]:
     """
     conv_id = get_or_create_janus_conversation()
     display_limit = int(get_setting("janus_display_turns") or "20")
-    msgs = get_messages(conv_id, limit=display_limit, latest=True)
+    msgs = get_turn_messages(conv_id, limit=display_limit, latest=True)
     if not msgs:
         return conv_id, list(DEFAULT_CHAT_HISTORY)
     history = _msgs_to_history(msgs)
@@ -131,7 +131,7 @@ def _load_chat_session() -> dict:
     }
     conv_id = get_or_create_janus_conversation()
     display_limit = int(get_setting("janus_display_turns") or "20")
-    msgs = get_messages(conv_id, limit=display_limit, latest=True)
+    msgs = get_turn_messages(conv_id, limit=display_limit, latest=True)
     if not msgs:
         return {**empty, "conv_id": conv_id}
 

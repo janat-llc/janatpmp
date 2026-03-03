@@ -58,6 +58,18 @@ def _handle_chat(message, history, sidebar_conv_id=""):
         else:
             display[-1] = {"role": "assistant", "content": clean or raw_response}
 
+    # R35: Persist cognition signals BEFORE the turn triplet
+    try:
+        from shared.cognition_persistence import persist_cognition_messages
+        cognition_trace_pre = result.get("cognition_trace", {})
+        persist_cognition_messages(
+            sidebar_conv_id,
+            engine_result=result.get("engine_result"),
+            precog_directives=cognition_trace_pre.get("precognition"),
+        )
+    except Exception:
+        pass
+
     # Persist triplet
     token_counts = result.get("token_counts", {"prompt": 0, "reasoning": 0, "response": 0, "total": 0})
     rag_metrics = result.get("rag_metrics", {"hit_count": 0, "hits_used": 0, "collections_searched": [], "scores": []})

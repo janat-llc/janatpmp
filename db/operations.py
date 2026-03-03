@@ -287,6 +287,16 @@ def init_database():
                 conn.executescript(migration_path.read_text(encoding="utf-8"))
                 logger.info("Applied migration 1.6.0: postcognition")
 
+        # Migration 1.7.0: Role column on messages (R35)
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='1.7.0'"
+        )
+        if cursor.fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "1.7.0_message_roles.sql"
+            if migration_path.exists():
+                conn.executescript(migration_path.read_text(encoding="utf-8"))
+                logger.info("Applied migration 1.7.0: message roles")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

@@ -32,6 +32,7 @@ def on_message_write(
     provider: str = "",
     model: str = "",
     rag_hits: list[dict] | None = None,
+    role: str = "turn",
 ) -> None:
     """Synchronous chunk + embed + fire-and-forget INFORMED_BY edges.
 
@@ -44,10 +45,13 @@ def on_message_write(
         provider: Chat provider name.
         model: Chat model name.
         rag_hits: List of RAG score dicts from _build_rag_context().
+        role: Message role — 'turn' for chat, 'system/*' for cognition signals.
     """
     _embed(message_id, conversation_id, user_prompt, model_response,
-           sequence, provider, model)
-    _relate(message_id, rag_hits)
+           sequence, provider, model, role=role)
+    # Only create INFORMED_BY edges for turn messages (not cognition signals)
+    if role == "turn":
+        _relate(message_id, rag_hits)
 
 
 def _generate_point_id(message_id: str, chunk_index: int, chunk_total: int) -> str:
@@ -158,9 +162,17 @@ def _embed(
     sequence: int | None,
     provider: str,
     model: str,
+    role: str = "turn",
 ) -> None:
     """Synchronous: chunk and embed the message into Qdrant."""
-    text = f"Q: {user_prompt}\nA: {model_response}"
+    # System messages use content-only text (no Q:/A: wrapper)
+    if role.startswith("system/"):
+        text = user_prompt
+        entity_type_label = "cognition"
+    else:
+        text = f"Q: {user_prompt}\nA: {model_response}"
+        entity_type_label = "message"
+
     if len(text) < 20:
         return
 
@@ -208,7 +220,7 @@ def _embed(
             "provider": provider,
             "model": model,
             "salience": SALIENCE_DEFAULT,
-            "entity_type": "message",
+            "entity_type": entity_type_label,
         }
 
         # Upsert each chunk to Qdrant

@@ -210,6 +210,16 @@ SETTINGS_REGISTRY = {
     "register_mining_enabled":   ("true", False, "system", None),
     "register_mining_watermark": ("0", False, "system", None),
 
+    # Intent Engine (R35)
+    "intent_engine_enabled":            ("true",  False, "system", None),
+    "intent_retrospective_interval":    ("5",     False, "system", _validate_positive_int),
+    "intent_hypothesis_window":         ("10",    False, "system", _validate_positive_int),
+    "intent_hypothesis_ema_weight":     ("0.3",   False, "system", _validate_float_0_1),
+    "intent_action_threshold_create":   ("0.8",   False, "system", _validate_float_0_1),
+    "intent_action_threshold_update":   ("0.7",   False, "system", _validate_float_0_1),
+    "intent_action_threshold_query":    ("0.5",   False, "system", _validate_float_0_1),
+    "intent_action_dispatch_enabled":   ("false", False, "system", None),
+
     # Persona (R18 structured schema)
     "user_full_name":       ("", False, "persona", None),
     "user_preferred_name":  ("Mat", False, "persona", None),
