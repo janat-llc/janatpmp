@@ -16,6 +16,7 @@ from shared.data_helpers import (
     _load_tasks, _all_tasks_df,
 )
 from shared.chat_sidebar import build_chat_sidebar, wire_chat_sidebar
+from components.kanban_board import KanbanBoard, build_board_data
 
 
 def _domain_choices(include_blank: bool = True) -> list[str]:
@@ -47,7 +48,7 @@ def build_page():
     # === CENTER TABS (defined before left sidebar so render can reference them) ===
     with gr.Tabs(elem_id="main-tabs") as main_tabs:
         # --- Projects tab ---
-        with gr.Tab("Projects") as projects_tab:
+        with gr.Tab("Projects", id="main-projects") as projects_tab:
             with gr.Tabs(selected="projects-list-view") as projects_sub_tabs:
                 with gr.Tab("Detail", id="projects-detail"):
                     detail_header = gr.Markdown(
@@ -111,9 +112,9 @@ def build_page():
                     all_refresh_btn = gr.Button("Refresh All", variant="secondary", size="sm")
 
         # --- Work tab ---
-        with gr.Tab("Work") as work_tab:
-            with gr.Tabs():
-                with gr.Tab("Detail"):
+        with gr.Tab("Work", id="main-work") as work_tab:
+            with gr.Tabs() as work_sub_tabs:
+                with gr.Tab("Detail", id="work-detail"):
                     work_header = gr.Markdown(
                         "*Select a task from the sidebar, or create a new task.*"
                     )
@@ -159,13 +160,17 @@ def build_page():
                             work_create_btn = gr.Button("Create Task", variant="primary")
                             work_create_msg = gr.Textbox(show_label=False, interactive=False, scale=2)
 
-                with gr.Tab("List View"):
+                with gr.Tab("List View", id="work-list-view"):
                     gr.Markdown("### All Tasks")
                     all_tasks_table = gr.DataFrame(
                         value=_all_tasks_df(),
                         interactive=False,
                     )
                     work_list_refresh = gr.Button("Refresh All", variant="secondary", size="sm")
+
+                with gr.Tab("Kanban", id="work-kanban"):
+                    kanban = KanbanBoard()
+                    kanban_timer = gr.Timer(30)
 
     # === LEFT SIDEBAR (contextual — defined after center so it can reference components) ===
     with gr.Sidebar():
@@ -421,6 +426,40 @@ def build_page():
             new_task_title, new_task_desc, new_task_target, new_task_instructions,
         ],
         outputs=[work_create_msg, tasks_state, selected_task_id],
+        api_visibility="private",
+    )
+
+    # === KANBAN WIRING ===
+
+    kanban_timer.tick(
+        fn=lambda v: build_board_data(
+            v.get("view_mode", "items") if isinstance(v, dict) else "items",
+            v.get("filters") if isinstance(v, dict) else None,
+        ),
+        inputs=[kanban],
+        outputs=[kanban],
+        api_visibility="private",
+    )
+
+    def _on_kanban_select(board_val):
+        """Handle card selection from Kanban — route to item or task detail."""
+        if not isinstance(board_val, dict):
+            return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+        card_id = board_val.get("selected_card", "")
+        view_mode = board_val.get("view_mode", "items")
+        if not card_id:
+            return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+        if view_mode == "tasks":
+            # Task detail is in Work tab — stay here, switch to Detail sub-tab
+            return "", card_id, gr.Tabs(selected="work-detail"), gr.skip()
+        else:
+            # Item detail is in Projects tab — switch main tab to Projects
+            return card_id, "", gr.skip(), gr.Tabs(selected="main-projects")
+
+    kanban.select(
+        fn=_on_kanban_select,
+        inputs=[kanban],
+        outputs=[selected_project_id, selected_task_id, work_sub_tabs, main_tabs],
         api_visibility="private",
     )
 
