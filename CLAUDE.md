@@ -72,7 +72,8 @@ JANATPMP/
 │   │   ├── 1.5.0_register_exemplars.sql
 │   │   ├── 1.6.0_postcognition.sql
 │   │   ├── 1.7.0_message_roles.sql
-│   │   └── 1.8.0_creator_provenance.sql
+│   │   ├── 1.8.0_creator_provenance.sql
+│   │   └── 1.9.0_speaker_identity.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
 │   ├── exports/              # Portable project data exports (JSON)
@@ -248,7 +249,7 @@ Categories: `chat`, `ollama`, `export`, `ingestion`, `rag`, `system`, `persona`.
 (6 types, R29), `entity_mentions`, `file_registry`, `register_exemplars` (R32),
 `cdc_outbox`, `schema_version`. Full details in JANATPMP document "Database Schema Reference".
 
-**18 migrations** (0.3.0 through 1.8.0) in `db/migrations/`. Latest: `1.8.0_creator_provenance.sql` (R38).
+**19 migrations** (0.3.0 through 1.9.0) in `db/migrations/`. Latest: `1.9.0_speaker_identity.sql` (R39).
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
 the fresh-DB/existing-DB if/else branch (after both branches complete).
@@ -651,16 +652,17 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
   `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
   handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R38)
+## Current Platform State (Post-R39)
 
 **Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded.
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`.
 **RAG:** Hybrid FTS + vector, graph-aware ranking, temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval with `created_at` for temporal scoring (R34), intent-gated attribution (R32).
-**Identity:** 12-layer adaptive prompt composer (R37 adds action feedback layer), pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32).
+**Identity:** 12-layer adaptive prompt composer (R37 adds action feedback layer), pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32), dynamic speaker identity — multi-speaker conversations produce "the Weavers" identity line (R39).
 **Slumber:** 11 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine.
 **UI:** Kanban board (R36) — drag-and-drop card management via `KanbanBoard(gr.HTML)` with `_pending_action` + `trigger('change')` pattern; auto-collapse empty columns; adaptive left sidebar for Kanban view (R36.1); workable-type filter excludes containers, Done column 14-day recency cap with "visible / total" header, card clicks stay in Work tab (R36.2); creator badges on cards (R38).
-**Intent Dispatch:** Intent Engine (R35/R37) resolves entities via FTS, gates execution by confidence (auto >=0.75, confirm 0.5-0.75), executes db_ops directly, injects feedback into prompt composer; confirmation flow for medium-confidence actions; feature-flagged via `intent_action_dispatch_enabled`. Janus-created items default to `review` status (R38).
+**Intent Dispatch:** Intent Engine (R35/R37) resolves entities via FTS, gates execution by confidence (auto >=0.75, confirm 0.5-0.75), executes db_ops directly, injects feedback into prompt composer; confirmation flow for medium-confidence actions; feature-flagged via `intent_action_dispatch_enabled`. Janus-created items default to `review` status (R38). Action feedback diagnostic logging for dispatch chain tracing (R39).
 **Provenance:** Five actors tracked across all write operations — mat (UI), claude (MCP), janus (dispatch), agent (automated), imported (bulk ingest). `created_by` set once at creation, `modified_by` updated on every write. Kanban badges, detail views, MCP tool schemas all surface provenance (R38).
+**Speaker Identity:** `speaker` column on messages tracks who sent each message (mat, claude, agent, etc.). `chat_with_janus()` MCP tool exposes `speaker` param. Non-Mat speakers get `[Speaker]:` prefix in LLM history. Mixed-speaker conversations trigger dynamic identity layer: "You are in conversation with Claude and Mat — the Weavers." (R39).
 **Platform:** 84 MCP tools, auto-ingestion, Cognition tab, intent routing (11 categories).
 
 ### Architectural Gaps
