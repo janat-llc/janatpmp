@@ -103,7 +103,7 @@ JANATPMP/
 │   ├── __init__.py
 │   ├── log_config.py         # SQLiteLogHandler + setup_logging() + get_logs()
 │   ├── chat.py               # Multi-provider chat (Anthropic/Gemini/Ollama) — self-query tools for Ollama
-│   ├── prompt_composer.py    # 11-layer adaptive Janus identity system prompt (R19/R25/R32/R33)
+│   ├── prompt_composer.py    # 12-layer adaptive Janus identity system prompt (R19/R25/R32/R33/R37)
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py            # Background daemon — 11-stage Slumber Cycle (R12/R27/R31/R32)
 │   ├── slumber_eval.py        # Gemini-powered message evaluation (R22: First Light)
@@ -116,6 +116,7 @@ JANATPMP/
 │   ├── settings.py           # Settings registry with validation and categories
 │   ├── auto_ingest.py        # Startup + Slumber auto-ingestion scanner (R17)
 │   ├── startup.py            # Platform init: initialize_core(), initialize_services(), background auto-ingest
+│   ├── intent_engine.py      # Intent Engine — hypothesis tracking + action dispatch (R35/R37)
 │   ├── intent_router.py      # Intent classification + pipeline routing (R26)
 │   ├── entity_routing.py     # Entity-aware routing — detect entity refs, inject context (R30)
 │   ├── backfill_orchestrator.py  # Phased data backfill pipeline (R26)
@@ -579,7 +580,7 @@ Deep idle (10 min) gates Gemini-heavy phases (Extract, Dream, Mine) so they don'
 | 9 | Decay | every 5th | Entity salience decay — temporal fade + mention boost (R31) |
 | 10 | Mine | every 5th (deep idle) | Register mining — conversational register extraction via Gemini (R32) |
 
-### Prompt Composer (11 Layers)
+### Prompt Composer (12 Layers)
 
 `services/prompt_composer.py:compose_system_prompt()` returns `(prompt_text, layer_dict)`.
 Pre-cognition weights modulate each layer (skip/minimal/standard/expanded).
@@ -597,6 +598,7 @@ Pre-cognition weights modulate each layer (skip/minimal/standard/expanded).
 | 8.5 | Register Exemplars | `search_register_exemplars()` | Demonstrated voice examples for relational intents (R32) |
 | 9 | Tone Directive | Pre-cognition directive | Contextual tone/style instructions |
 | 10 | Post-Cognition Correction | Previous turn's postcognition signal | Self-observation from last turn's evaluation (R33) |
+| 11 | Action Feedback | Intent dispatch results | Recent actions taken — Janus sees and acknowledges (R37) |
 
 ### Intent Router (11 Categories)
 
@@ -647,14 +649,15 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
   `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
   handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R36.2)
+## Current Platform State (Post-R37)
 
 **Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded.
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`.
 **RAG:** Hybrid FTS + vector, graph-aware ranking, temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval with `created_at` for temporal scoring (R34), intent-gated attribution (R32).
-**Identity:** 11-layer adaptive prompt composer, pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32).
+**Identity:** 12-layer adaptive prompt composer (R37 adds action feedback layer), pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32).
 **Slumber:** 11 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine.
 **UI:** Kanban board (R36) — drag-and-drop card management via `KanbanBoard(gr.HTML)` with `_pending_action` + `trigger('change')` pattern; auto-collapse empty columns; adaptive left sidebar for Kanban view (R36.1); workable-type filter excludes containers, Done column 14-day recency cap with "visible / total" header, card clicks stay in Work tab (R36.2).
+**Intent Dispatch:** Intent Engine (R35/R37) resolves entities via FTS, gates execution by confidence (auto >=0.75, confirm 0.5-0.75), executes db_ops directly, injects feedback into prompt composer; confirmation flow for medium-confidence actions; feature-flagged via `intent_action_dispatch_enabled`.
 **Platform:** 84 MCP tools, auto-ingestion, Cognition tab, intent routing (11 categories).
 
 ### Architectural Gaps
