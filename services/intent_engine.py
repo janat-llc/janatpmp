@@ -667,6 +667,10 @@ class IntentEngine:
                 action_conf = max(max_conf, 0.8)
             elif is_strong_update:
                 action_conf = max(max_conf, 0.6)
+            elif is_soft_update and status_val:
+                # "X is done" — moderate confidence, dispatch will confirm or auto
+                # based on entity resolution strength
+                action_conf = max(max_conf, update_thresh)
             else:
                 action_conf = max_conf
 
