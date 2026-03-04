@@ -85,6 +85,12 @@ _SUBJECT_EXTRACT = re.compile(
     re.IGNORECASE,
 )
 
+# Softer subject extraction: "{name} is done", "{name} is in progress"
+_SOFT_SUBJECT_EXTRACT = re.compile(
+    r"^(.{3,60}?)\s+(?:is|are)\s+(?:done|complete|finished|shipped|in.?progress|blocked)",
+    re.IGNORECASE,
+)
+
 _CREATE_SUBJECT = re.compile(
     r"(?:create|add|make|new)\s+(?:a\s+)?(?:feature|epic|item|task|project|component)\s+"
     r"(?:for|called|named|about|:)\s+['\"]?(.{3,80})['\"]?",
@@ -96,7 +102,8 @@ _SOFT_UPDATE_SIGNALS = re.compile(
     r"((?:that|it|this)\s+(?:is|should\s+be)\s+(?:done|complete|finished|in.?progress|blocked|shipped)|"
     r"(?:we|i)\s+(?:finished|completed|shipped|started|blocked)\s+(?:that|it|this|the)\b|"
     r"(?:let'?s?|can\s+you)\s+move\s+.{1,40}\s+to\s+|"
-    r"(?:put|set)\s+.{1,40}\s+(?:in|to|as)\s+)",
+    r"(?:put|set)\s+.{1,40}\s+(?:in|to|as)\s+|"
+    r".{3,40}\s+(?:is|are)\s+(?:done|complete|finished|shipped|in.?progress|blocked)(?:\s|$))",
     re.IGNORECASE,
 )
 
@@ -401,7 +408,7 @@ class IntentEngine:
     def _resolve_entity(self, action: RecommendedAction, text: str) -> RecommendedAction:
         """Resolve entity references in action params using FTS search."""
         if action.tool == "update_item" and not action.params.get("item_id"):
-            match = _SUBJECT_EXTRACT.search(text)
+            match = _SUBJECT_EXTRACT.search(text) or _SOFT_SUBJECT_EXTRACT.search(text)
             if match:
                 subject = match.group(1).strip()
                 from db.operations import search_items
@@ -422,7 +429,7 @@ class IntentEngine:
 
         elif action.tool == "update_task" and not action.params.get("task_id"):
             # No FTS for tasks — use list_tasks with title scan
-            match = _SUBJECT_EXTRACT.search(text)
+            match = _SUBJECT_EXTRACT.search(text) or _SOFT_SUBJECT_EXTRACT.search(text)
             if match:
                 subject = match.group(1).strip().lower()
                 from db.operations import list_tasks
