@@ -623,7 +623,7 @@ class IntentEngine:
             base_conf = best_h.confidence if best_h else 0.5
             action_conf = max(base_conf, create_thresh)
 
-            entity_type = "initiative" if (creative_h and not planning_h) else "feature"
+            entity_type = "feature"
             if action_conf >= create_thresh:
                 actions.append(RecommendedAction(
                     tool="create_item",
