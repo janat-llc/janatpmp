@@ -301,6 +301,7 @@ def add_message(
     tokens_response: int = 0,
     tools_called: str = "[]",
     role: str = "turn",
+    speaker: str = "mat",
 ) -> str:
     """Add a message (triplet) to a conversation.
 
@@ -316,6 +317,7 @@ def add_message(
         tokens_response: Token count for response
         tools_called: JSON array of tool names used this turn
         role: Message role — 'turn' for normal chat, 'system/intent' etc. for cognition
+        speaker: Who sent this message — mat, claude, agent, etc. Defaults to mat.
 
     Returns:
         The ID of the created message
@@ -327,12 +329,12 @@ def add_message(
             INSERT INTO messages
                 (conversation_id, sequence, user_prompt, model_reasoning, model_response,
                  provider, model, tokens_prompt, tokens_reasoning, tokens_response,
-                 tools_called, role)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 tools_called, role, speaker)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             conversation_id, seq, user_prompt, model_reasoning, model_response,
             provider, model, tokens_prompt, tokens_reasoning, tokens_response,
-            tools_called, role,
+            tools_called, role, speaker,
         ))
         conn.commit()
         cursor.execute("SELECT id FROM messages WHERE rowid = ?", (cursor.lastrowid,))

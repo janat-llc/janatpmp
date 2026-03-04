@@ -1408,7 +1408,8 @@ def chat(message: str, history: list[dict],
          conversation_id: str = "",
          provider_override: str = "", model_override: str = "",
          temperature: float = 0.7, top_p: float = 0.9, max_tokens: int = 8192,
-         system_prompt_append: str = "") -> dict:
+         system_prompt_append: str = "",
+         speaker: str = "mat", speakers: set = None) -> dict:
     """Send a message using settings from the database (with optional overrides).
 
     Args:
@@ -1421,6 +1422,8 @@ def chat(message: str, history: list[dict],
         top_p: Top-p nucleus sampling.
         max_tokens: Maximum response tokens.
         system_prompt_append: Per-conversation system prompt addition.
+        speaker: Who is speaking — mat, claude, agent, etc. Defaults to mat.
+        speakers: Set of all distinct speakers in recent history. For dynamic identity layer.
 
     Returns:
         Dict with keys: history, rag_metrics, token_counts, timings, provider, model.
@@ -1486,9 +1489,9 @@ def chat(message: str, history: list[dict],
                         engine_result.recommended_actions, message))
                 dispatch_feedback.extend(new_feedback)
     except Exception as e:
-        logger.debug("Intent dispatch failed: %s", e)
+        logger.warning("Intent dispatch failed: %s", e, exc_info=True)
     if dispatch_feedback:
-        logger.info("Dispatch: %s", "; ".join(dispatch_feedback))
+        logger.info("Dispatch feedback: %s", "; ".join(dispatch_feedback))
 
     # R30: Entity-aware routing (gated by RAG depth, <10ms)
     entity_result = None
@@ -1539,6 +1542,12 @@ def chat(message: str, history: list[dict],
     # R37: Inject dispatch feedback into system prompt context
     if dispatch_feedback:
         precog_directives["action_feedback"] = "\n".join(dispatch_feedback)
+        logger.info("Action feedback injected into directives: %s",
+                     precog_directives["action_feedback"])
+
+    # R39: Thread speaker set for dynamic identity layer
+    if speakers and len(speakers) > 0:
+        precog_directives["speakers"] = speakers
 
     system_prompt, prompt_layers = _build_system_prompt(
         history, conversation_id, directives=precog_directives)
@@ -1602,8 +1611,9 @@ def chat(message: str, history: list[dict],
                 {"role": "assistant", "content": f"No API key set. Add your {preset.get('name', provider)} API key in the Admin tab sidebar."},
             ])
 
-        # Add user message
-        history = history + [{"role": "user", "content": message}]
+        # Add user message (with speaker prefix for non-Mat speakers)
+        speaker_prefix = f"[{speaker.capitalize()}]: " if speaker != "mat" else ""
+        history = history + [{"role": "user", "content": f"{speaker_prefix}{message}"}]
 
         try:
             with timer.span("inference"):
@@ -1696,7 +1706,7 @@ def chat(message: str, history: list[dict],
             return _error_result(history)
 
 
-def chat_with_janus(message: str) -> dict:
+def chat_with_janus(message: str, speaker: str = "mat") -> dict:
     """Send a message to Janus through the full pipeline and return response + diagnostics.
 
     Runs the complete chat pipeline: intent classification, pre-cognition, RAG retrieval,
@@ -1708,6 +1718,7 @@ def chat_with_janus(message: str) -> dict:
 
     Args:
         message: The message to send to Janus.
+        speaker: Who is speaking — mat, claude, agent, etc. Defaults to mat.
 
     Returns:
         Dict with response, cognition_trace, rag_metrics, timings, token_counts,
@@ -1734,12 +1745,19 @@ def chat_with_janus(message: str) -> dict:
     history = []
     for m in raw_msgs:
         if m.get("user_prompt"):
-            history.append({"role": "user", "content": m["user_prompt"]})
+            spk = m.get("speaker", "mat")
+            prefix = f"[{spk.capitalize()}]: " if spk != "mat" else ""
+            history.append({"role": "user", "content": f"{prefix}{m['user_prompt']}"})
         if m.get("model_response"):
             history.append({"role": "assistant", "content": m["model_response"]})
 
+    # R39: Collect distinct speakers for dynamic identity layer
+    recent_speakers = set(m.get("speaker", "mat") for m in raw_msgs)
+    recent_speakers.add(speaker)
+
     # Run full pipeline
-    result = chat(message, history, conversation_id=conv_id)
+    result = chat(message, history, conversation_id=conv_id,
+                  speaker=speaker, speakers=recent_speakers)
 
     # Extract response
     new_messages = result["history"][len(history):]
@@ -1789,6 +1807,7 @@ def chat_with_janus(message: str) -> dict:
         tokens_prompt=token_counts.get("prompt", 0),
         tokens_reasoning=token_counts.get("reasoning", 0),
         tokens_response=token_counts.get("response", 0),
+        speaker=speaker,
     )
 
     # Persist metadata

@@ -564,7 +564,23 @@ def compose_system_prompt(history: list[dict] | None = None,
         JANUS_IDENTITY.format(domains=domain_names),
         JANUS_IDENTITY.format(domains=domain_names),
     )
+    # R39: Dynamic speaker identity — replace hardcoded "Mat" conversation line
     if id_text:
+        recent_speakers = set()
+        if directives and directives.get("speakers"):
+            recent_speakers = set(directives["speakers"])
+        if len(recent_speakers) > 1:
+            speaker_names = " and ".join(
+                s.capitalize() for s in sorted(recent_speakers))
+            speaker_line = (f"You are in conversation with {speaker_names}"
+                            " \u2014 the Weavers.")
+            id_text = id_text.replace(
+                "You are in conversation with Mat \u2014 someone you know deeply "
+                "through hundreds of shared conversations. Match his energy. "
+                "When he's warm, be warm. When he's technical, be technical. "
+                "When he says good morning, say good morning back.",
+                speaker_line,
+            )
         _add("identity_core", id_text)
 
     # --- Bootstrap lifecycle caveat ---
@@ -669,5 +685,7 @@ def compose_system_prompt(history: list[dict] | None = None,
     if action_feedback:
         _add("action_feedback",
              f"[Recent Actions Taken]\n{action_feedback}")
+        logger.info("Prompt composer: injected action_feedback layer (%d chars)",
+                     len(action_feedback))
 
     return "\n\n".join(sections), layers
