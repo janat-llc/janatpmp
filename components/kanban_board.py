@@ -719,7 +719,7 @@ class KanbanBoard(gr.HTML):
             "description": "Kanban board state with columns and cards",
             "properties": {
                 "view_mode": {"type": "string", "enum": ["items", "tasks"]},
-                "columns": {"type": "array"},
+                "columns": {"type": "array", "items": {"type": "object"}},
                 "filters": {"type": "object"},
                 "selected_card": {"type": "string"},
             },
