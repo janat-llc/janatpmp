@@ -26,9 +26,12 @@ JANATPMP/
 ├── app.py                    # Thin launcher: startup calls, gr.Blocks, banner, demo.launch()
 ├── mcp_registry.py           # MCP Tool Registry — all 84 gr.api() function imports + ALL_MCP_TOOLS list
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
+├── components/
+│   ├── __init__.py
+│   └── kanban_board.py       # KanbanBoard(gr.HTML) — drag-and-drop Kanban board (R36, ~700 lines)
 ├── pages/
 │   ├── __init__.py
-│   ├── projects.py           # Projects + Work page — sidebar-first layout (~350 lines)
+│   ├── projects.py           # Projects + Work page — sidebar-first layout (~520 lines)
 │   ├── knowledge.py          # Knowledge page — Memory, Connections, Pipeline, Synthesis (~620 lines)
 │   ├── admin.py              # Admin page — Settings, Persona, Operations (~470 lines)
 │   └── chat.py               # Sovereign Chat page — 4 tabs: Chat, Overview, Cognition, Settings
@@ -172,7 +175,7 @@ See `app.py` for routing and `shared/chat_sidebar.py` for reusable right sidebar
 
 | Page | Route | Tabs | Left Sidebar |
 |------|-------|------|-------------|
-| **Projects** | `/` | Projects, Work | Project/task cards, filters, + New |
+| **Projects** | `/` | Projects, Work (Detail / List / Kanban) | Project/task cards, filters, + New; Kanban sidebar when board active |
 | **Knowledge** | `/knowledge` | Memory, Connections, Pipeline, Synthesis | Type filter, search, pipeline health |
 | **Admin** | `/admin` | Settings, Persona, Operations | Category buttons, identity card, platform health |
 | **Chat** | `/chat` | Chat, Overview, Cognition, Settings | RAG provenance, pipeline stats, conversation list |
@@ -510,6 +513,8 @@ tool generation.
 | Missing `api_visibility="private"` | Add to ALL UI event listeners |
 | Using `gr.Column` for side panels | Use `gr.Sidebar(position="left"/"right")` instead |
 | Wrapping center+right in `gr.Row` | Center is main body, sidebars are separate |
+| Using `server_functions` on `gr.HTML` | NOT supported in Gradio 6.6.0 — use `_pending_action` + `trigger('change')` + `.change()` handler (R36.1) |
+| Calling `server.fn()` from `js_on_load` | `server` is NOT injected — only `element`, `trigger`, `props` are available |
 
 ## Important Notes
 
@@ -637,14 +642,19 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 - **Shared chat + synthesis model** — qwen3.5:27b serves both roles, zero extra VRAM
 - **Asymmetric embedding** — Qwen3-Embedding-0.6B uses instruction prefix for queries,
   plain text for passages. Client-side `[:1024]` truncation for safety.
+- **Needle pattern (gr.HTML subclass)** — `KanbanBoard(gr.HTML)` is the first custom
+  component. Subclass `gr.HTML`, define `html_template`/`css_template`/`js_on_load`, declare
+  `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
+  handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R34)
+## Current Platform State (Post-R36.1)
 
 **Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded.
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`.
 **RAG:** Hybrid FTS + vector, graph-aware ranking, temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval with `created_at` for temporal scoring (R34), intent-gated attribution (R32).
 **Identity:** 11-layer adaptive prompt composer, pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32).
 **Slumber:** 11 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine.
+**UI:** Kanban board (R36) — drag-and-drop card management via `KanbanBoard(gr.HTML)` with `_pending_action` + `trigger('change')` pattern; auto-collapse empty columns; adaptive left sidebar for Kanban view (R36.1).
 **Platform:** 84 MCP tools, auto-ingestion, Cognition tab, intent routing (11 categories).
 
 ### Architectural Gaps

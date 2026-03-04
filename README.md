@@ -105,6 +105,7 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Intent-gated RAG attribution** — narrative attribution for relational intents ("From a conversation about..."), clinical metadata for analytical intents ("[messages] Title (3 months ago)") (R32)
 - **Post-Cognition feedback loop** — Gemini evaluates each Janus response on naturalness, attunement, and tool awareness; corrective directive injected into next turn's prompt composer; three scoring axes with weighted composite; robust JSON parse with fallback extraction (R33)
 - **GPU contention guard** — `touch_activity()` called from all chat paths (UI + MCP) resets Slumber idle timer so embedding batches don't compete with chat inference (R34)
+- **Kanban board** — drag-and-drop card management via `KanbanBoard(gr.HTML)` custom component; items and tasks views with status-mapped columns; filter by domain, search, show archived; auto-collapse empty columns; adaptive left sidebar for Kanban view; JS↔Python bridge via `_pending_action` + `trigger('change')` pattern (R36/R36.1)
 - **Change Data Capture** outbox with background Neo4j sync consumer
 
 ---
@@ -192,8 +193,11 @@ JANATPMP/
 ├── janat_theme.py             # Custom Gradio theme (Janat brand colors + CSS)
 ├── assets/
 │   └── janat_logo_bold_transparent.png  # Janat Mandala logo
+├── components/
+│   ├── __init__.py
+│   └── kanban_board.py        # KanbanBoard(gr.HTML) — drag-and-drop Kanban board (~700 lines)
 ├── pages/
-│   ├── projects.py            # Projects + Work page — sidebar-first layout (~350 lines)
+│   ├── projects.py            # Projects + Work page — sidebar-first layout (~520 lines)
 │   ├── knowledge.py           # Knowledge page — Memory, Connections, Pipeline, Synthesis
 │   ├── admin.py               # Admin page — Settings, Persona, Operations
 │   └── chat.py                # Sovereign Chat — 4 tabs: Chat, Overview, Cognition, Settings
@@ -238,7 +242,7 @@ JANATPMP/
 ├── services/
 │   ├── log_config.py          # SQLite log handler + setup_logging()
 │   ├── chat.py                # Multi-provider chat with self-query tools + thinking mode
-│   ├── prompt_composer.py     # 10-layer adaptive Janus identity system prompt (R19/R25/R32)
+│   ├── prompt_composer.py     # 11-layer adaptive Janus identity system prompt (R19/R25/R32/R33)
 │   ├── precognition.py        # Gemini pre-cognition — adaptive prompt shaping (R25)
 │   ├── postcognition.py       # Gemini post-cognition — response evaluation + corrective signal (R33)
 │   ├── turn_timer.py          # Thread-local TurnTimer context manager (R12)
@@ -322,13 +326,14 @@ Every page uses the three-panel pattern:
 │  JANATPMP             [Projects]  [Knowledge]  [Admin]  [Chat]          │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  [Projects]  [Work]                              ← Tabs                 │
+│              └─ [Detail] [List] [Kanban]      ← Work sub-tabs          │
 ├───────────┬──────────────────────────────────┬───────────────────────────┤
 │  LEFT     │     CENTER CONTENT               │  RIGHT                   │
 │  SIDEBAR  │                                  │  SIDEBAR                 │
 │           │                                  │                          │
 │  Project  │  Project detail / List view      │  Janus quick-chat        │
 │  cards    │  Task detail / List view         │  (continuous)            │
-│  Filters  │                                  │                          │
+│  Filters  │  Kanban: drag-and-drop board     │                          │
 │  + New    │                                  │                          │
 └───────────┴──────────────────────────────────┴───────────────────────────┘
 ```
@@ -450,7 +455,7 @@ feature/phase{X}-{description}  # legacy naming
 
 ## Future
 
-JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), **auto-ingestion** removes manual import friction (R17), **Janus identity architecture** gives her genuine selfhood (R19), **semantic graph topology** connects conversations into a navigable network (R20), **graph-aware RAG** closes the loop between graph and retrieval (R21), the **Cognition tab** makes the thought pipeline permanently visible (R21), **LLM-powered Slumber evaluation** replaces heuristics with Gemini Flash Lite scoring (R22), **grounded prompt layers** fix three broken identity layers so Janus speaks from real context instead of empty templates (R23), **Dream Synthesis** generates cross-conversation insights during Slumber idle periods (R24), **Pre-Cognition** adapts the prompt to the moment via Gemini pre-pass with weight-driven layer modulation (R25), **intent-aware pipeline routing** classifies messages to skip expensive stages for greetings and meta-conversation (R26), a **backfill orchestrator** provides a single-command phased data foundation pipeline (R26), **autonomic on-write hooks** auto-embed documents, items, and tasks on creation (R27), **automatic graph weaving** incrementally connects new conversations via Slumber (R27), **temporal gravity** gives RAG recency-weighted scoring with automatic historical bypass (R28), the **Synthesis Surface** replaces the Knowledge page placeholder with live dream insights, statistics, and memory health (R28), **entity extraction** discovers concepts, decisions, milestones, people, references, and emotional states from scored messages via Gemini during Slumber (R29), **entity-aware RAG routing** detects entity references and walks graph edges for additional retrieval (R30), **The Web** connects entities to each other via co-occurrence edges with temporal salience decay and dream attribution (R31), **The Mirror** gives Janus self-query tools, knowledge self-awareness, and conversational register mining (R32), **Post-Cognition** closes the feedback loop with Gemini-powered response evaluation and corrective signals injected into the next turn's prompt (R33), and **memory formation fixes** ensure graph-retrieved RAG candidates carry timestamps for temporal decay and Slumber yields GPU during active chat (R34). Planned next steps:
+JANATPMP will evolve into a **Nexus Custom Component** within The Nexus Weaver architecture. The **Triad of Memory** (SQLite + Qdrant + Neo4j) is operational, **sovereign multipage architecture** separates concerns across 4 pages (R18), **Janus continuous chat** is live (R14), **message chunking** delivers focused RAG retrieval (R16), the **Temporal Affinity Engine** gives Janus time/location awareness (R17), **auto-ingestion** removes manual import friction (R17), **Janus identity architecture** gives her genuine selfhood (R19), **semantic graph topology** connects conversations into a navigable network (R20), **graph-aware RAG** closes the loop between graph and retrieval (R21), the **Cognition tab** makes the thought pipeline permanently visible (R21), **LLM-powered Slumber evaluation** replaces heuristics with Gemini Flash Lite scoring (R22), **grounded prompt layers** fix three broken identity layers so Janus speaks from real context instead of empty templates (R23), **Dream Synthesis** generates cross-conversation insights during Slumber idle periods (R24), **Pre-Cognition** adapts the prompt to the moment via Gemini pre-pass with weight-driven layer modulation (R25), **intent-aware pipeline routing** classifies messages to skip expensive stages for greetings and meta-conversation (R26), a **backfill orchestrator** provides a single-command phased data foundation pipeline (R26), **autonomic on-write hooks** auto-embed documents, items, and tasks on creation (R27), **automatic graph weaving** incrementally connects new conversations via Slumber (R27), **temporal gravity** gives RAG recency-weighted scoring with automatic historical bypass (R28), the **Synthesis Surface** replaces the Knowledge page placeholder with live dream insights, statistics, and memory health (R28), **entity extraction** discovers concepts, decisions, milestones, people, references, and emotional states from scored messages via Gemini during Slumber (R29), **entity-aware RAG routing** detects entity references and walks graph edges for additional retrieval (R30), **The Web** connects entities to each other via co-occurrence edges with temporal salience decay and dream attribution (R31), **The Mirror** gives Janus self-query tools, knowledge self-awareness, and conversational register mining (R32), **Post-Cognition** closes the feedback loop with Gemini-powered response evaluation and corrective signals injected into the next turn's prompt (R33), **memory formation fixes** ensure graph-retrieved RAG candidates carry timestamps for temporal decay and Slumber yields GPU during active chat (R34), the **Kanban board** provides drag-and-drop card management as a custom `gr.HTML` subclass with auto-collapsing empty columns and adaptive sidebar (R36/R36.1). Planned next steps:
 
 - **Attribute Mining** — extract entity attributes from messages (needs prompt design, dedup, conflict handling)
 - **Fact/context classification** — tag sliding window entries as user-stated, RAG-retrieved, system-injected, or verified

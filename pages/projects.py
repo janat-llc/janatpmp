@@ -1,4 +1,5 @@
 """Projects page layout — Projects + Work tabs with contextual sidebar."""
+import json
 import gradio as gr
 import pandas as pd
 from db.operations import (
@@ -16,7 +17,7 @@ from shared.data_helpers import (
     _load_tasks, _all_tasks_df,
 )
 from shared.chat_sidebar import build_chat_sidebar, wire_chat_sidebar
-from components.kanban_board import KanbanBoard, build_board_data
+from components.kanban_board import KanbanBoard, build_board_data, move_card, refresh_board
 
 
 def _domain_choices(include_blank: bool = True) -> list[str]:
@@ -37,6 +38,7 @@ def build_page():
     """
     # === STATES ===
     active_tab = gr.State("Projects")
+    active_work_tab = gr.State("work-detail")
     selected_project_id = gr.State("")
     selected_task_id = gr.State("")
     projects_state = gr.State(_load_projects())
@@ -114,7 +116,7 @@ def build_page():
         # --- Work tab ---
         with gr.Tab("Work", id="main-work") as work_tab:
             with gr.Tabs() as work_sub_tabs:
-                with gr.Tab("Detail", id="work-detail"):
+                with gr.Tab("Detail", id="work-detail") as work_detail_tab:
                     work_header = gr.Markdown(
                         "*Select a task from the sidebar, or create a new task.*"
                     )
@@ -160,7 +162,7 @@ def build_page():
                             work_create_btn = gr.Button("Create Task", variant="primary")
                             work_create_msg = gr.Textbox(show_label=False, interactive=False, scale=2)
 
-                with gr.Tab("List View", id="work-list-view"):
+                with gr.Tab("List View", id="work-list-view") as work_list_tab:
                     gr.Markdown("### All Tasks")
                     all_tasks_table = gr.DataFrame(
                         value=_all_tasks_df(),
@@ -168,14 +170,14 @@ def build_page():
                     )
                     work_list_refresh = gr.Button("Refresh All", variant="secondary", size="sm")
 
-                with gr.Tab("Kanban", id="work-kanban"):
+                with gr.Tab("Kanban", id="work-kanban") as work_kanban_tab:
                     kanban = KanbanBoard()
                     kanban_timer = gr.Timer(30)
 
     # === LEFT SIDEBAR (contextual — defined after center so it can reference components) ===
     with gr.Sidebar():
-        @gr.render(inputs=[active_tab, projects_state, tasks_state, selected_project_id])
-        def render_left(tab, projects, tasks, sel_proj_id):
+        @gr.render(inputs=[active_tab, projects_state, tasks_state, selected_project_id, active_work_tab])
+        def render_left(tab, projects, tasks, sel_proj_id, work_tab):
             if tab == "Projects":
                 gr.Markdown("### Projects")
                 with gr.Row(key="proj-filter-row"):
@@ -223,6 +225,16 @@ def build_page():
                 )
 
             elif tab == "Work":
+                if work_tab == "work-kanban":
+                    gr.Markdown("### Kanban Board")
+                    gr.Markdown(
+                        "Drag cards between columns to update status.\n\n"
+                        "**Items** — Backlog → Planning → In Progress → Done\n\n"
+                        "**Tasks** — Pending → Processing → Review → Done\n\n"
+                        "Click a card to open its detail view."
+                    )
+                    return
+
                 gr.Markdown("### Work Queue")
                 with gr.Row(key="work-filter-row"):
                     work_status_filter = gr.Dropdown(
@@ -267,6 +279,9 @@ def build_page():
     # === TAB TRACKING ===
     projects_tab.select(lambda: "Projects", outputs=[active_tab], api_visibility="private")
     work_tab.select(lambda: "Work", outputs=[active_tab], api_visibility="private")
+    work_detail_tab.select(lambda: "work-detail", outputs=[active_work_tab], api_visibility="private")
+    work_list_tab.select(lambda: "work-list-view", outputs=[active_work_tab], api_visibility="private")
+    work_kanban_tab.select(lambda: "work-kanban", outputs=[active_work_tab], api_visibility="private")
 
     # === PROJECT EVENT WIRING ===
 
@@ -436,6 +451,42 @@ def build_page():
             v.get("view_mode", "items") if isinstance(v, dict) else "items",
             v.get("filters") if isinstance(v, dict) else None,
         ),
+        inputs=[kanban],
+        outputs=[kanban],
+        api_visibility="private",
+    )
+
+    def _handle_kanban_action(board_data):
+        """Dispatch pending actions from Kanban JS (move, refresh).
+
+        JS sets _pending_action on props.value + trigger('change').
+        Python processes the action, returns clean board data (no _pending_action).
+        Second .change() fires → no _pending_action → gr.skip() stops the loop.
+        """
+        if not isinstance(board_data, dict):
+            return gr.skip()
+        action = board_data.get("_pending_action")
+        if not action:
+            return gr.skip()
+
+        action_type = action.get("type")
+        view_mode = board_data.get("view_mode", "items")
+        filters = board_data.get("filters", {})
+
+        if action_type == "move":
+            return move_card(
+                action["card_id"], action["new_column"],
+                view_mode, json.dumps(filters),
+            )
+        elif action_type == "refresh":
+            return refresh_board(
+                action.get("view_mode", view_mode),
+                json.dumps(action.get("filters", filters)),
+            )
+        return gr.skip()
+
+    kanban.change(
+        _handle_kanban_action,
         inputs=[kanban],
         outputs=[kanban],
         api_visibility="private",

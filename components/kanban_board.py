@@ -1,11 +1,12 @@
 """KanbanBoard — gr.HTML drag-and-drop Kanban board component.
 
-First Needle: a custom Gradio component with server_functions and api_info().
+First Needle: a custom Gradio component with api_info().
 Native HTML5 drag-and-drop, zero JS libraries. Drag a card to a new column →
-JS calls server.move_card() → Python updates SQLite → returns refreshed board
-→ props.value re-renders. One component, one file.
+JS sets _pending_action + trigger('change') → Python .change() handler updates
+SQLite → returns refreshed board → props.value re-renders. One component, one file.
 
 R36: Kanban Board
+R36.1: Fix server_functions (not supported on gr.HTML), use trigger('change') pattern
 """
 
 import json
@@ -131,12 +132,12 @@ def build_board_data(view_mode: str = "items", filters: dict | None = None) -> d
 
         col_cards[col_id].append(card)
 
-    # Assemble columns
+    # Assemble columns — hide empty columns except primary intake/completion
+    ALWAYS_VISIBLE = {"not_started", "done", "pending"}
     columns = []
     for col_id, title, color, _statuses, droppable in col_defs:
         cards = col_cards.get(col_id, [])
-        # Skip empty failed column in task view
-        if col_id == "failed" and not cards:
+        if col_id not in ALWAYS_VISIBLE and not cards:
             continue
         columns.append({
             "id": col_id,
@@ -159,7 +160,7 @@ def build_board_data(view_mode: str = "items", filters: dict | None = None) -> d
 
 
 # ---------------------------------------------------------------------------
-# Server Functions (called from JS via server.fn_name())
+# Action Handlers (called from Python .change() listener via _pending_action)
 # ---------------------------------------------------------------------------
 
 def move_card(card_id: str, new_column_id: str, view_mode: str, filters_json: str) -> dict:
@@ -580,7 +581,7 @@ KANBAN_JS = """
         }
     });
 
-    element.addEventListener('drop', async (e) => {
+    element.addEventListener('drop', (e) => {
         e.preventDefault();
         const cardList = e.target.closest('.card-list');
         if (!cardList || !dragSrcCardId) return;
@@ -588,39 +589,36 @@ KANBAN_JS = """
         cardList.classList.remove('drag-over');
 
         const newColumnId = cardList.dataset.colId;
-        const viewMode = props.value.view_mode || 'items';
-        const filtersJson = JSON.stringify(props.value.filters || {});
-
-        try {
-            const result = await server.move_card(
-                dragSrcCardId, newColumnId, viewMode, filtersJson
-            );
-            props.value = result;
-        } catch (err) {
-            console.error('move_card failed:', err);
-        }
+        const nv = JSON.parse(JSON.stringify(props.value));
+        nv._pending_action = {
+            type: 'move',
+            card_id: dragSrcCardId,
+            new_column: newColumnId
+        };
+        props.value = nv;
+        trigger('change');
 
         dragSrcCardId = null;
     });
 
     // ── View Mode Toggle ─────────────────────────
-    element.addEventListener('click', async (e) => {
+    element.addEventListener('click', (e) => {
         const btn = e.target.closest('.view-btn');
         if (!btn || btn.classList.contains('active')) return;
 
         const newViewMode = btn.dataset.view;
-        const filtersJson = JSON.stringify(props.value.filters || {});
-
-        try {
-            const result = await server.refresh_board(newViewMode, filtersJson);
-            props.value = result;
-        } catch (err) {
-            console.error('refresh_board failed:', err);
-        }
+        const nv = JSON.parse(JSON.stringify(props.value));
+        nv._pending_action = {
+            type: 'refresh',
+            view_mode: newViewMode,
+            filters: nv.filters || {}
+        };
+        props.value = nv;
+        trigger('change');
     });
 
     // ── Filter Controls ──────────────────────────
-    element.addEventListener('change', async (e) => {
+    element.addEventListener('change', (e) => {
         const control = e.target.closest('.filter-control, .filter-archived');
         if (!control) return;
 
@@ -635,15 +633,15 @@ KANBAN_JS = """
             filters.show_archived = control.checked;
         }
 
-        const viewMode = props.value.view_mode || 'items';
-        const filtersJson = JSON.stringify(filters);
-
-        try {
-            const result = await server.refresh_board(viewMode, filtersJson);
-            props.value = result;
-        } catch (err) {
-            console.error('refresh_board failed:', err);
-        }
+        const nv = JSON.parse(JSON.stringify(props.value));
+        nv._pending_action = {
+            type: 'refresh',
+            view_mode: nv.view_mode || 'items',
+            filters: filters
+        };
+        nv.filters = filters;
+        props.value = nv;
+        trigger('change');
     });
 
     // ── Card Click → Select ──────────────────────
@@ -667,8 +665,9 @@ KANBAN_JS = """
 class KanbanBoard(gr.HTML):
     """Drag-and-drop Kanban board for items and tasks.
 
-    First Needle — custom Gradio component with server_functions.
-    Value shape: {view_mode, columns, filters, selected_card}
+    First Needle — custom Gradio component with api_info().
+    JS uses _pending_action + trigger('change') for Python callbacks.
+    Value shape: {view_mode, columns, filters, selected_card, _pending_action?}
     """
 
     def __init__(self, value=None, **kwargs):
@@ -679,7 +678,6 @@ class KanbanBoard(gr.HTML):
             html_template=KANBAN_HTML,
             css_template=KANBAN_CSS,
             js_on_load=KANBAN_JS,
-            server_functions=[move_card, refresh_board],
             **kwargs,
         )
 
