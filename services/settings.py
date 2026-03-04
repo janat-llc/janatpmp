@@ -218,7 +218,9 @@ SETTINGS_REGISTRY = {
     "intent_action_threshold_create":   ("0.8",   False, "system", _validate_float_0_1),
     "intent_action_threshold_update":   ("0.7",   False, "system", _validate_float_0_1),
     "intent_action_threshold_query":    ("0.5",   False, "system", _validate_float_0_1),
-    "intent_action_dispatch_enabled":   ("false", False, "system", None),
+    "intent_action_dispatch_enabled":   ("true",  False, "system", None),
+    "intent_dispatch_auto_threshold":   ("0.75",  False, "system", _validate_float_0_1),
+    "intent_dispatch_confirm_threshold": ("0.5",  False, "system", _validate_float_0_1),
 
     # Persona (R18 structured schema)
     "user_full_name":       ("", False, "persona", None),
@@ -281,6 +283,7 @@ def init_settings():
         ("precognition_timeout_ms", "500"),  # R25: 500ms too aggressive for Gemini cold start
         ("chat_model", "qwen3:32b"),  # Qwen 3.5 replaces Qwen 3 (smaller, faster, better tools)
         ("rag_synthesizer_model", "qwen3:32b"),
+        ("intent_action_dispatch_enabled", "false"),  # R37: enable dispatch on existing installs
     ]
 
     with get_connection() as conn:

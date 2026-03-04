@@ -664,4 +664,10 @@ def compose_system_prompt(history: list[dict] | None = None,
         _add("postcognition_correction",
              f"[Self-observation from last turn: {postcog_dir}]")
 
+    # --- R37: Action Feedback from Intent Dispatch ---
+    action_feedback = (directives or {}).get("action_feedback", "")
+    if action_feedback:
+        _add("action_feedback",
+             f"[Recent Actions Taken]\n{action_feedback}")
+
     return "\n\n".join(sections), layers

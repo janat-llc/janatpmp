@@ -4,14 +4,15 @@ Wraps the fast intent_router (R26) with accumulated confidence, retrospective
 detection, Primal Encoding gates, and action intent recommendations.
 
 R35: Intent Engine — Cognition as Conversation Participant
+R37: Intent Dispatch — Wire Action Execution into Chat Pipeline
 
 The engine reads its own prior hypotheses from system/intent messages,
 accumulates confidence via EMA, and writes new signals back as messages.
 Zero LLM calls — only dict ops + one DB read on first call.
 
 The action layer maps high-confidence hypotheses to concrete MCP tool
-recommendations. Actions are observe-only in R35 (executed=False always).
-Dispatch comes in a future sprint.
+recommendations. R37 closes the loop: high-confidence actions are executed
+via db_ops, with confidence-gated confirmation for medium-confidence actions.
 
 Critical invariant: All failures fall back to classify_intent().
 """
@@ -61,9 +62,10 @@ _QUERY_SIGNALS = re.compile(
     re.IGNORECASE,
 )
 
-# Status extraction from update signals
+# Status extraction from update signals (expanded R37)
 _STATUS_EXTRACT = re.compile(
-    r"as\s+(done|complete|finished|in.?progress|started|blocked|not.?started)",
+    r"(?:to|as|is)\s+(done|complete|finished|shipped|in.?progress|started|blocked|"
+    r"not.?started|planning|review|archived|pending|processing|failed)",
     re.IGNORECASE,
 )
 
@@ -72,6 +74,42 @@ _QUERY_STATUS_EXTRACT = re.compile(
     r"(pending|active|blocked|completed?|done|in.?progress|not.?started)",
     re.IGNORECASE,
 )
+
+# ---------------------------------------------------------------------------
+# R37: Subject Extraction & Dispatch Patterns
+# ---------------------------------------------------------------------------
+
+# Subject extraction — pull entity names from action language
+_SUBJECT_EXTRACT = re.compile(
+    r"(?:move|mark|update|change|set|promote|demote)\s+['\"]?(.{3,60}?)['\"]?\s+(?:to|as|from)\s+",
+    re.IGNORECASE,
+)
+
+_CREATE_SUBJECT = re.compile(
+    r"(?:create|add|make|new)\s+(?:a\s+)?(?:feature|epic|item|task|project|component)\s+"
+    r"(?:for|called|named|about|:)\s+['\"]?(.{3,80})['\"]?",
+    re.IGNORECASE,
+)
+
+# Softer update signals — conversational style (R37 Step 3)
+_SOFT_UPDATE_SIGNALS = re.compile(
+    r"((?:that|it|this)\s+(?:is|should\s+be)\s+(?:done|complete|finished|in.?progress|blocked|shipped)|"
+    r"(?:we|i)\s+(?:finished|completed|shipped|started|blocked)\s+(?:that|it|this|the)\b|"
+    r"(?:let'?s?|can\s+you)\s+move\s+.{1,40}\s+to\s+|"
+    r"(?:put|set)\s+.{1,40}\s+(?:in|to|as)\s+)",
+    re.IGNORECASE,
+)
+
+# Confirmation signals for pending actions
+_CONFIRM_SIGNALS = re.compile(
+    r"^(yes|yeah|yep|do it|go ahead|confirmed?|please|ok|sure|yup)\s*[.!]?$",
+    re.IGNORECASE,
+)
+
+# R37: Dispatch thresholds and safety boundary
+DISPATCH_AUTO_THRESHOLD = 0.75    # Above: execute silently
+DISPATCH_CONFIRM_THRESHOLD = 0.5  # Between confirm and auto: ask first
+DISPATCH_ALLOWED_TOOLS = {"update_item", "create_item", "update_task", "create_task"}
 
 
 # ---------------------------------------------------------------------------
@@ -91,10 +129,9 @@ class Hypothesis:
 
 @dataclass
 class RecommendedAction:
-    """A concrete MCP tool recommendation from the intent engine.
+    """A concrete tool recommendation from the intent engine.
 
-    Observe-only in R35 — executed is always False. The field exists
-    for the future dispatch layer.
+    R37: dispatch_actions() sets executed=True after successful db_ops calls.
     """
     tool: str              # MCP tool name: "create_item", "update_task", etc.
     params: dict           # Tool parameters
@@ -133,6 +170,7 @@ class IntentEngine:
         self.hypotheses: dict[str, Hypothesis] = {}
         self._loaded = False
         self._history: list[dict] = []  # Recent system/intent message content
+        self._pending_actions: list[RecommendedAction] = []  # R37: awaiting confirmation
 
     def _load_prior_hypotheses(self) -> None:
         """Rebuild hypothesis state from persisted system/intent messages."""
@@ -356,6 +394,187 @@ class IntentEngine:
         )
         return cont_recent or clar_recent
 
+    # -------------------------------------------------------------------
+    # R37: Entity Resolution + Action Dispatch
+    # -------------------------------------------------------------------
+
+    def _resolve_entity(self, action: RecommendedAction, text: str) -> RecommendedAction:
+        """Resolve entity references in action params using FTS search."""
+        if action.tool == "update_item" and not action.params.get("item_id"):
+            match = _SUBJECT_EXTRACT.search(text)
+            if match:
+                subject = match.group(1).strip()
+                from db.operations import search_items
+                results = search_items(query=subject, limit=3)
+                if results:
+                    best = results[0]
+                    title = best.get("title", "")
+                    # Strong match: subject substring of title or vice versa
+                    if subject.lower() in title.lower() or title.lower() in subject.lower():
+                        action.params["item_id"] = best["id"]
+                        action.params["_resolved_title"] = title
+                        action.confidence = min(action.confidence + 0.1, 1.0)
+                    else:
+                        # Weak match — lower confidence to trigger confirmation
+                        action.params["item_id"] = best["id"]
+                        action.params["_resolved_title"] = title
+                        action.confidence = max(action.confidence - 0.2, 0.0)
+
+        elif action.tool == "update_task" and not action.params.get("task_id"):
+            # No FTS for tasks — use list_tasks with title scan
+            match = _SUBJECT_EXTRACT.search(text)
+            if match:
+                subject = match.group(1).strip().lower()
+                from db.operations import list_tasks
+                tasks = list_tasks(limit=50)
+                for t in tasks:
+                    if subject in t.get("title", "").lower():
+                        action.params["task_id"] = t["id"]
+                        action.params["_resolved_title"] = t["title"]
+                        action.confidence = min(action.confidence + 0.1, 1.0)
+                        break
+
+        elif action.tool in ("create_item", "create_task"):
+            match = _CREATE_SUBJECT.search(text)
+            if match:
+                action.params["title"] = match.group(1).strip()
+
+        return action
+
+    def dispatch_actions(
+        self,
+        actions: list[RecommendedAction],
+        text: str,
+    ) -> tuple[list[RecommendedAction], list[str]]:
+        """Execute or queue actions based on confidence gating.
+
+        Returns:
+            (processed_actions, feedback_lines)
+            - processed_actions: actions with executed=True where applicable
+            - feedback_lines: human-readable strings to inject into Janus context
+        """
+        from services.settings import get_setting
+
+        enabled = get_setting("intent_action_dispatch_enabled")
+        if not enabled or enabled.lower() in ("false", "0", "no"):
+            return actions, []
+
+        # Read thresholds from settings (fall back to module constants)
+        try:
+            auto_thresh = float(get_setting("intent_dispatch_auto_threshold") or DISPATCH_AUTO_THRESHOLD)
+        except (TypeError, ValueError):
+            auto_thresh = DISPATCH_AUTO_THRESHOLD
+        try:
+            confirm_thresh = float(get_setting("intent_dispatch_confirm_threshold") or DISPATCH_CONFIRM_THRESHOLD)
+        except (TypeError, ValueError):
+            confirm_thresh = DISPATCH_CONFIRM_THRESHOLD
+
+        feedback: list[str] = []
+        for action in actions:
+            if action.tool not in DISPATCH_ALLOWED_TOOLS:
+                continue
+            if action.executed:
+                continue
+
+            # Resolve entity references
+            action = self._resolve_entity(action, text)
+
+            if action.confidence >= auto_thresh:
+                # HIGH confidence — execute immediately
+                result = self._execute(action)
+                if result:
+                    action.executed = True
+                    feedback.append(result)
+            elif action.confidence >= confirm_thresh:
+                # MEDIUM confidence — ask for confirmation
+                desc = self._describe_action(action)
+                feedback.append(f"[INTENT] I think you want me to: {desc}. Should I?")
+                self._pending_actions.append(action)
+            # Below confirm threshold — ignore silently
+
+        return actions, feedback
+
+    def _check_pending_confirmations(self, text: str) -> list[str]:
+        """Check if user confirmed pending actions from previous turn."""
+        if not self._pending_actions:
+            return []
+        if not _CONFIRM_SIGNALS.search(text.strip()):
+            # Not a confirmation — clear pending
+            self._pending_actions = []
+            return []
+
+        # Confirmed — execute all pending
+        feedback: list[str] = []
+        for action in self._pending_actions:
+            result = self._execute(action)
+            if result:
+                action.executed = True
+                feedback.append(result)
+        self._pending_actions = []
+        return feedback
+
+    def _execute(self, action: RecommendedAction) -> str | None:
+        """Execute a single action against the database. Returns feedback string or None."""
+        from db.operations import update_item, create_item, update_task, create_task
+
+        try:
+            tool = action.tool
+            params = {k: v for k, v in action.params.items() if not k.startswith("_")}
+            resolved_title = action.params.get("_resolved_title", "")
+
+            if tool == "update_item" and params.get("item_id"):
+                update_item(**params)
+                status = params.get("status", "")
+                return f"[ACTION] Moved '{resolved_title or params['item_id'][:8]}' to {status}"
+
+            elif tool == "create_item" and params.get("title"):
+                # Ensure required fields have sensible defaults
+                if not params.get("entity_type"):
+                    params["entity_type"] = "feature"
+                if not params.get("domain"):
+                    # Use first active domain as default
+                    from db.operations import get_domains
+                    domains = get_domains(active_only=True)
+                    params["domain"] = domains[0]["name"] if domains else "JANATPMP"
+                new_id = create_item(**params)
+                return f"[ACTION] Created item: '{params['title']}' ({new_id[:8]})"
+
+            elif tool == "update_task" and params.get("task_id"):
+                update_task(**params)
+                status = params.get("status", "")
+                return f"[ACTION] Updated task '{resolved_title or params['task_id'][:8]}' → {status}"
+
+            elif tool == "create_task" and params.get("title"):
+                # Ensure required fields have sensible defaults
+                if not params.get("task_type"):
+                    params["task_type"] = "user_story"
+                new_id = create_task(**params)
+                return f"[ACTION] Created task: '{params['title']}' ({new_id[:8]})"
+
+            else:
+                logger.warning("Dispatch: missing required params for %s: %s", tool, params)
+                return None
+
+        except Exception as e:
+            logger.error("Dispatch failed for %s: %s", action.tool, e)
+            return None
+
+    def _describe_action(self, action: RecommendedAction) -> str:
+        """Human-readable description of a pending action."""
+        tool = action.tool
+        params = action.params
+        title = params.get("_resolved_title", params.get("title", params.get("item_id", "")[:8]))
+
+        if tool == "update_item":
+            return f"move '{title}' to {params.get('status', '?')}"
+        elif tool == "create_item":
+            return f"create a new {params.get('entity_type', 'item')} called '{title}'"
+        elif tool == "update_task":
+            return f"update task '{title}' to {params.get('status', '?')}"
+        elif tool == "create_task":
+            return f"create a new task: '{params.get('title', '?')}'"
+        return f"{tool}({params})"
+
     def _evaluate_actions(
         self,
         message: str,
@@ -418,21 +637,25 @@ class IntentEngine:
                 ),
             ))
 
-        # --- Update actions ---
-        if _UPDATE_SIGNALS.search(text):
+        # --- Update actions (R37: also check soft signals) ---
+        if _UPDATE_SIGNALS.search(text) or _SOFT_UPDATE_SIGNALS.search(text):
             status_match = _STATUS_EXTRACT.search(text)
             status_val = ""
             if status_match:
                 raw = status_match.group(1).lower().strip()
-                # Normalize to DB enum values
-                if raw in ("done", "complete", "finished"):
-                    status_val = "completed"
-                elif raw in ("started", "in progress", "in-progress"):
-                    status_val = "in_progress"
-                elif raw == "blocked":
-                    status_val = "blocked"
-                elif raw in ("not started", "not-started"):
-                    status_val = "not_started"
+                # Normalize to DB enum values (expanded R37)
+                norm_map = {
+                    "done": "completed", "complete": "completed", "finished": "completed",
+                    "shipped": "shipped",
+                    "started": "in_progress", "in progress": "in_progress", "in-progress": "in_progress",
+                    "blocked": "blocked",
+                    "not started": "not_started", "not-started": "not_started",
+                    "planning": "planning",
+                    "review": "review",
+                    "archived": "archived",
+                    "pending": "pending", "processing": "processing", "failed": "failed",
+                }
+                status_val = norm_map.get(raw, raw.replace(" ", "_").replace("-", "_"))
 
             # Check if any hypothesis is confident enough
             max_conf = max(

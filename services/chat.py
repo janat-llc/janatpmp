@@ -1469,6 +1469,27 @@ def chat(message: str, history: list[dict],
                 intent_result.rag_depth.value, intent_result.run_precognition,
                 f", engine={len(engine_result.hypotheses)}h" if engine_result else "")
 
+    # R37: Dispatch actions from intent engine (gated by setting + confidence)
+    dispatch_feedback: list[str] = []
+    try:
+        from services.intent_engine import get_engine as _get_engine
+        _dispatch_engine = _get_engine(conversation_id) if conversation_id else None
+        if _dispatch_engine:
+            # Check pending confirmations from previous turn first
+            confirm_feedback = _dispatch_engine._check_pending_confirmations(message)
+            if confirm_feedback:
+                dispatch_feedback.extend(confirm_feedback)
+            elif engine_result and engine_result.recommended_actions:
+                # Dispatch new actions
+                engine_result.recommended_actions, new_feedback = (
+                    _dispatch_engine.dispatch_actions(
+                        engine_result.recommended_actions, message))
+                dispatch_feedback.extend(new_feedback)
+    except Exception as e:
+        logger.debug("Intent dispatch failed: %s", e)
+    if dispatch_feedback:
+        logger.info("Dispatch: %s", "; ".join(dispatch_feedback))
+
     # R30: Entity-aware routing (gated by RAG depth, <10ms)
     entity_result = None
     if intent_result.rag_depth != RAGDepth.NONE:
@@ -1514,6 +1535,10 @@ def chat(message: str, history: list[dict],
                 last_postcog["corrective_directive"])
     except Exception:
         pass
+
+    # R37: Inject dispatch feedback into system prompt context
+    if dispatch_feedback:
+        precog_directives["action_feedback"] = "\n".join(dispatch_feedback)
 
     system_prompt, prompt_layers = _build_system_prompt(
         history, conversation_id, directives=precog_directives)
