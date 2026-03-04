@@ -607,38 +607,31 @@ class IntentEngine:
         text = message.strip()
 
         # --- Creation actions ---
-        # PLANNING hypothesis above threshold + creation language in message
-        planning_h = hypotheses.get("planning")
-        if (planning_h
-                and planning_h.confidence >= create_thresh
-                and _CREATE_SIGNALS.search(text)):
-            actions.append(RecommendedAction(
-                tool="create_item",
-                params={"entity_type": "feature", "domain": "", "title": ""},
-                confidence=round(planning_h.confidence, 3),
-                reasoning=(
-                    f"Planning hypothesis at {planning_h.confidence:.2f} "
-                    f"with creation language detected"
-                ),
-            ))
+        # R37: Direct create commands get confidence floor from regex match
+        if _CREATE_SIGNALS.search(text):
+            planning_h = hypotheses.get("planning")
+            creative_h = hypotheses.get("creative")
+            best_h = planning_h or creative_h
+            # Explicit create language — floor at threshold so first-turn commands work
+            base_conf = best_h.confidence if best_h else 0.5
+            action_conf = max(base_conf, create_thresh)
 
-        # Creative hypothesis above threshold + creation language
-        creative_h = hypotheses.get("creative")
-        if (creative_h
-                and creative_h.confidence >= create_thresh
-                and _CREATE_SIGNALS.search(text)):
-            actions.append(RecommendedAction(
-                tool="create_item",
-                params={"entity_type": "initiative", "domain": "", "title": ""},
-                confidence=round(creative_h.confidence, 3),
-                reasoning=(
-                    f"Creative hypothesis at {creative_h.confidence:.2f} "
-                    f"with creation language detected"
-                ),
-            ))
+            entity_type = "initiative" if (creative_h and not planning_h) else "feature"
+            if action_conf >= create_thresh:
+                actions.append(RecommendedAction(
+                    tool="create_item",
+                    params={"entity_type": entity_type, "domain": "", "title": ""},
+                    confidence=round(action_conf, 3),
+                    reasoning=(
+                        f"Creation language detected (conf floor applied), "
+                        f"hypothesis={base_conf:.2f}"
+                    ),
+                ))
 
         # --- Update actions (R37: also check soft signals) ---
-        if _UPDATE_SIGNALS.search(text) or _SOFT_UPDATE_SIGNALS.search(text):
+        is_strong_update = bool(_UPDATE_SIGNALS.search(text))
+        is_soft_update = bool(_SOFT_UPDATE_SIGNALS.search(text))
+        if is_strong_update or is_soft_update:
             status_match = _STATUS_EXTRACT.search(text)
             status_val = ""
             if status_match:
@@ -657,15 +650,24 @@ class IntentEngine:
                 }
                 status_val = norm_map.get(raw, raw.replace(" ", "_").replace("-", "_"))
 
-            # Check if any hypothesis is confident enough
+            # R37: Strong explicit commands use regex match as confidence floor.
+            # Soft conversational signals still rely on hypothesis EMA.
             max_conf = max(
                 (h.confidence for h in hypotheses.values()), default=0.0
             )
-            if max_conf >= update_thresh:
+            if is_strong_update and status_val:
+                # Explicit "move X to Y" — high-confidence action regardless of hypothesis
+                action_conf = max(max_conf, 0.8)
+            elif is_strong_update:
+                action_conf = max(max_conf, 0.6)
+            else:
+                action_conf = max_conf
+
+            if action_conf >= update_thresh:
                 actions.append(RecommendedAction(
                     tool="update_item",
                     params={"item_id": "", "status": status_val},
-                    confidence=round(max_conf, 3),
+                    confidence=round(action_conf, 3),
                     reasoning=f"Update language detected with status '{status_val}'",
                 ))
 
