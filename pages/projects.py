@@ -162,6 +162,26 @@ def build_page():
                             work_create_btn = gr.Button("Create Task", variant="primary")
                             work_create_msg = gr.Textbox(show_label=False, interactive=False, scale=2)
 
+                    # Item detail section (shown when clicking item card on Kanban)
+                    with gr.Column(visible=False) as work_item_section:
+                        work_item_id = gr.Textbox(label="ID", interactive=False, max_lines=1)
+                        work_item_title = gr.Textbox(label="Title", interactive=False, scale=3)
+                        with gr.Row():
+                            work_item_status = gr.Dropdown(
+                                label="Status", choices=STATUSES, interactive=True, scale=1
+                            )
+                            work_item_type = gr.Textbox(label="Type", interactive=False, scale=1)
+                            work_item_domain = gr.Textbox(label="Domain", interactive=False, scale=1)
+                        work_item_priority = gr.Slider(
+                            label="Priority", minimum=1, maximum=5, step=1, interactive=True,
+                        )
+                        work_item_desc = gr.Textbox(
+                            label="Description", lines=3, interactive=False
+                        )
+                        with gr.Row():
+                            work_item_save_btn = gr.Button("Save Changes", variant="primary")
+                            work_item_save_msg = gr.Textbox(show_label=False, interactive=False, scale=2)
+
                 with gr.Tab("List View", id="work-list-view") as work_list_tab:
                     gr.Markdown("### All Tasks")
                     all_tasks_table = gr.DataFrame(
@@ -388,6 +408,7 @@ def build_page():
             task.get("description", "") or "",
             task.get("agent_instructions", "") or "",
             "",
+            gr.Column(visible=False),  # hide work_item_section when loading task
         )
 
     selected_task_id.change(
@@ -399,6 +420,7 @@ def build_page():
             work_assigned, work_type, work_priority,
             work_target, work_desc, work_instructions,
             work_save_msg,
+            work_item_section,
         ],
         api_visibility="private",
     )
@@ -441,6 +463,20 @@ def build_page():
             new_task_title, new_task_desc, new_task_target, new_task_instructions,
         ],
         outputs=[work_create_msg, tasks_state, selected_task_id],
+        api_visibility="private",
+    )
+
+    # --- Item detail save (from Kanban card click) ---
+    def _on_work_item_save(item_id, status, priority):
+        if not item_id:
+            return "No item selected"
+        update_item(item_id=item_id, status=status, priority=int(priority))
+        return f"Saved {item_id[:8]}"
+
+    work_item_save_btn.click(
+        _on_work_item_save,
+        inputs=[work_item_id, work_item_status, work_item_priority],
+        outputs=[work_item_save_msg],
         api_visibility="private",
     )
 
@@ -493,24 +529,65 @@ def build_page():
     )
 
     def _on_kanban_select(board_val):
-        """Handle card selection from Kanban — route to item or task detail."""
+        """Handle card selection from Kanban — route to item or task detail.
+
+        Both item and task clicks stay in Work tab. Items show in work_item_section,
+        tasks load via selected_task_id.change into work_detail_section.
+        """
+        SKIP_ALL = (gr.skip(),) * 14
         if not isinstance(board_val, dict):
-            return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+            return SKIP_ALL
         card_id = board_val.get("selected_card", "")
         view_mode = board_val.get("view_mode", "items")
         if not card_id:
-            return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+            return SKIP_ALL
+
         if view_mode == "tasks":
-            # Task detail is in Work tab — stay here, switch to Detail sub-tab
-            return "", card_id, gr.Tabs(selected="work-detail"), gr.skip()
+            # Task: stay in Work, load via selected_task_id.change
+            return (
+                "",                                  # selected_project_id
+                card_id,                             # selected_task_id
+                gr.Tabs(selected="work-detail"),     # work_sub_tabs
+                gr.skip(),                           # main_tabs
+                gr.skip(),                           # work_header
+                gr.skip(),                           # work_detail_section
+                gr.Column(visible=False),            # work_item_section (hide)
+                gr.skip(), gr.skip(), gr.skip(),     # work_item_id, _title, _status
+                gr.skip(), gr.skip(), gr.skip(),     # work_item_type, _domain, _priority
+                gr.skip(),                           # work_item_desc
+            )
         else:
-            # Item detail is in Projects tab — switch main tab to Projects
-            return card_id, "", gr.skip(), gr.Tabs(selected="main-projects")
+            # Item: STAY in Work tab, show item detail in work_item_section
+            item = get_item(card_id)
+            if not item:
+                return SKIP_ALL
+            return (
+                card_id,                             # selected_project_id (cross-ref)
+                "",                                  # selected_task_id
+                gr.Tabs(selected="work-detail"),     # work_sub_tabs
+                gr.skip(),                           # main_tabs (stay in Work)
+                f"## {item['title']}",               # work_header
+                gr.Column(visible=False),            # work_detail_section (hide task)
+                gr.Column(visible=True),             # work_item_section (show item)
+                card_id,                             # work_item_id
+                item.get("title", ""),               # work_item_title
+                item.get("status", ""),              # work_item_status
+                fmt_enum(item.get("entity_type", "")),  # work_item_type
+                fmt_enum(item.get("domain", "")),    # work_item_domain
+                item.get("priority", 3),             # work_item_priority
+                item.get("description", "") or "",   # work_item_desc
+            )
 
     kanban.select(
         fn=_on_kanban_select,
         inputs=[kanban],
-        outputs=[selected_project_id, selected_task_id, work_sub_tabs, main_tabs],
+        outputs=[
+            selected_project_id, selected_task_id, work_sub_tabs, main_tabs,
+            work_header, work_detail_section, work_item_section,
+            work_item_id, work_item_title, work_item_status,
+            work_item_type, work_item_domain, work_item_priority,
+            work_item_desc,
+        ],
         api_visibility="private",
     )
 

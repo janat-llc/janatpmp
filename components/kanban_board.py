@@ -7,6 +7,7 @@ SQLite → returns refreshed board → props.value re-renders. One component, on
 
 R36: Kanban Board
 R36.1: Fix server_functions (not supported on gr.HTML), use trigger('change') pattern
+R36.2: Entity type filter, Done column 14-day recency cap, card click stays in Work tab
 """
 
 import json
@@ -44,6 +45,12 @@ TASK_COLUMNS = [
 # No blocked column for tasks — a blocked task is a symptom of a blocked item.
 # If a task can't proceed, the parent item gets blocked and the task gets failed/dlq'd.
 
+# Entity types excluded from "All Types" board view — containers, not workable items
+BOARD_EXCLUDED_TYPES = {"project", "book", "chapter"}
+
+# Done column only shows items updated within this many days
+DONE_RECENCY_DAYS = 14
+
 
 # ---------------------------------------------------------------------------
 # Data Helpers
@@ -60,6 +67,10 @@ def _age_days(created_at: str) -> int:
 
 def build_board_data(view_mode: str = "items", filters: dict | None = None) -> dict:
     """Build the full board value dict from database state.
+
+    Items view excludes container types (project, book, chapter) by default —
+    override via the type filter dropdown. Done column applies 14-day recency
+    cap and includes total_count for "visible / total" header display.
 
     Args:
         view_mode: "items" or "tasks"
@@ -90,9 +101,13 @@ def build_board_data(view_mode: str = "items", filters: dict | None = None) -> d
         if filters.get("type") and filters["type"] != "all":
             query_kwargs["entity_type"] = filters["type"]
         rows = list_items(**query_kwargs)
+        # Exclude non-workable entity types unless user explicitly filters
+        if not filters.get("type") or filters["type"] == "all":
+            rows = [r for r in rows if r.get("entity_type") not in BOARD_EXCLUDED_TYPES]
 
     # Build column buckets
     col_cards: dict[str, list] = {col_id: [] for col_id, *_ in col_defs}
+    done_total = 0  # Total done items (before recency filter) for header display
 
     for row in rows:
         status = row.get("status", "")
@@ -108,6 +123,18 @@ def build_board_data(view_mode: str = "items", filters: dict | None = None) -> d
                 col_id = "done"
             else:
                 continue
+
+        # Done column: track total count, apply recency filter
+        if col_id == "done":
+            done_total += 1
+            updated = row.get("updated_at", "")
+            if updated:
+                try:
+                    age_days = (datetime.now() - datetime.fromisoformat(updated)).days
+                    if age_days > DONE_RECENCY_DAYS:
+                        continue  # Skip old done items from visible cards
+                except (ValueError, TypeError):
+                    pass  # Parse failure → include the card
 
         age = _age_days(row.get("created_at", ""))
 
@@ -146,6 +173,11 @@ def build_board_data(view_mode: str = "items", filters: dict | None = None) -> d
             "droppable": droppable,
             "cards": cards,
         })
+
+    # Inject total_count for done column header ("7 / 67" display)
+    for col in columns:
+        if col["id"] == "done":
+            col["total_count"] = done_total
 
     return {
         "view_mode": view_mode,
@@ -248,7 +280,7 @@ KANBAN_HTML = """
                 <div class="column-header" style="border-top: 3px solid ${col.color}">
                     <span class="col-title">${col.title}</span>
                     <span class="col-count" style="background: ${col.color}22; color: ${col.color}">
-                        ${col.cards.length}
+                        ${col.total_count != null ? col.cards.length + ' / ' + col.total_count : col.cards.length}
                     </span>
                 </div>
                 <div class="card-list" data-col-id="${col.id}"

@@ -28,10 +28,10 @@ JANATPMP/
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── components/
 │   ├── __init__.py
-│   └── kanban_board.py       # KanbanBoard(gr.HTML) — drag-and-drop Kanban board (R36, ~700 lines)
+│   └── kanban_board.py       # KanbanBoard(gr.HTML) — drag-and-drop Kanban board (R36, ~720 lines)
 ├── pages/
 │   ├── __init__.py
-│   ├── projects.py           # Projects + Work page — sidebar-first layout (~520 lines)
+│   ├── projects.py           # Projects + Work page — sidebar-first layout (~595 lines)
 │   ├── knowledge.py          # Knowledge page — Memory, Connections, Pipeline, Synthesis (~620 lines)
 │   ├── admin.py              # Admin page — Settings, Persona, Operations (~470 lines)
 │   └── chat.py               # Sovereign Chat page — 4 tabs: Chat, Overview, Cognition, Settings
@@ -647,14 +647,14 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
   `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
   handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R36.1)
+## Current Platform State (Post-R36.2)
 
 **Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded.
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`.
 **RAG:** Hybrid FTS + vector, graph-aware ranking, temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval with `created_at` for temporal scoring (R34), intent-gated attribution (R32).
 **Identity:** 11-layer adaptive prompt composer, pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32).
 **Slumber:** 11 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine.
-**UI:** Kanban board (R36) — drag-and-drop card management via `KanbanBoard(gr.HTML)` with `_pending_action` + `trigger('change')` pattern; auto-collapse empty columns; adaptive left sidebar for Kanban view (R36.1).
+**UI:** Kanban board (R36) — drag-and-drop card management via `KanbanBoard(gr.HTML)` with `_pending_action` + `trigger('change')` pattern; auto-collapse empty columns; adaptive left sidebar for Kanban view (R36.1); workable-type filter excludes containers, Done column 14-day recency cap with "visible / total" header, card clicks stay in Work tab (R36.2).
 **Platform:** 84 MCP tools, auto-ingestion, Cognition tab, intent routing (11 categories).
 
 ### Architectural Gaps
