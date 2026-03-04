@@ -69,11 +69,15 @@ CREATE TABLE items (
     -- Additional metadata
     metadata JSON NOT NULL DEFAULT '{}',
     
+    -- Provenance (R38)
+    created_by TEXT NOT NULL DEFAULT 'unknown',
+    modified_by TEXT NOT NULL DEFAULT 'unknown',
+
     -- Temporal tracking
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_activity_at TEXT DEFAULT (datetime('now')),
-    
+
     -- Target dates
     start_date TEXT,
     due_date TEXT,
@@ -207,6 +211,10 @@ CREATE TABLE tasks (
     tokens_used INTEGER,
     cost_usd REAL,
     
+    -- Provenance (R38)
+    created_by TEXT NOT NULL DEFAULT 'unknown',
+    modified_by TEXT NOT NULL DEFAULT 'unknown',
+
     -- Temporal tracking
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     started_at TEXT,
@@ -283,7 +291,11 @@ CREATE TABLE documents (
     
     -- Additional metadata
     metadata JSON NOT NULL DEFAULT '{}',
-    
+
+    -- Provenance (R38)
+    created_by TEXT NOT NULL DEFAULT 'unknown',
+    modified_by TEXT NOT NULL DEFAULT 'unknown',
+
     -- Temporal tracking
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))

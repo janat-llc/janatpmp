@@ -530,7 +530,7 @@ class IntentEngine:
             resolved_title = action.params.get("_resolved_title", "")
 
             if tool == "update_item" and params.get("item_id"):
-                update_item(**params)
+                update_item(**params, actor="janus")
                 status = params.get("status", "")
                 return f"[ACTION] Moved '{resolved_title or params['item_id'][:8]}' to {status}"
 
@@ -543,11 +543,14 @@ class IntentEngine:
                     from db.operations import get_domains
                     domains = get_domains(active_only=True)
                     params["domain"] = domains[0]["name"] if domains else "JANATPMP"
-                new_id = create_item(**params)
+                # R38: Janus-created items enter as 'review' for Weaver approval
+                if not params.get("status") or params["status"] == "not_started":
+                    params["status"] = "review"
+                new_id = create_item(**params, actor="janus")
                 return f"[ACTION] Created item: '{params['title']}' ({new_id[:8]})"
 
             elif tool == "update_task" and params.get("task_id"):
-                update_task(**params)
+                update_task(**params, actor="janus")
                 status = params.get("status", "")
                 return f"[ACTION] Updated task '{resolved_title or params['task_id'][:8]}' → {status}"
 
@@ -555,7 +558,7 @@ class IntentEngine:
                 # Ensure required fields have sensible defaults
                 if not params.get("task_type"):
                     params["task_type"] = "user_story"
-                new_id = create_task(**params)
+                new_id = create_task(**params, actor="janus")
                 return f"[ACTION] Created task: '{params['title']}' ({new_id[:8]})"
 
             else:

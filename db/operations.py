@@ -297,6 +297,16 @@ def init_database():
                 conn.executescript(migration_path.read_text(encoding="utf-8"))
                 logger.info("Applied migration 1.7.0: message roles")
 
+        # Migration 1.8.0: Creator provenance (R38)
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='1.8.0'"
+        )
+        if cursor.fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "1.8.0_creator_provenance.sql"
+            if migration_path.exists():
+                conn.executescript(migration_path.read_text(encoding="utf-8"))
+                logger.info("Applied migration 1.8.0: creator provenance")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.
@@ -460,7 +470,8 @@ def create_item(
     description: str = "",
     status: str = "not_started",
     parent_id: str = "",
-    priority: int = 3
+    priority: int = 3,
+    actor: str = "mat",
 ) -> str:
     """
     Create a new item in the database.
@@ -473,6 +484,7 @@ def create_item(
         status: Status (not_started, planning, in_progress, blocked, review, completed, shipped, archived)
         parent_id: Optional parent item ID for hierarchy
         priority: Priority 1-5 (1=highest, 5=lowest)
+        actor: Who is creating this item (mat, claude, janus, agent, imported)
 
     Returns:
         The ID of the created item
@@ -490,8 +502,8 @@ def create_item(
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO items (entity_type, domain, title, description, status, parent_id, priority, attributes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, '{}')
+            INSERT INTO items (entity_type, domain, title, description, status, parent_id, priority, attributes, created_by, modified_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
         """, (
             entity_type,
             domain,
@@ -500,6 +512,8 @@ def create_item(
             status,
             parent_id if parent_id else None,
             priority,
+            actor,
+            actor,
         ))
         conn.commit()
 
@@ -589,6 +603,7 @@ def update_item(
     priority: int = 0,
     parent_id: str = "",
     entity_type: str = "",
+    actor: str = "mat",
 ) -> str:
     """
     Update an existing item.
@@ -601,6 +616,7 @@ def update_item(
         priority: New priority 1-5 (optional, 0 = no change)
         parent_id: New parent item ID for reparenting (optional, empty string = no change)
         entity_type: New entity type (optional, empty string = no change)
+        actor: Who is making this change (mat, claude, janus, agent, imported)
 
     Returns:
         Success message or error
@@ -610,6 +626,10 @@ def update_item(
 
         updates = []
         params = []
+
+        # R38: Always track who made this change
+        updates.append("modified_by = ?")
+        params.append(actor)
 
         if title:
             updates.append("title = ?")
@@ -670,7 +690,8 @@ def create_task(
     assigned_to: str = "unassigned",
     target_item_id: str = "",
     priority: str = "normal",
-    agent_instructions: str = ""
+    agent_instructions: str = "",
+    actor: str = "mat",
 ) -> str:
     """
     Create a new task.
@@ -683,6 +704,7 @@ def create_task(
         target_item_id: Optional item this task is working on
         priority: Priority (urgent, normal, background)
         agent_instructions: Detailed instructions for agent execution
+        actor: Who is creating this task (mat, claude, janus, agent, imported)
 
     Returns:
         The ID of the created task
@@ -690,8 +712,8 @@ def create_task(
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO tasks (task_type, title, description, assigned_to, target_item_id, priority, agent_instructions)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (task_type, title, description, assigned_to, target_item_id, priority, agent_instructions, created_by, modified_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             task_type,
             title,
@@ -699,7 +721,9 @@ def create_task(
             assigned_to,
             target_item_id if target_item_id else None,
             priority,
-            agent_instructions if agent_instructions else None
+            agent_instructions if agent_instructions else None,
+            actor,
+            actor,
         ))
         conn.commit()
 
@@ -785,7 +809,8 @@ def update_task(
     task_id: str,
     status: str = "",
     assigned_to: str = "",
-    output: str = ""
+    output: str = "",
+    actor: str = "mat",
 ) -> str:
     """
     Update a task.
@@ -795,6 +820,7 @@ def update_task(
         status: New status (optional)
         assigned_to: New assignee (optional)
         output: Task output as JSON string (optional)
+        actor: Who is making this change (mat, claude, janus, agent, imported)
 
     Returns:
         Success message or error
@@ -804,6 +830,10 @@ def update_task(
 
         updates = []
         params = []
+
+        # R38: Always track who made this change
+        updates.append("modified_by = ?")
+        params.append(actor)
 
         if status:
             updates.append("status = ?")
@@ -839,7 +869,8 @@ def create_document(
     doc_type: str,
     source: str,
     title: str,
-    content: str = ""
+    content: str = "",
+    actor: str = "mat",
 ) -> str:
     """
     Create a new document.
@@ -849,6 +880,7 @@ def create_document(
         source: Source (claude_exporter, upload, agent, generated, manual)
         title: Document title
         content: Document content
+        actor: Who is creating this document (mat, claude, janus, agent, imported)
 
     Returns:
         The ID of the created document
@@ -856,13 +888,15 @@ def create_document(
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO documents (doc_type, source, title, content)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO documents (doc_type, source, title, content, created_by, modified_by)
+            VALUES (?, ?, ?, ?, ?, ?)
         """, (
             doc_type,
             source,
             title,
             content if content else None,
+            actor,
+            actor,
         ))
         conn.commit()
 

@@ -175,6 +175,7 @@ def ingest_markdown_documents(directory: str, auto_embed: bool = True) -> dict:
                 source=source,
                 title=title,
                 content=doc["content"],
+                actor="imported",
             )
             existing_titles.add(title)
             imported += 1
@@ -252,6 +253,7 @@ def ingest_quest_documents(directory: str) -> dict:
                 source="upload",
                 title=title,
                 content=content,
+                actor="imported",
             )
             existing_titles.add(title)
             imported += 1

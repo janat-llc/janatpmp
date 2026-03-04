@@ -155,6 +155,7 @@ def persist_synthesis(cluster: dict, synthesis: dict) -> dict:
         source="dream_synthesis",
         title=title,
         content=content,
+        actor="agent",
     )
 
     # 2. Inline chunk + embed

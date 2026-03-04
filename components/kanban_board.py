@@ -146,6 +146,7 @@ def build_board_data(view_mode: str = "items", filters: dict | None = None) -> d
                 "priority": row.get("priority", "normal"),
                 "assigned_to": row.get("assigned_to", ""),
                 "age_days": age,
+                "created_by": row.get("created_by", "unknown"),
             }
         else:
             card = {
@@ -155,6 +156,7 @@ def build_board_data(view_mode: str = "items", filters: dict | None = None) -> d
                 "priority": row.get("priority", 3),
                 "domain": row.get("domain", ""),
                 "age_days": age,
+                "created_by": row.get("created_by", "unknown"),
             }
 
         col_cards[col_id].append(card)
@@ -213,9 +215,9 @@ def move_card(card_id: str, new_column_id: str, view_mode: str, filters_json: st
 
     try:
         if view_mode == "tasks":
-            update_task(card_id, status=new_status)
+            update_task(card_id, status=new_status, actor="mat")
         else:
-            update_item(card_id, status=new_status)
+            update_item(card_id, status=new_status, actor="mat")
         logger.debug("move_card: %s → %s (%s)", card_id[:8], new_status, view_mode)
     except Exception as e:
         logger.warning("move_card failed: %s", e)
@@ -308,6 +310,10 @@ KANBAN_HTML = """
                                     }</span>
                                     ${card.age_days > 0
                                         ? '<span class="card-age">' + card.age_days + 'd</span>'
+                                        : ''
+                                    }
+                                    ${card.created_by && card.created_by !== 'unknown'
+                                        ? '<span class="card-actor actor-' + card.created_by + '">' + card.created_by[0].toUpperCase() + '</span>'
                                         : ''
                                     }
                                 </div>
@@ -560,6 +566,23 @@ KANBAN_CSS = """
         font-size: 10px;
         margin-left: auto;
     }
+    .card-actor {
+        display: inline-block;
+        width: 18px; height: 18px;
+        border-radius: 50%;
+        text-align: center;
+        font-size: 10px;
+        line-height: 18px;
+        font-family: 'Orbitron', monospace;
+        font-weight: bold;
+        margin-left: 4px;
+    }
+    .actor-mat { background: #00FFFF22; color: #00FFFF; border: 1px solid #00FFFF44; }
+    .actor-claude { background: #D4A76A22; color: #D4A76A; border: 1px solid #D4A76A44; }
+    .actor-janus { background: #FF00FF22; color: #FF00FF; border: 1px solid #FF00FF44; }
+    .actor-agent { background: #88888822; color: #888888; border: 1px solid #88888844; }
+    .actor-imported { background: #44444422; color: #666666; border: 1px solid #44444444; }
+    .actor-unknown { display: none; }
 
     /* --- Animations --- */
     @keyframes cardIn {

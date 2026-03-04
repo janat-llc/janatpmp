@@ -578,6 +578,7 @@ def _scan_watched_files() -> dict:
                 source="upload",
                 title=title,
                 content=content,
+                actor="imported",
             )
             ingested += 1
             logger.info("Watched file ingested: %s", filename)

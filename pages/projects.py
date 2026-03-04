@@ -74,6 +74,7 @@ def build_page():
                             detail_type = gr.Textbox(label="Type", interactive=False)
                             detail_domain = gr.Textbox(label="Domain", interactive=False)
                             detail_created = gr.Textbox(label="Created", interactive=False)
+                            detail_created_by = gr.Textbox(label="Created By", interactive=False)
 
                         detail_desc = gr.Textbox(
                             label="Description", lines=4, interactive=True
@@ -137,6 +138,7 @@ def build_page():
                             work_type = gr.Textbox(label="Type", interactive=False)
                             work_priority = gr.Textbox(label="Priority", interactive=False)
                             work_target = gr.Textbox(label="Target Item", interactive=False)
+                            work_created_by = gr.Textbox(label="Created By", interactive=False)
 
                         work_desc = gr.Textbox(
                             label="Description", lines=3, interactive=False
@@ -172,6 +174,7 @@ def build_page():
                             )
                             work_item_type = gr.Textbox(label="Type", interactive=False, scale=1)
                             work_item_domain = gr.Textbox(label="Domain", interactive=False, scale=1)
+                            work_item_created_by = gr.Textbox(label="Created By", interactive=False, scale=1)
                         work_item_priority = gr.Slider(
                             label="Priority", minimum=1, maximum=5, step=1, interactive=True,
                         )
@@ -323,6 +326,7 @@ def build_page():
             fmt_enum(item.get("domain", "")),
             item.get("priority", 3),
             item.get("created_at", "")[:16] if item.get("created_at") else "",
+            item.get("created_by", "unknown"),
             item.get("description", "") or "",
             "",
             _children_df(item_id),
@@ -336,7 +340,7 @@ def build_page():
             detail_header, detail_section, create_section,
             detail_id_display, detail_title, detail_status,
             detail_type, detail_domain, detail_priority,
-            detail_created, detail_desc, save_msg,
+            detail_created, detail_created_by, detail_desc, save_msg,
             children_table,
             projects_sub_tabs,
         ],
@@ -405,6 +409,7 @@ def build_page():
             fmt_enum(task.get("task_type", "")),
             fmt_enum(task.get("priority", "")),
             task.get("target_item_id", "")[:8] if task.get("target_item_id") else "",
+            task.get("created_by", "unknown"),
             task.get("description", "") or "",
             task.get("agent_instructions", "") or "",
             "",
@@ -418,7 +423,7 @@ def build_page():
             work_header, work_detail_section, work_create_section,
             work_id_display, work_title, work_status,
             work_assigned, work_type, work_priority,
-            work_target, work_desc, work_instructions,
+            work_target, work_created_by, work_desc, work_instructions,
             work_save_msg,
             work_item_section,
         ],
@@ -534,7 +539,7 @@ def build_page():
         Both item and task clicks stay in Work tab. Items show in work_item_section,
         tasks load via selected_task_id.change into work_detail_section.
         """
-        SKIP_ALL = (gr.skip(),) * 14
+        SKIP_ALL = (gr.skip(),) * 15
         if not isinstance(board_val, dict):
             return SKIP_ALL
         card_id = board_val.get("selected_card", "")
@@ -553,7 +558,8 @@ def build_page():
                 gr.skip(),                           # work_detail_section
                 gr.Column(visible=False),            # work_item_section (hide)
                 gr.skip(), gr.skip(), gr.skip(),     # work_item_id, _title, _status
-                gr.skip(), gr.skip(), gr.skip(),     # work_item_type, _domain, _priority
+                gr.skip(), gr.skip(), gr.skip(),     # work_item_type, _domain, _created_by
+                gr.skip(),                           # work_item_priority
                 gr.skip(),                           # work_item_desc
             )
         else:
@@ -574,6 +580,7 @@ def build_page():
                 item.get("status", ""),              # work_item_status
                 fmt_enum(item.get("entity_type", "")),  # work_item_type
                 fmt_enum(item.get("domain", "")),    # work_item_domain
+                item.get("created_by", "unknown"),   # work_item_created_by
                 item.get("priority", 3),             # work_item_priority
                 item.get("description", "") or "",   # work_item_desc
             )
@@ -585,8 +592,8 @@ def build_page():
             selected_project_id, selected_task_id, work_sub_tabs, main_tabs,
             work_header, work_detail_section, work_item_section,
             work_item_id, work_item_title, work_item_status,
-            work_item_type, work_item_domain, work_item_priority,
-            work_item_desc,
+            work_item_type, work_item_domain, work_item_created_by,
+            work_item_priority, work_item_desc,
         ],
         api_visibility="private",
     )
