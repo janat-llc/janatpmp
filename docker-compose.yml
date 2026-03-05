@@ -11,6 +11,7 @@ services:
       - GRADIO_SERVER_NAME=0.0.0.0
       - GRADIO_MCP_SERVER=True
       - HF_TOKEN=${HF_TOKEN}
+      - CEREBELLUM_EXTERNAL=true
     depends_on:
       - ollama
       - janatpmp-qdrant
@@ -92,6 +93,23 @@ services:
       - neo4j_data:/data
     environment:
       - NEO4J_AUTH=neo4j/janatpmp_graph
+    restart: unless-stopped
+    networks:
+      - janatpmp_network
+
+  # R41: Cerebellum — autonomous background intelligence process
+  # Runs the Slumber Cycle continuously, independent of the UI process.
+  cerebellum:
+    build: .
+    container_name: janatpmp-cerebellum
+    command: python cerebellum.py
+    volumes:
+      - .:/app
+      - C:\Janat\Claude\Claude_Export:/data/claude_export:ro
+    depends_on:
+      - ollama
+      - janatpmp-qdrant
+      - neo4j
     restart: unless-stopped
     networks:
       - janatpmp_network

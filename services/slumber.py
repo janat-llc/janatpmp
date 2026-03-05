@@ -96,7 +96,10 @@ def get_slumber_status() -> dict:
 
     Returns the live state of the background Slumber daemon including
     current activity state, last cycle timestamp, evaluation counts,
-    and any recent errors. Thread-safe read (Python GIL).
+    and any recent errors.
+
+    If Slumber runs in-process (daemon thread), returns the live dict.
+    If Slumber runs externally (cerebellum container), reads from SQLite.
 
     Returns:
         Dict with keys: state, last_cycle_at, last_evaluated,
@@ -106,7 +109,47 @@ def get_slumber_status() -> dict:
         last_cooccurred, total_cooccurred, last_decayed, total_decayed,
         error.
     """
-    return dict(_slumber_status)
+    # R41: In-process mode — return live dict
+    if _slumber_thread is not None:
+        return dict(_slumber_status)
+    # R41: External mode (cerebellum) — read from SQLite
+    try:
+        from services.settings import get_setting
+        raw = get_setting("slumber_status")
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    return {"state": "offline", "error": "Slumber not running"}
+
+
+def _persist_status_to_db() -> None:
+    """R41: Write current Slumber status to SQLite for cross-process visibility."""
+    try:
+        from services.settings import set_setting
+        # Public status (what get_slumber_status returns)
+        public = {k: v for k, v in _slumber_status.items() if not k.startswith("_")}
+        set_setting("slumber_status", json.dumps(public))
+        # Cycle counters (for restart resilience)
+        counters = {k: v for k, v in _slumber_status.items() if k.startswith("_")}
+        set_setting("slumber_counters", json.dumps(counters))
+    except Exception as e:
+        logger.debug("Failed to persist slumber status: %s", e)
+
+
+def _restore_counters_from_db() -> None:
+    """R41: Restore cycle counters from SQLite on startup."""
+    try:
+        from services.settings import get_setting
+        raw = get_setting("slumber_counters")
+        if raw:
+            counters = json.loads(raw)
+            for k, v in counters.items():
+                if k.startswith("_") and k in _slumber_status:
+                    _slumber_status[k] = v
+            logger.info("Restored Slumber counters from DB")
+    except Exception as e:
+        logger.debug("Failed to restore slumber counters: %s", e)
 
 
 def _is_idle() -> bool:
@@ -324,11 +367,31 @@ def _evaluate_batch() -> int:
     return evaluated
 
 
+def _quality_salience_floor(quality: float) -> float:
+    """R41: Compute salience floor from quality_score.
+
+    High-quality content maintains proportional permanence.
+    Decay still runs — it just can't push below the floor.
+    """
+    if quality >= 0.9:
+        return 0.9
+    elif quality >= 0.8:
+        return 0.7
+    elif quality >= 0.7:
+        return 0.6
+    elif quality >= 0.5:
+        return 0.3
+    return 0.0
+
+
 def _propagate_batch():
     """Bridge quality_score → Qdrant salience.
 
     Reads messages_metadata where quality_score is set but salience not yet synced.
     Applies multiplier based on quality range, writes to Qdrant payload.
+    R41: Enforces quality-based salience floor so high-quality content can't decay
+    below its floor. Stores salience_floor in Qdrant payload for enforcement by
+    write_usage_salience().
     """
     from db.operations import get_connection
     from db.chat_operations import update_message_metadata
@@ -402,18 +465,25 @@ def _propagate_batch():
         elif quality > 0.7:
             new_salience = min(1.0, current_salience + 0.1)  # Boost
         else:
-            # Neutral range (0.4-0.7): mark as synced but don't change
+            new_salience = current_salience               # Neutral (0.4-0.7)
+
+        # R41: Decay immunity — enforce quality-based salience floor
+        floor = _quality_salience_floor(quality)
+        new_salience = round(min(1.0, max(0.0, new_salience)), 4)
+        new_salience = max(new_salience, floor)
+
+        # Skip Qdrant write if salience unchanged
+        if abs(new_salience - current_salience) < 0.0001:
             update_message_metadata(message_id=msg_id, salience_synced=1)
             propagated += 1
             continue
 
-        new_salience = round(max(0.0, min(1.0, new_salience)), 4)
-
         try:
             # R16: propagate salience to ALL chunk points of this message
+            # R41: Include salience_floor for enforcement by write_usage_salience()
             client.set_payload(
                 collection_name=COLLECTION_MESSAGES,
-                payload={"salience": new_salience},
+                payload={"salience": new_salience, "salience_floor": floor},
                 points=point_ids,
             )
             update_message_metadata(message_id=msg_id, salience_synced=1)
@@ -613,12 +683,13 @@ def _ingest_scan():
         logger.info("Slumber ingest scan: %s", result)
 
 
-def _should_dream() -> bool:
+def _should_dream(skip_idle_gate: bool = False) -> bool:
     """Check if dream synthesis should run this cycle.
 
     Gated by deep idle (10 min) — Gemini-heavy phase.
-    Counter is advanced in _slumber_cycle() before this is called,
+    Counter is advanced in _run_one_cycle() before this is called,
     shared with _should_weave().
+    R41: skip_idle_gate bypasses deep-idle check for cerebellum mode.
     """
     from services.settings import get_setting
     from atlas.config import DREAM_CYCLE_INTERVAL
@@ -628,7 +699,8 @@ def _should_dream() -> bool:
         return False
 
     # R31: Deep idle guard — skip Gemini-heavy phase during light idle
-    if not _is_deep_idle():
+    # R41: Cerebellum mode bypasses this gate
+    if not skip_idle_gate and not _is_deep_idle():
         return False
 
     return _slumber_status["_cycle_count"] % DREAM_CYCLE_INTERVAL == 0
@@ -677,12 +749,13 @@ def _weave_batch():
         )
 
 
-def _should_extract() -> bool:
+def _should_extract(skip_idle_gate: bool = False) -> bool:
     """Check if entity extraction should run this cycle.
 
     Uses its own counter (_extract_cycle_count) independent of dream/weave
     so intervals don't interfere with each other.
     Gated by deep idle (10 min) — Gemini-heavy phase.
+    R41: skip_idle_gate bypasses deep-idle check for cerebellum mode.
     """
     from services.settings import get_setting
     from atlas.config import EXTRACTION_CYCLE_INTERVAL
@@ -692,7 +765,8 @@ def _should_extract() -> bool:
         return False
 
     # R31: Deep idle guard — skip Gemini-heavy phase during light idle
-    if not _is_deep_idle():
+    # R41: Cerebellum mode bypasses this gate
+    if not skip_idle_gate and not _is_deep_idle():
         return False
 
     _slumber_status["_extract_cycle_count"] = _slumber_status.get(
@@ -761,14 +835,18 @@ def _entity_decay_batch():
         logger.info("Slumber entity decay: %d entities processed", count)
 
 
-def _should_mine_register() -> bool:
-    """Check if register mining should run this cycle (R32)."""
+def _should_mine_register(skip_idle_gate: bool = False) -> bool:
+    """Check if register mining should run this cycle (R32).
+
+    R41: skip_idle_gate bypasses deep-idle check for cerebellum mode.
+    """
     from atlas.config import REGISTER_MINING_CYCLE_INTERVAL
     from services.settings import get_setting
     enabled = get_setting("register_mining_enabled") != "false"
     if not enabled:
         return False
-    if not _is_deep_idle():
+    # R41: Cerebellum mode bypasses this gate
+    if not skip_idle_gate and not _is_deep_idle():
         return False
     _slumber_status["_mine_cycle_count"] = _slumber_status.get(
         "_mine_cycle_count", REGISTER_MINING_CYCLE_INTERVAL - 1
@@ -789,130 +867,143 @@ def _register_mine_batch():
         logger.info("Slumber register mining: %d exemplars processed", count)
 
 
+def _run_one_cycle(skip_idle_gate: bool = False) -> None:
+    """Execute one complete Slumber cycle (11 sub-cycles).
+
+    R41: Extracted from _slumber_cycle() so both the daemon thread and
+    the cerebellum container can call the same logic.
+
+    Args:
+        skip_idle_gate: If True, skip idle/deep-idle checks (cerebellum mode).
+    """
+    if not skip_idle_gate and not _is_idle():
+        _slumber_status["state"] = "idle"
+        return
+
+    _slumber_status["error"] = ""
+
+    # Sub-cycle 0: Ingest scan (new content → chunks → embeddings)
+    # Runs FIRST so newly ingested content gets full Slumber processing
+    # in the same cycle (evaluate, propagate, relate, prune).
+    _slumber_status["state"] = "ingesting"
+    try:
+        _ingest_scan()
+    except Exception as e:
+        _slumber_status["error"] = str(e)
+        logger.warning("Slumber ingest scan error: %s", e)
+
+    # Sub-cycle 1: Evaluate (score unscored messages)
+    _slumber_status["state"] = "evaluating"
+    try:
+        count = _evaluate_batch()
+        _slumber_status["last_evaluated"] = count
+        _slumber_status["total_evaluated"] += count
+        try:
+            from services.settings import get_setting
+            use_llm = (get_setting("slumber_eval_enabled") or "true").lower() == "true"
+            _slumber_status["eval_method"] = "gemini" if use_llm else "heuristic"
+        except Exception:
+            pass
+    except Exception as e:
+        _slumber_status["error"] = str(e)
+        logger.error("Slumber evaluate error: %s", e)
+
+    # Sub-cycle 2: Propagate (quality → Qdrant salience)
+    _slumber_status["state"] = "propagating"
+    try:
+        _propagate_batch()
+    except Exception as e:
+        _slumber_status["error"] = str(e)
+        logger.warning("Slumber propagate error: %s", e)
+
+    # Sub-cycle 3: Relate (SIMILAR_TO edges via keyword overlap)
+    _slumber_status["state"] = "relating"
+    try:
+        _relate_batch()
+    except Exception as e:
+        _slumber_status["error"] = str(e)
+        logger.warning("Slumber relate error: %s", e)
+
+    # Sub-cycle 4: Prune (remove dead-weight from Qdrant)
+    _slumber_status["state"] = "pruning"
+    try:
+        _prune_batch()
+    except Exception as e:
+        _slumber_status["error"] = str(e)
+        logger.warning("Slumber prune error: %s", e)
+
+    # Sub-cycle 5: Entity Extraction (R29)
+    if _should_extract(skip_idle_gate=skip_idle_gate):
+        _slumber_status["state"] = "extracting"
+        try:
+            _extract_batch()
+        except Exception as e:
+            _slumber_status["error"] = str(e)
+            logger.warning("Slumber extraction error: %s", e)
+
+    # Advance shared cycle counter for dream/weave interval gating.
+    # Placed here (not inside _should_dream) so _should_weave can
+    # read the same counter reliably even when dream is skipped.
+    from atlas.config import DREAM_CYCLE_INTERVAL
+    _slumber_status["_cycle_count"] = _slumber_status.get(
+        "_cycle_count", DREAM_CYCLE_INTERVAL - 1
+    ) + 1
+
+    # Sub-cycle 6: Dream Synthesis (R24)
+    if _should_dream(skip_idle_gate=skip_idle_gate):
+        _slumber_status["state"] = "dreaming"
+        try:
+            _dream_batch()
+        except Exception as e:
+            _slumber_status["error"] = str(e)
+            logger.warning("Slumber dream error: %s", e)
+
+    # Sub-cycle 7: Graph Weave (R27)
+    if _should_weave():
+        _slumber_status["state"] = "weaving"
+        try:
+            _weave_batch()
+        except Exception as e:
+            _slumber_status["error"] = str(e)
+            logger.warning("Slumber weave error: %s", e)
+
+    # Sub-cycle 8: Entity Co-occurrence Linking (R31)
+    if _should_cooccur():
+        _slumber_status["state"] = "linking"
+        try:
+            _cooccur_batch()
+        except Exception as e:
+            _slumber_status["error"] = str(e)
+            logger.warning("Slumber co-occurrence error: %s", e)
+
+    # Sub-cycle 9: Entity Salience Decay (R31)
+    if _should_entity_decay():
+        _slumber_status["state"] = "decaying"
+        try:
+            _entity_decay_batch()
+        except Exception as e:
+            _slumber_status["error"] = str(e)
+            logger.warning("Slumber entity decay error: %s", e)
+
+    # Sub-cycle 10: Register Mining (R32)
+    if _should_mine_register(skip_idle_gate=skip_idle_gate):
+        _slumber_status["state"] = "mining"
+        try:
+            _register_mine_batch()
+        except Exception as e:
+            _slumber_status["error"] = str(e)
+            logger.warning("Slumber register mining error: %s", e)
+
+    _slumber_status["state"] = "idle"
+    _slumber_status["last_cycle_at"] = datetime.now().isoformat()
+    _persist_status_to_db()
+
+
 def _slumber_cycle():
-    """Background thread: Ingest → Evaluate → Propagate → Relate → Prune → Extract → Dream → Weave → Link → Decay → Mine during idle."""
+    """Background thread: runs _run_one_cycle in a loop during idle."""
     while True:
         time.sleep(CYCLE_INTERVAL_SECONDS)
-        if not _is_idle():
-            _slumber_status["state"] = "idle"
-            continue
-
-        _slumber_status["error"] = ""
-
-        # Sub-cycle 0: Ingest scan (new content → chunks → embeddings)
-        # Runs FIRST so newly ingested content gets full Slumber processing
-        # in the same cycle (evaluate, propagate, relate, prune).
-        _slumber_status["state"] = "ingesting"
-        try:
-            _ingest_scan()
-        except Exception as e:
-            _slumber_status["error"] = str(e)
-            logger.warning("Slumber ingest scan error: %s", e)
-
-        # Sub-cycle 1: Evaluate (score unscored messages)
-        _slumber_status["state"] = "evaluating"
-        try:
-            count = _evaluate_batch()
-            _slumber_status["last_evaluated"] = count
-            _slumber_status["total_evaluated"] += count
-            try:
-                from services.settings import get_setting
-                use_llm = (get_setting("slumber_eval_enabled") or "true").lower() == "true"
-                _slumber_status["eval_method"] = "gemini" if use_llm else "heuristic"
-            except Exception:
-                pass
-        except Exception as e:
-            _slumber_status["error"] = str(e)
-            logger.error("Slumber evaluate error: %s", e)
-
-        # Sub-cycle 2: Propagate (quality → Qdrant salience)
-        _slumber_status["state"] = "propagating"
-        try:
-            _propagate_batch()
-        except Exception as e:
-            _slumber_status["error"] = str(e)
-            logger.warning("Slumber propagate error: %s", e)
-
-        # Sub-cycle 3: Relate (SIMILAR_TO edges via keyword overlap)
-        _slumber_status["state"] = "relating"
-        try:
-            _relate_batch()
-        except Exception as e:
-            _slumber_status["error"] = str(e)
-            logger.warning("Slumber relate error: %s", e)
-
-        # Sub-cycle 4: Prune (remove dead-weight from Qdrant)
-        _slumber_status["state"] = "pruning"
-        try:
-            _prune_batch()
-        except Exception as e:
-            _slumber_status["error"] = str(e)
-            logger.warning("Slumber prune error: %s", e)
-
-        # Sub-cycle 5: Entity Extraction (R29)
-        if _should_extract():
-            _slumber_status["state"] = "extracting"
-            try:
-                _extract_batch()
-            except Exception as e:
-                _slumber_status["error"] = str(e)
-                logger.warning("Slumber extraction error: %s", e)
-
-        # Advance shared cycle counter for dream/weave interval gating.
-        # Placed here (not inside _should_dream) so _should_weave can
-        # read the same counter reliably even when dream is skipped.
-        from atlas.config import DREAM_CYCLE_INTERVAL
-        _slumber_status["_cycle_count"] = _slumber_status.get(
-            "_cycle_count", DREAM_CYCLE_INTERVAL - 1
-        ) + 1
-
-        # Sub-cycle 6: Dream Synthesis (R24)
-        if _should_dream():
-            _slumber_status["state"] = "dreaming"
-            try:
-                _dream_batch()
-            except Exception as e:
-                _slumber_status["error"] = str(e)
-                logger.warning("Slumber dream error: %s", e)
-
-        # Sub-cycle 7: Graph Weave (R27)
-        if _should_weave():
-            _slumber_status["state"] = "weaving"
-            try:
-                _weave_batch()
-            except Exception as e:
-                _slumber_status["error"] = str(e)
-                logger.warning("Slumber weave error: %s", e)
-
-        # Sub-cycle 8: Entity Co-occurrence Linking (R31)
-        if _should_cooccur():
-            _slumber_status["state"] = "linking"
-            try:
-                _cooccur_batch()
-            except Exception as e:
-                _slumber_status["error"] = str(e)
-                logger.warning("Slumber co-occurrence error: %s", e)
-
-        # Sub-cycle 9: Entity Salience Decay (R31)
-        if _should_entity_decay():
-            _slumber_status["state"] = "decaying"
-            try:
-                _entity_decay_batch()
-            except Exception as e:
-                _slumber_status["error"] = str(e)
-                logger.warning("Slumber entity decay error: %s", e)
-
-        # Sub-cycle 10: Register Mining (R32)
-        if _should_mine_register():
-            _slumber_status["state"] = "mining"
-            try:
-                _register_mine_batch()
-            except Exception as e:
-                _slumber_status["error"] = str(e)
-                logger.warning("Slumber register mining error: %s", e)
-
-        _slumber_status["state"] = "idle"
-        _slumber_status["last_cycle_at"] = datetime.now().isoformat()
+        _run_one_cycle(skip_idle_gate=False)
 
 
 def start_slumber():

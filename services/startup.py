@@ -159,8 +159,13 @@ def initialize_services() -> None:
         logger.warning("Qdrant not available -- vector search disabled")
 
     # Slumber Cycle daemon (background cognitive telemetry)
-    from services.slumber import start_slumber
-    start_slumber()
+    # R41: When cerebellum container handles Slumber, skip in-process daemon
+    import os
+    if os.getenv("CEREBELLUM_EXTERNAL", "").lower() == "true":
+        logger.info("Slumber daemon skipped — handled by cerebellum container")
+    else:
+        from services.slumber import start_slumber
+        start_slumber()
 
     # Neo4j graph schema + CDC consumer
     try:

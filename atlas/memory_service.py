@@ -101,10 +101,15 @@ def write_usage_salience(collection: str, usage_results: list[dict]):
             else:
                 current_salience = SALIENCE_DEFAULT
 
+            # R41: Read quality-based salience floor from Qdrant payload
+            floor = retrieved[0].payload.get("salience_floor", 0.0) if retrieved else 0.0
+
             if usage_score > 0.3:
                 new_salience = min(1.0, current_salience + (usage_score * SALIENCE_USAGE_RATE))
             elif usage_score < 0.1:
                 new_salience = max(0.0, current_salience - SALIENCE_DECAY_RATE)
+                # R41: Decay immunity — respect quality-based floor
+                new_salience = max(new_salience, floor)
             else:
                 continue  # Neutral zone — no adjustment
 
