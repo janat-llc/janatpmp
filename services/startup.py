@@ -124,6 +124,15 @@ def initialize_core() -> None:
     if total_created:
         logger.info("Metadata bootstrap: created %d rows", total_created)
 
+    # R40: Rebuild FTS indexes if out of sync (imported messages may have gaps)
+    from db.chat_operations import rebuild_messages_fts, rebuild_documents_fts
+    fts_msg = rebuild_messages_fts()
+    if "Rebuilt" in fts_msg:
+        logger.info("FTS: %s", fts_msg)
+    fts_doc = rebuild_documents_fts()
+    if "Rebuilt" in fts_doc:
+        logger.info("FTS: %s", fts_doc)
+
     logger.info("Core initialized: database, settings, Janus conversation")
 
 

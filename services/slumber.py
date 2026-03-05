@@ -250,51 +250,77 @@ def _evaluate_batch() -> int:
         return 0
 
     evaluated = 0
+    errors = 0
     for row in rows:
         msg_id = row["message_id"]
-        user_prompt = row["user_prompt"] or ""
-        model_response = row["model_response"] or ""
-        model_reasoning = row["model_reasoning"] or ""
+        try:
+            user_prompt = row["user_prompt"] or ""
+            model_response = row["model_response"] or ""
+            model_reasoning = row["model_reasoning"] or ""
 
-        if use_llm:
-            from services.slumber_eval import evaluate_message
-            result = evaluate_message(user_prompt, model_response, model_reasoning)
-            quality = result["quality_score"]
-            keywords_from_topics = result.get("topics", [])
-        else:
-            quality = _score_heuristic(user_prompt, model_response, model_reasoning)
-            result = {
-                "fallback": True, "rationale": "", "topics": [],
-                "emotional_register": "", "eval_provider": "heuristic",
-                "eval_model": "",
-            }
-            keywords_from_topics = []
+            # R40: Skip empty messages (imports sometimes have blank fields)
+            if not model_response and not user_prompt:
+                update_message_metadata(
+                    message_id=msg_id, quality_score=0.0,
+                    eval_rationale="Empty message — no content to evaluate",
+                    eval_provider="skip",
+                )
+                evaluated += 1
+                continue
 
-        # Extract TF keywords, merge with LLM topics (LLM first, TF fills)
-        combined_text = f"{user_prompt} {model_response}"
-        tf_keywords = _extract_keywords(combined_text, top_n=10)
-        merged_keywords = keywords_from_topics + [
-            k for k in tf_keywords if k not in keywords_from_topics
-        ]
+            if use_llm:
+                from services.slumber_eval import evaluate_message
+                result = evaluate_message(user_prompt, model_response, model_reasoning)
+                quality = result["quality_score"]
+                keywords_from_topics = result.get("topics", [])
+            else:
+                quality = _score_heuristic(user_prompt, model_response, model_reasoning)
+                result = {
+                    "fallback": True, "rationale": "", "topics": [],
+                    "emotional_register": "", "eval_provider": "heuristic",
+                    "eval_model": "",
+                }
+                keywords_from_topics = []
 
-        # Update metadata with quality score + evaluation details
-        update_message_metadata(
-            message_id=msg_id,
-            quality_score=quality,
-            keywords=json.dumps(merged_keywords[:10]),
-            eval_rationale=result.get("rationale", ""),
-            eval_emotional_register=result.get("emotional_register", ""),
-            eval_provider=result.get("eval_provider", ""),
-            eval_model=result.get("eval_model", ""),
-        )
-        evaluated += 1
+            # Extract TF keywords, merge with LLM topics (LLM first, TF fills)
+            combined_text = f"{user_prompt} {model_response}"
+            tf_keywords = _extract_keywords(combined_text, top_n=10)
+            merged_keywords = keywords_from_topics + [
+                k for k in tf_keywords if k not in keywords_from_topics
+            ]
 
-        # Rate limiting: 0.5s between LLM calls within a batch
-        if use_llm and not result.get("fallback", False):
-            time.sleep(0.5)
+            # Update metadata with quality score + evaluation details
+            update_message_metadata(
+                message_id=msg_id,
+                quality_score=quality,
+                keywords=json.dumps(merged_keywords[:10]),
+                eval_rationale=result.get("rationale", ""),
+                eval_emotional_register=result.get("emotional_register", ""),
+                eval_provider=result.get("eval_provider", ""),
+                eval_model=result.get("eval_model", ""),
+            )
+            evaluated += 1
+
+            # Rate limiting: 0.5s between LLM calls within a batch
+            if use_llm and not result.get("fallback", False):
+                time.sleep(0.5)
+
+        except Exception as e:
+            logger.warning("Slumber evaluate: failed for %s: %s", msg_id[:12], e)
+            errors += 1
+            # R40: Mark as 0.0 to prevent infinite re-processing of same broken message
+            try:
+                update_message_metadata(
+                    message_id=msg_id, quality_score=0.0,
+                    eval_rationale=f"Evaluation error: {str(e)[:200]}",
+                    eval_provider="error",
+                )
+            except Exception:
+                pass
 
     method = "gemini" if use_llm else "heuristic"
-    logger.info("Slumber cycle: evaluated %d messages (method=%s)", evaluated, method)
+    logger.info("Slumber cycle: evaluated %d messages, %d errors (method=%s)",
+                evaluated, errors, method)
     return evaluated
 
 
@@ -326,7 +352,7 @@ def _propagate_batch():
         from services.vector_store import _get_client, COLLECTION_MESSAGES
         client = _get_client()
     except Exception as e:
-        logger.debug("Slumber propagate: Qdrant unavailable: %s", e)
+        logger.warning("Slumber propagate: Qdrant unavailable: %s", e)
         return
 
     propagated = 0
@@ -393,7 +419,7 @@ def _propagate_batch():
             update_message_metadata(message_id=msg_id, salience_synced=1)
             propagated += 1
         except Exception as e:
-            logger.debug("Slumber propagate: failed for %s: %s", msg_id[:12], e)
+            logger.warning("Slumber propagate: failed for %s: %s", msg_id[:12], e)
 
     if propagated:
         logger.info("Slumber propagate: synced %d messages", propagated)
@@ -781,7 +807,7 @@ def _slumber_cycle():
             _ingest_scan()
         except Exception as e:
             _slumber_status["error"] = str(e)
-            logger.debug("Slumber ingest scan error: %s", e)
+            logger.warning("Slumber ingest scan error: %s", e)
 
         # Sub-cycle 1: Evaluate (score unscored messages)
         _slumber_status["state"] = "evaluating"
@@ -805,7 +831,7 @@ def _slumber_cycle():
             _propagate_batch()
         except Exception as e:
             _slumber_status["error"] = str(e)
-            logger.debug("Slumber propagate error: %s", e)
+            logger.warning("Slumber propagate error: %s", e)
 
         # Sub-cycle 3: Relate (SIMILAR_TO edges via keyword overlap)
         _slumber_status["state"] = "relating"
@@ -813,7 +839,7 @@ def _slumber_cycle():
             _relate_batch()
         except Exception as e:
             _slumber_status["error"] = str(e)
-            logger.debug("Slumber relate error: %s", e)
+            logger.warning("Slumber relate error: %s", e)
 
         # Sub-cycle 4: Prune (remove dead-weight from Qdrant)
         _slumber_status["state"] = "pruning"
@@ -821,7 +847,7 @@ def _slumber_cycle():
             _prune_batch()
         except Exception as e:
             _slumber_status["error"] = str(e)
-            logger.debug("Slumber prune error: %s", e)
+            logger.warning("Slumber prune error: %s", e)
 
         # Sub-cycle 5: Entity Extraction (R29)
         if _should_extract():
@@ -830,7 +856,7 @@ def _slumber_cycle():
                 _extract_batch()
             except Exception as e:
                 _slumber_status["error"] = str(e)
-                logger.debug("Slumber extraction error: %s", e)
+                logger.warning("Slumber extraction error: %s", e)
 
         # Advance shared cycle counter for dream/weave interval gating.
         # Placed here (not inside _should_dream) so _should_weave can
@@ -847,7 +873,7 @@ def _slumber_cycle():
                 _dream_batch()
             except Exception as e:
                 _slumber_status["error"] = str(e)
-                logger.debug("Slumber dream error: %s", e)
+                logger.warning("Slumber dream error: %s", e)
 
         # Sub-cycle 7: Graph Weave (R27)
         if _should_weave():
@@ -856,7 +882,7 @@ def _slumber_cycle():
                 _weave_batch()
             except Exception as e:
                 _slumber_status["error"] = str(e)
-                logger.debug("Slumber weave error: %s", e)
+                logger.warning("Slumber weave error: %s", e)
 
         # Sub-cycle 8: Entity Co-occurrence Linking (R31)
         if _should_cooccur():
@@ -865,7 +891,7 @@ def _slumber_cycle():
                 _cooccur_batch()
             except Exception as e:
                 _slumber_status["error"] = str(e)
-                logger.debug("Slumber co-occurrence error: %s", e)
+                logger.warning("Slumber co-occurrence error: %s", e)
 
         # Sub-cycle 9: Entity Salience Decay (R31)
         if _should_entity_decay():
@@ -874,7 +900,7 @@ def _slumber_cycle():
                 _entity_decay_batch()
             except Exception as e:
                 _slumber_status["error"] = str(e)
-                logger.debug("Slumber entity decay error: %s", e)
+                logger.warning("Slumber entity decay error: %s", e)
 
         # Sub-cycle 10: Register Mining (R32)
         if _should_mine_register():
@@ -883,7 +909,7 @@ def _slumber_cycle():
                 _register_mine_batch()
             except Exception as e:
                 _slumber_status["error"] = str(e)
-                logger.debug("Slumber register mining error: %s", e)
+                logger.warning("Slumber register mining error: %s", e)
 
         _slumber_status["state"] = "idle"
         _slumber_status["last_cycle_at"] = datetime.now().isoformat()

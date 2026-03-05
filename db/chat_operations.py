@@ -1011,3 +1011,74 @@ def get_janus_stream(limit: int = 20) -> list:
     """
     janus_id = get_or_create_janus_conversation()
     return get_conversation_stream(janus_id, limit=limit)
+
+
+# =============================================================================
+# FTS INDEX MAINTENANCE (R40)
+# =============================================================================
+
+def rebuild_messages_fts() -> str:
+    """Rebuild messages_fts from scratch if out of sync.
+
+    Imported messages sometimes bypass FTS triggers, leaving the FTS index
+    incomplete. This detects the gap and rebuilds if needed. Idempotent —
+    safe to call on every startup.
+
+    Returns:
+        Status message with counts.
+    """
+    with get_connection() as conn:
+        msg_count = conn.execute(
+            "SELECT COUNT(*) as c FROM messages"
+        ).fetchone()["c"]
+        fts_count = conn.execute(
+            "SELECT COUNT(*) as c FROM messages_fts"
+        ).fetchone()["c"]
+
+        if msg_count == fts_count:
+            return f"FTS messages in sync ({msg_count} rows)"
+
+        conn.execute("DELETE FROM messages_fts")
+        conn.execute("""
+            INSERT INTO messages_fts(id, conversation_id, user_prompt, model_response)
+            SELECT id, conversation_id, user_prompt, model_response FROM messages
+        """)
+        conn.commit()
+
+        new_count = conn.execute(
+            "SELECT COUNT(*) as c FROM messages_fts"
+        ).fetchone()["c"]
+        return f"Rebuilt messages_fts: {fts_count} -> {new_count}"
+
+
+def rebuild_documents_fts() -> str:
+    """Rebuild documents_fts from scratch if out of sync.
+
+    Same pattern as rebuild_messages_fts() but for the documents table.
+    Idempotent — safe to call on every startup.
+
+    Returns:
+        Status message with counts.
+    """
+    with get_connection() as conn:
+        doc_count = conn.execute(
+            "SELECT COUNT(*) as c FROM documents"
+        ).fetchone()["c"]
+        fts_count = conn.execute(
+            "SELECT COUNT(*) as c FROM documents_fts"
+        ).fetchone()["c"]
+
+        if doc_count == fts_count:
+            return f"FTS documents in sync ({doc_count} rows)"
+
+        conn.execute("DELETE FROM documents_fts")
+        conn.execute("""
+            INSERT INTO documents_fts(id, doc_type, title, content)
+            SELECT id, doc_type, title, content FROM documents
+        """)
+        conn.commit()
+
+        new_count = conn.execute(
+            "SELECT COUNT(*) as c FROM documents_fts"
+        ).fetchone()["c"]
+        return f"Rebuilt documents_fts: {fts_count} -> {new_count}"

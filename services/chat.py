@@ -396,6 +396,60 @@ def _fts_search_chunks(query: str, limit: int = 10) -> list[dict]:
     return results
 
 
+def _fts_search_documents(query: str, limit: int = 10) -> list[dict]:
+    """Keyword search on documents via SQLite FTS5.
+
+    R40: Documents get FTS keyword boost alongside messages. Searches
+    documents_fts which indexes title + content fields. Returns results
+    in the same dict format as Qdrant search_all() for merge into the
+    candidate pipeline.
+    """
+    from db.operations import get_connection
+    import re
+    results = []
+    try:
+        raw_terms = re.sub(r'[^\w\s]', '', query).split()
+        meaningful = [t for t in raw_terms if t.lower() not in _FTS_STOP_WORDS and len(t) > 1]
+        if not meaningful:
+            return []
+
+        expanded = []
+        for t in meaningful:
+            if re.match(r'^\d+$', t):
+                expanded.append(f'("{t}" OR "{t.zfill(4)}" OR "{t.zfill(5)}")')
+            else:
+                expanded.append(f'"{t}"')
+
+        fts_query = " AND ".join(expanded)
+
+        with get_connection() as conn:
+            rows = conn.execute("""
+                SELECT d.id, d.title, d.content, d.doc_type,
+                       d.source, d.created_at
+                FROM documents d
+                JOIN documents_fts fts ON fts.rowid = d.rowid
+                WHERE documents_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+            """, (fts_query, limit)).fetchall()
+
+        for row in rows:
+            content = row["content"] or ""
+            results.append({
+                "id": row["id"],
+                "text": content,
+                "title": row["title"] or "",
+                "score": 0.5,
+                "source_collection": "documents",
+                "doc_type": row["doc_type"] or "",
+                "created_at": row["created_at"] or "",
+                "_fts_match": True,
+            })
+    except Exception as e:
+        logger.debug("FTS document search failed: %s", e)
+    return results
+
+
 def _format_relative_time(iso_ts: str) -> str:
     """Convert ISO timestamp to human-readable relative time.
 
@@ -555,9 +609,11 @@ def _build_rag_context(user_message: str,
         fts_results = _fts_search_messages(user_message, limit=max_chunks)
         # R16: also search chunk-level FTS for focused paragraph matches
         fts_chunk_results = _fts_search_chunks(user_message, limit=max_chunks)
+        # R40: FTS for documents — catch keyword matches in document titles/content
+        fts_doc_results = _fts_search_documents(user_message, limit=max_chunks)
         seen_ids = set()
         merged = []
-        for fts_r in fts_results + fts_chunk_results:
+        for fts_r in fts_results + fts_chunk_results + fts_doc_results:
             fid = fts_r["id"]
             if fid not in seen_ids:
                 merged.append(fts_r)
@@ -615,6 +671,18 @@ def _build_rag_context(user_message: str,
         else:
             results, temporal_trace = _apply_temporal_decay(results)
         metrics["temporal_trace"] = temporal_trace
+
+        # R40: Salience-weighted ranking — Slumber quality scores affect retrieval.
+        # Salience stored in Qdrant payloads by Propagate sub-cycle (0.0-1.0).
+        # Factor range: 0.5 (salience=0) to 1.5 (salience=1.0).
+        # At default 0.5: factor=1.0 — backward-compatible with all existing vectors.
+        for r in results:
+            salience = r.get("salience", 0.5)
+            if salience > 0 and salience != 0.5:
+                r["pre_salience_score"] = round(r.get("score", 0.0), 4)
+                r["score"] = r.get("score", 0.0) * (0.5 + salience)
+        results.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        metrics["salience_applied"] = True
 
         metrics["hit_count"] = len(results)
         metrics["collections_searched"] = list({r.get("source_collection", "unknown") for r in results})
