@@ -141,7 +141,8 @@ JANATPMP/
 ├── requirements.txt          # Python dependencies (pinned)
 ├── pyproject.toml            # Project metadata
 ├── Dockerfile                # Container image (Python 3.14-slim, no GPU)
-├── docker-compose.yml        # Container orchestration (core, ollama, qdrant, neo4j)
+├── cerebellum.py              # Cerebellum — autonomous Slumber process (R41, own container)
+├── docker-compose.yml        # Container orchestration (core, cerebellum, ollama, qdrant, neo4j)
 ├── Janat_Brand_Guide.md      # Brand colors, fonts, design system
 └── CLAUDE.md                 # This file
 ```
@@ -231,7 +232,7 @@ One set of functions serves all three. NO `demo.load()` — bake data via `value
 ### Startup Sequence (`services/startup.py`)
 
 1. **`initialize_core()`** — DB, settings, cleanup, Janus conversation. BLOCKING, fast (<1s).
-2. **`initialize_services()`** — Qdrant, Slumber daemon, Neo4j. Each isolated in try/except.
+2. **`initialize_services()`** — Qdrant, Slumber daemon (unless `CEREBELLUM_EXTERNAL`), Neo4j. Each isolated in try/except.
 3. **`start_auto_ingest()`** — Background daemon thread, non-blocking.
 
 ### Settings Registry (`services/settings.py`)
@@ -353,9 +354,15 @@ Legacy format (pre-R12): `Phase {version}: {summary}`
 - **Volume:** `.:/app` for live code changes without rebuild
 - **MCP:** Enabled via `GRADIO_MCP_SERVER=True` environment variable
 - **CMD:** `python app.py`
-- **Container names:** `janatpmp-core` (app), `janatpmp-ollama` (LLM + embed),
-  `janatpmp-qdrant` (vector DB), `janatpmp-neo4j` (graph DB) — 4 containers total
+- **Container names:** `janatpmp-core` (app), `janatpmp-cerebellum` (Slumber),
+  `janatpmp-ollama` (LLM + embed), `janatpmp-qdrant` (vector DB),
+  `janatpmp-neo4j` (graph DB) — 5 containers total
   - Core has NO GPU — all model inference offloaded to Ollama sidecar
+- **Cerebellum:** `janatpmp-cerebellum` — autonomous Slumber Cycle process (R41)
+  - Same image as core, different CMD (`python cerebellum.py`)
+  - Runs all 11 sub-cycles continuously with no idle gate (30s interval)
+  - Persists status to SQLite; core reads via `get_slumber_status()`
+  - Core sets `CEREBELLUM_EXTERNAL=true` to skip in-process Slumber daemon
 - **Qdrant:** `janatpmp-qdrant` container on ports 6343:6333/6344:6334
   - Internal URL: `http://janatpmp-qdrant:6333` (Docker DNS)
   - External URL: `http://localhost:6343` (host access, dashboard at `/dashboard`)
@@ -566,7 +573,8 @@ Every new message, document, item, and task fans out to three stores:
 
 ### Slumber Cycle (11 Sub-cycles)
 
-Background daemon activates after idle threshold (default 5 min). `touch_activity()` resets timer.
+Runs in the cerebellum container (R41) — no idle gate, continuous 30s cycles. Status
+persisted to SQLite for cross-process visibility. `touch_activity()` still gates GPU contention.
 Deep idle (10 min) gates Gemini-heavy phases (Extract, Dream, Mine) so they don't fire during light idle.
 
 | # | Sub-cycle | Frequency | Purpose |
@@ -652,18 +660,18 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
   `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
   handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R40)
+## Current Platform State (Post-R41)
 
-**Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded.
+**Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded. Decay immunity — quality-based salience floors prevent high-quality content from decaying below proportional minimums (R41).
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`.
 **RAG:** Hybrid FTS + vector (messages, chunks, AND documents), graph-aware ranking, salience-weighted scoring (R40), temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval with `created_at` for temporal scoring (R34), intent-gated attribution (R32). Salience factor: `score *= (0.5 + salience)` — default 0.5 is neutral, high-quality boosted, low-quality penalized (R40).
 **Identity:** 12-layer adaptive prompt composer (R37 adds action feedback layer), pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32), dynamic speaker identity — multi-speaker conversations produce "the Weavers" identity line (R39).
-**Slumber:** 11 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine. Per-message resilience in evaluate batch — broken messages get `quality_score=0.0` to prevent infinite re-processing (R40). All sub-cycle errors logged at WARNING level for container visibility (R40). FTS indexes rebuilt at startup if out of sync (R40).
+**Slumber:** 11 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine. Runs in cerebellum container (R41) — no idle gate, continuous 30s cycles. Status persisted to SQLite for cross-process visibility. Decay immunity in propagate: quality-based salience floors stored in Qdrant payload (`salience_floor`), enforced by both `_propagate_batch()` and `write_usage_salience()` (R41). Per-message resilience in evaluate batch (R40). FTS indexes rebuilt at startup if out of sync (R40).
 **UI:** Kanban board (R36) — drag-and-drop card management via `KanbanBoard(gr.HTML)` with `_pending_action` + `trigger('change')` pattern; auto-collapse empty columns; adaptive left sidebar for Kanban view (R36.1); workable-type filter excludes containers, Done column 14-day recency cap with "visible / total" header, card clicks stay in Work tab (R36.2); creator badges on cards (R38).
 **Intent Dispatch:** Intent Engine (R35/R37) resolves entities via FTS, gates execution by confidence (auto >=0.75, confirm 0.5-0.75), executes db_ops directly, injects feedback into prompt composer; confirmation flow for medium-confidence actions; feature-flagged via `intent_action_dispatch_enabled`. Janus-created items default to `review` status (R38). Action feedback diagnostic logging for dispatch chain tracing (R39).
 **Provenance:** Five actors tracked across all write operations — mat (UI), claude (MCP), janus (dispatch), agent (automated), imported (bulk ingest). `created_by` set once at creation, `modified_by` updated on every write. Kanban badges, detail views, MCP tool schemas all surface provenance (R38).
 **Speaker Identity:** `speaker` column on messages tracks who sent each message (mat, claude, agent, etc.). `chat_with_janus()` MCP tool exposes `speaker` param. Non-Mat speakers get `[Speaker]:` prefix in LLM history. Mixed-speaker conversations trigger dynamic identity layer: "You are in conversation with Claude and Mat — the Weavers." (R39).
-**Platform:** 84 MCP tools, auto-ingestion, Cognition tab, intent routing (11 categories).
+**Platform:** 84 MCP tools, auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41).
 
 ### Architectural Gaps
 
