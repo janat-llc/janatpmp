@@ -1615,7 +1615,7 @@ def chat(message: str, history: list[dict],
 
     # R39: Thread speaker set for dynamic identity layer
     if speakers and len(speakers) > 0:
-        precog_directives["speakers"] = speakers
+        precog_directives["speakers"] = list(speakers)
 
     system_prompt, prompt_layers = _build_system_prompt(
         history, conversation_id, directives=precog_directives)

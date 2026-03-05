@@ -652,13 +652,13 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
   `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
   handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R39)
+## Current Platform State (Post-R40)
 
 **Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded.
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`.
-**RAG:** Hybrid FTS + vector, graph-aware ranking, temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval with `created_at` for temporal scoring (R34), intent-gated attribution (R32).
+**RAG:** Hybrid FTS + vector (messages, chunks, AND documents), graph-aware ranking, salience-weighted scoring (R40), temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval with `created_at` for temporal scoring (R34), intent-gated attribution (R32). Salience factor: `score *= (0.5 + salience)` — default 0.5 is neutral, high-quality boosted, low-quality penalized (R40).
 **Identity:** 12-layer adaptive prompt composer (R37 adds action feedback layer), pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32), dynamic speaker identity — multi-speaker conversations produce "the Weavers" identity line (R39).
-**Slumber:** 11 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine.
+**Slumber:** 11 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine. Per-message resilience in evaluate batch — broken messages get `quality_score=0.0` to prevent infinite re-processing (R40). All sub-cycle errors logged at WARNING level for container visibility (R40). FTS indexes rebuilt at startup if out of sync (R40).
 **UI:** Kanban board (R36) — drag-and-drop card management via `KanbanBoard(gr.HTML)` with `_pending_action` + `trigger('change')` pattern; auto-collapse empty columns; adaptive left sidebar for Kanban view (R36.1); workable-type filter excludes containers, Done column 14-day recency cap with "visible / total" header, card clicks stay in Work tab (R36.2); creator badges on cards (R38).
 **Intent Dispatch:** Intent Engine (R35/R37) resolves entities via FTS, gates execution by confidence (auto >=0.75, confirm 0.5-0.75), executes db_ops directly, injects feedback into prompt composer; confirmation flow for medium-confidence actions; feature-flagged via `intent_action_dispatch_enabled`. Janus-created items default to `review` status (R38). Action feedback diagnostic logging for dispatch chain tracing (R39).
 **Provenance:** Five actors tracked across all write operations — mat (UI), claude (MCP), janus (dispatch), agent (automated), imported (bulk ingest). `created_by` set once at creation, `modified_by` updated on every write. Kanban badges, detail views, MCP tool schemas all surface provenance (R38).
