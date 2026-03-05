@@ -791,7 +791,7 @@ def _extract_batch():
             result["messages_processed"],
             created,
             updated,
-            result.get("errors", 0),
+            len(result.get("errors", [])) if isinstance(result.get("errors"), list) else result.get("errors", 0),
         )
 
 
