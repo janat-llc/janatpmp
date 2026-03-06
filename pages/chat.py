@@ -15,6 +15,7 @@ from db.chat_operations import (
     parse_reasoning, add_message,
     add_message_metadata, update_message_metadata,
     get_or_create_janus_conversation, archive_janus_conversation,
+    get_turn_messages,
 )
 from services.chat import chat, PROVIDER_PRESETS, fetch_ollama_models, _EMPTY_RAG_METRICS, _EMPTY_TOKEN_COUNTS
 from services.settings import get_setting, set_setting
@@ -1399,6 +1400,33 @@ def build_chat_page():
         _init_session,
         outputs=[chatbot, chat_history, active_conv_id, turn_metrics, session_load_timer,
                  cfg_provider, cfg_model, provider_state, model_state],
+        api_visibility="private",
+    )
+
+    # === R44: MCP MESSAGE POLLING (detects external chat_with_janus calls) ===
+    poll_timer = gr.Timer(value=5, active=True)
+
+    def _poll_new_messages(display_history, conv_id, metrics):
+        """Check DB for messages added since last UI update."""
+        if not conv_id:
+            return gr.skip(), gr.skip()
+        current_count = len([m for m in display_history if m.get("role") == "user"])
+        msgs = get_turn_messages(conv_id, limit=50, latest=True)
+        db_count = len(msgs)
+        if db_count <= current_count:
+            return gr.skip(), gr.skip()
+
+        # New messages detected — rebuild display history from DB
+        session = _load_chat_session()
+        new_metrics = dict(metrics)
+        new_metrics["turn_count"] = session["turn_count"]
+        new_metrics["cumulative_tokens"] = session["token_totals"]
+        return session["display_history"], new_metrics
+
+    poll_timer.tick(
+        _poll_new_messages,
+        inputs=[chatbot, active_conv_id, turn_metrics],
+        outputs=[chatbot, turn_metrics],
         api_visibility="private",
     )
 

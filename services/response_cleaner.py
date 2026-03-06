@@ -3,8 +3,11 @@
 Removes markdown structural elements that make Janus sound like a report
 generator. Preserves inline emphasis, code blocks, and content-bearing lists.
 """
+import logging
 import re
 from services.settings import get_setting
+
+logger = logging.getLogger(__name__)
 
 
 def clean_response(text: str) -> str:
@@ -23,6 +26,7 @@ def clean_response(text: str) -> str:
         return text
 
     enabled = (get_setting("response_cleanup_enabled") or "true").lower() == "true"
+    logger.info("Response cleanup: enabled=%s, input_len=%d", enabled, len(text))
     if not enabled:
         return text
 
@@ -52,4 +56,6 @@ def clean_response(text: str) -> str:
     for i, block in enumerate(code_blocks):
         result = result.replace(f"\x00CODE{i}\x00", block)
 
+    logger.info("Response cleanup: output_len=%d, changed=%s",
+                len(result.strip()), result.strip() != text)
     return result.strip()

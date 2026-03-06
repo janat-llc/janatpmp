@@ -140,9 +140,13 @@ def _load_chat_session() -> dict:
     totals = {"prompt": 0, "reasoning": 0, "response": 0, "total": 0}
 
     for m in msgs:
-        user_msg = {"role": "user", "content": m["user_prompt"]}
-        display_history.append(user_msg)
-        api_history.append(user_msg)
+        # R44: Speaker labels — prefix non-Mat messages in display only
+        spk = m.get("speaker", "mat")
+        display_content = m["user_prompt"]
+        if spk != "mat":
+            display_content = f"**[{spk.capitalize()}]** {display_content}"
+        display_history.append({"role": "user", "content": display_content})
+        api_history.append({"role": "user", "content": m["user_prompt"]})
 
         resp = m.get("model_response", "")
         reasoning = m.get("model_reasoning", "")

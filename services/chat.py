@@ -677,6 +677,8 @@ def _build_rag_context(user_message: str,
         # Factor range: 0.5 (salience=0) to 1.5 (salience=1.0).
         # At default 0.5: factor=1.0 — backward-compatible with all existing vectors.
         for r in results:
+            # R44: Save original ANN score BEFORE salience weighting
+            r["ann_score_original"] = round(r.get("score", 0.0), 4)
             salience = r.get("salience", 0.5)
             if salience > 0 and salience != 0.5:
                 r["pre_salience_score"] = round(r.get("score", 0.0), 4)
@@ -713,8 +715,8 @@ def _build_rag_context(user_message: str,
                 "id": r.get("id", ""),
                 "source": source, "title": title,
                 "rerank_score": r.get("rerank_score") or 0.0,
-                "salience": r.get("salience", 0.0),
-                "ann_score": r.get("score", 0.0),
+                "salience": r.get("salience", 0.5),
+                "ann_score": r.get("ann_score_original", r.get("score", 0.0)),
                 "text_preview": text_preview,
                 "source_conversation_id": r.get("conversation_id", ""),
                 "source_conversation_title": r.get("conv_title", ""),
@@ -909,9 +911,17 @@ def _build_light_rag_context(user_message: str) -> tuple[str, dict]:
             if text:
                 context_parts.append(text)
                 used_scores.append({
-                    "score": round(r.get("score", 0), 4),
-                    "collection": r.get("collection", ""),
-                    "text_preview": text[:100],
+                    "ann_score": round(r.get("score", 0), 4),
+                    "rerank_score": 0.0,
+                    "salience": r.get("salience", 0.5),
+                    "title": r.get("title", r.get("conv_title", "")),
+                    "source": r.get("source_collection", "unknown"),
+                    "source_conversation_title": r.get("conv_title", ""),
+                    "created_at": r.get("created_at", ""),
+                    "temporal_factor": r.get("temporal_factor", 1.0),
+                    "age_days": r.get("age_days"),
+                    "text_preview": text[:150],
+                    "id": r.get("id", ""),
                 })
 
         if not context_parts:
@@ -920,6 +930,7 @@ def _build_light_rag_context(user_message: str) -> tuple[str, dict]:
         context = "\n\n---\n\n[Relevant context]\n\n" + "\n\n".join(context_parts)
         metrics["hit_count"] = len(results)
         metrics["hits_used"] = len(context_parts)
+        metrics["collections_searched"] = list({r.get("source_collection", "unknown") for r in results})
         metrics["scores"] = used_scores
         metrics["context_text"] = context
         return context, metrics

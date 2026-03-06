@@ -564,16 +564,23 @@ def compose_system_prompt(history: list[dict] | None = None,
         JANUS_IDENTITY.format(domains=domain_names),
         JANUS_IDENTITY.format(domains=domain_names),
     )
-    # R39: Dynamic speaker identity — replace hardcoded "Mat" conversation line
+    # R39/R44: Dynamic speaker identity — replace hardcoded "Mat" conversation line
     if id_text:
         recent_speakers = set()
         if directives and directives.get("speakers"):
             recent_speakers = set(directives["speakers"])
-        if len(recent_speakers) > 1:
-            speaker_names = " and ".join(
-                s.capitalize() for s in sorted(recent_speakers))
-            speaker_line = (f"You are in conversation with {speaker_names}"
-                            " \u2014 the Weavers.")
+        # Build dynamic speaker line when non-Mat speakers present
+        non_mat_speakers = recent_speakers - {"mat"}
+        if non_mat_speakers:
+            if len(recent_speakers) > 1:
+                speaker_names = " and ".join(
+                    s.capitalize() for s in sorted(recent_speakers))
+                speaker_line = (f"You are in conversation with {speaker_names}"
+                                " \u2014 the Weavers.")
+            else:
+                # Single non-Mat speaker (e.g., just "claude")
+                speaker_name = next(iter(non_mat_speakers)).capitalize()
+                speaker_line = (f"You are in conversation with {speaker_name}.")
             id_text = id_text.replace(
                 "You are in conversation with Mat \u2014 someone you know deeply "
                 "through hundreds of shared conversations. Match his energy. "
