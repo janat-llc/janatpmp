@@ -195,6 +195,35 @@ def build_admin_page():
                                     allow_custom_value=True,
                                     key=f"setting-{key}",
                                 )
+                            # R45: Infrastructure settings — proper component types
+                            elif key == "rag_synthesizer_provider":
+                                txt = gr.Dropdown(
+                                    choices=["ollama", "gemini"],
+                                    value=str(value) if value else "ollama",
+                                    label=label, interactive=True,
+                                    key=f"setting-{key}",
+                                )
+                            elif key == "rag_synthesizer_model":
+                                from services.chat import fetch_ollama_models
+                                _synth = fetch_ollama_models() or []
+                                _synth += ["gemini-2.5-flash-lite", "gemini-2.0-flash"]
+                                _seen = set()
+                                _synth = [m for m in _synth
+                                          if m not in _seen and not _seen.add(m)]
+                                txt = gr.Dropdown(
+                                    choices=_synth,
+                                    value=str(value) if value else "",
+                                    label=label, interactive=True,
+                                    allow_custom_value=True,
+                                    key=f"setting-{key}",
+                                )
+                            elif "api_key" in key:
+                                txt = gr.Textbox(
+                                    label=label,
+                                    value=str(value) if value else "",
+                                    type="password", interactive=True,
+                                    key=f"setting-{key}",
+                                )
                             else:
                                 txt = gr.Textbox(
                                     label=label,
