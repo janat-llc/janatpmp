@@ -28,6 +28,22 @@ CYCLE_INTERVAL_SECONDS = 60    # Check idle state every minute
 _last_activity = time.monotonic()
 _slumber_thread = None
 
+# R43: Thread-safe access to _slumber_status dict
+_status_lock = threading.Lock()
+
+
+def _update_status(**kwargs):
+    """Thread-safe update to _slumber_status dict."""
+    with _status_lock:
+        _slumber_status.update(kwargs)
+
+
+def _inc_status(key, delta):
+    """Thread-safe increment of a _slumber_status counter."""
+    with _status_lock:
+        _slumber_status[key] = _slumber_status.get(key, 0) + delta
+
+
 # --- Slumber activity state (R22) — read by UI via get_slumber_status() ---
 _slumber_status = {
     "state": "idle",           # idle | ingesting | evaluating | propagating | relating | pruning | extracting | dreaming | weaving | linking | decaying | mining
@@ -109,9 +125,10 @@ def get_slumber_status() -> dict:
         last_cooccurred, total_cooccurred, last_decayed, total_decayed,
         error.
     """
-    # R41: In-process mode — return live dict
+    # R41: In-process mode — return live dict (R43: lock protects iteration)
     if _slumber_thread is not None:
-        return dict(_slumber_status)
+        with _status_lock:
+            return dict(_slumber_status)
     # R41: External mode (cerebellum) — read from SQLite
     try:
         from services.settings import get_setting
@@ -127,11 +144,12 @@ def _persist_status_to_db() -> None:
     """R41: Write current Slumber status to SQLite for cross-process visibility."""
     try:
         from services.settings import set_setting
-        # Public status (what get_slumber_status returns)
-        public = {k: v for k, v in _slumber_status.items() if not k.startswith("_")}
+        # R43: Snapshot under lock to avoid iteration race
+        with _status_lock:
+            snapshot = dict(_slumber_status)
+        public = {k: v for k, v in snapshot.items() if not k.startswith("_")}
         set_setting("slumber_status", json.dumps(public))
-        # Cycle counters (for restart resilience)
-        counters = {k: v for k, v in _slumber_status.items() if k.startswith("_")}
+        counters = {k: v for k, v in snapshot.items() if k.startswith("_")}
         set_setting("slumber_counters", json.dumps(counters))
     except Exception as e:
         logger.debug("Failed to persist slumber status: %s", e)
@@ -144,9 +162,10 @@ def _restore_counters_from_db() -> None:
         raw = get_setting("slumber_counters")
         if raw:
             counters = json.loads(raw)
-            for k, v in counters.items():
-                if k.startswith("_") and k in _slumber_status:
-                    _slumber_status[k] = v
+            with _status_lock:
+                for k, v in counters.items():
+                    if k.startswith("_") and k in _slumber_status:
+                        _slumber_status[k] = v
             logger.info("Restored Slumber counters from DB")
     except Exception as e:
         logger.debug("Failed to restore slumber counters: %s", e)
@@ -703,7 +722,8 @@ def _should_dream(skip_idle_gate: bool = False) -> bool:
     if not skip_idle_gate and not _is_deep_idle():
         return False
 
-    return _slumber_status["_cycle_count"] % DREAM_CYCLE_INTERVAL == 0
+    with _status_lock:
+        return _slumber_status["_cycle_count"] % DREAM_CYCLE_INTERVAL == 0
 
 
 def _dream_batch():
@@ -711,9 +731,11 @@ def _dream_batch():
     from atlas.dream_synthesis import run_dream_cycle
 
     result = run_dream_cycle()
-    _slumber_status["last_dreamed"] = result.get("insights_created", 0)
-    _slumber_status["dream_edges"] = result.get("edges_created", 0)
-    _slumber_status["total_dreams"] += result.get("insights_created", 0)
+    _update_status(
+        last_dreamed=result.get("insights_created", 0),
+        dream_edges=result.get("edges_created", 0),
+    )
+    _inc_status("total_dreams", result.get("insights_created", 0))
     if result.get("insights_created", 0) > 0:
         logger.info(
             "Dream Synthesis: %d clusters -> %d insights, %d edges",
@@ -731,7 +753,8 @@ def _should_weave() -> bool:
     """
     from atlas.config import WEAVE_CYCLE_INTERVAL
 
-    return _slumber_status["_cycle_count"] % WEAVE_CYCLE_INTERVAL == 0
+    with _status_lock:
+        return _slumber_status["_cycle_count"] % WEAVE_CYCLE_INTERVAL == 0
 
 
 def _weave_batch():
@@ -739,8 +762,8 @@ def _weave_batch():
     from graph.semantic_edges import weave_new_conversations
 
     result = weave_new_conversations()
-    _slumber_status["last_woven"] = result.get("edges_created", 0)
-    _slumber_status["total_woven"] += result.get("edges_created", 0)
+    _update_status(last_woven=result.get("edges_created", 0))
+    _inc_status("total_woven", result.get("edges_created", 0))
     if result.get("edges_created", 0) > 0:
         logger.info(
             "Slumber weave: %d edges from %d conversations",
@@ -769,10 +792,11 @@ def _should_extract(skip_idle_gate: bool = False) -> bool:
     if not skip_idle_gate and not _is_deep_idle():
         return False
 
-    _slumber_status["_extract_cycle_count"] = _slumber_status.get(
-        "_extract_cycle_count", EXTRACTION_CYCLE_INTERVAL - 1
-    ) + 1
-    return _slumber_status["_extract_cycle_count"] % EXTRACTION_CYCLE_INTERVAL == 0
+    with _status_lock:
+        _slumber_status["_extract_cycle_count"] = _slumber_status.get(
+            "_extract_cycle_count", EXTRACTION_CYCLE_INTERVAL - 1
+        ) + 1
+        return _slumber_status["_extract_cycle_count"] % EXTRACTION_CYCLE_INTERVAL == 0
 
 
 def _extract_batch():
@@ -783,8 +807,8 @@ def _extract_batch():
     result = run_extraction_cycle(batch_size=EXTRACTION_BATCH_SIZE)
     created = result.get("entities_created", 0)
     updated = result.get("entities_updated", 0)
-    _slumber_status["last_extracted"] = created + updated
-    _slumber_status["total_extracted"] += created + updated
+    _update_status(last_extracted=created + updated)
+    _inc_status("total_extracted", created + updated)
     if result.get("messages_processed", 0) > 0:
         logger.info(
             "Entity Extraction: %d messages -> %d created, %d updated, %d errors",
@@ -798,8 +822,11 @@ def _extract_batch():
 def _should_cooccur() -> bool:
     """Check if co-occurrence linking should run this cycle (R31)."""
     from atlas.config import COOCCURRENCE_CYCLE_INTERVAL
-    _slumber_status["_cooccur_cycle_count"] += 1
-    return _slumber_status["_cooccur_cycle_count"] % COOCCURRENCE_CYCLE_INTERVAL == 0
+    with _status_lock:
+        _slumber_status["_cooccur_cycle_count"] = _slumber_status.get(
+            "_cooccur_cycle_count", 0
+        ) + 1
+        return _slumber_status["_cooccur_cycle_count"] % COOCCURRENCE_CYCLE_INTERVAL == 0
 
 
 def _cooccur_batch():
@@ -809,8 +836,8 @@ def _cooccur_batch():
 
     result = run_cooccurrence_cycle(batch_size=COOCCURRENCE_BATCH_SIZE)
     count = result.get("processed", 0)
-    _slumber_status["last_cooccurred"] = count
-    _slumber_status["total_cooccurred"] += count
+    _update_status(last_cooccurred=count)
+    _inc_status("total_cooccurred", count)
     if count:
         logger.info("Slumber co-occurrence: %d edges processed", count)
 
@@ -818,8 +845,11 @@ def _cooccur_batch():
 def _should_entity_decay() -> bool:
     """Check if entity salience decay should run this cycle (R31)."""
     from atlas.config import ENTITY_DECAY_CYCLE_INTERVAL
-    _slumber_status["_decay_cycle_count"] += 1
-    return _slumber_status["_decay_cycle_count"] % ENTITY_DECAY_CYCLE_INTERVAL == 0
+    with _status_lock:
+        _slumber_status["_decay_cycle_count"] = _slumber_status.get(
+            "_decay_cycle_count", 0
+        ) + 1
+        return _slumber_status["_decay_cycle_count"] % ENTITY_DECAY_CYCLE_INTERVAL == 0
 
 
 def _entity_decay_batch():
@@ -829,8 +859,8 @@ def _entity_decay_batch():
 
     result = run_entity_decay_cycle(batch_size=ENTITY_DECAY_BATCH_SIZE)
     count = result.get("processed", 0)
-    _slumber_status["last_decayed"] = count
-    _slumber_status["total_decayed"] += count
+    _update_status(last_decayed=count)
+    _inc_status("total_decayed", count)
     if count:
         logger.info("Slumber entity decay: %d entities processed", count)
 
@@ -848,10 +878,11 @@ def _should_mine_register(skip_idle_gate: bool = False) -> bool:
     # R41: Cerebellum mode bypasses this gate
     if not skip_idle_gate and not _is_deep_idle():
         return False
-    _slumber_status["_mine_cycle_count"] = _slumber_status.get(
-        "_mine_cycle_count", REGISTER_MINING_CYCLE_INTERVAL - 1
-    ) + 1
-    return _slumber_status["_mine_cycle_count"] % REGISTER_MINING_CYCLE_INTERVAL == 0
+    with _status_lock:
+        _slumber_status["_mine_cycle_count"] = _slumber_status.get(
+            "_mine_cycle_count", REGISTER_MINING_CYCLE_INTERVAL - 1
+        ) + 1
+        return _slumber_status["_mine_cycle_count"] % REGISTER_MINING_CYCLE_INTERVAL == 0
 
 
 def _register_mine_batch():
@@ -861,8 +892,8 @@ def _register_mine_batch():
 
     result = run_register_mining_cycle(batch_size=REGISTER_MINING_BATCH_SIZE)
     count = result.get("processed", 0)
-    _slumber_status["last_mined"] = count
-    _slumber_status["total_mined"] += count
+    _update_status(last_mined=count)
+    _inc_status("total_mined", count)
     if count:
         logger.info("Slumber register mining: %d exemplars processed", count)
 
@@ -877,125 +908,125 @@ def _run_one_cycle(skip_idle_gate: bool = False) -> None:
         skip_idle_gate: If True, skip idle/deep-idle checks (cerebellum mode).
     """
     if not skip_idle_gate and not _is_idle():
-        _slumber_status["state"] = "idle"
+        _update_status(state="idle")
         return
 
-    _slumber_status["error"] = ""
+    _update_status(error="")
 
     # Sub-cycle 0: Ingest scan (new content → chunks → embeddings)
     # Runs FIRST so newly ingested content gets full Slumber processing
     # in the same cycle (evaluate, propagate, relate, prune).
-    _slumber_status["state"] = "ingesting"
+    _update_status(state="ingesting")
     try:
         _ingest_scan()
     except Exception as e:
-        _slumber_status["error"] = str(e)
+        _update_status(error=str(e))
         logger.warning("Slumber ingest scan error: %s", e)
 
     # Sub-cycle 1: Evaluate (score unscored messages)
-    _slumber_status["state"] = "evaluating"
+    _update_status(state="evaluating")
     try:
         count = _evaluate_batch()
-        _slumber_status["last_evaluated"] = count
-        _slumber_status["total_evaluated"] += count
+        _update_status(last_evaluated=count)
+        _inc_status("total_evaluated", count)
         try:
             from services.settings import get_setting
             use_llm = (get_setting("slumber_eval_enabled") or "true").lower() == "true"
-            _slumber_status["eval_method"] = "gemini" if use_llm else "heuristic"
+            _update_status(eval_method="gemini" if use_llm else "heuristic")
         except Exception:
             pass
     except Exception as e:
-        _slumber_status["error"] = str(e)
+        _update_status(error=str(e))
         logger.error("Slumber evaluate error: %s", e)
 
     # Sub-cycle 2: Propagate (quality → Qdrant salience)
-    _slumber_status["state"] = "propagating"
+    _update_status(state="propagating")
     try:
         _propagate_batch()
     except Exception as e:
-        _slumber_status["error"] = str(e)
+        _update_status(error=str(e))
         logger.warning("Slumber propagate error: %s", e)
 
     # Sub-cycle 3: Relate (SIMILAR_TO edges via keyword overlap)
-    _slumber_status["state"] = "relating"
+    _update_status(state="relating")
     try:
         _relate_batch()
     except Exception as e:
-        _slumber_status["error"] = str(e)
+        _update_status(error=str(e))
         logger.warning("Slumber relate error: %s", e)
 
     # Sub-cycle 4: Prune (remove dead-weight from Qdrant)
-    _slumber_status["state"] = "pruning"
+    _update_status(state="pruning")
     try:
         _prune_batch()
     except Exception as e:
-        _slumber_status["error"] = str(e)
+        _update_status(error=str(e))
         logger.warning("Slumber prune error: %s", e)
 
     # Sub-cycle 5: Entity Extraction (R29)
     if _should_extract(skip_idle_gate=skip_idle_gate):
-        _slumber_status["state"] = "extracting"
+        _update_status(state="extracting")
         try:
             _extract_batch()
         except Exception as e:
-            _slumber_status["error"] = str(e)
+            _update_status(error=str(e))
             logger.warning("Slumber extraction error: %s", e)
 
     # Advance shared cycle counter for dream/weave interval gating.
     # Placed here (not inside _should_dream) so _should_weave can
     # read the same counter reliably even when dream is skipped.
     from atlas.config import DREAM_CYCLE_INTERVAL
-    _slumber_status["_cycle_count"] = _slumber_status.get(
-        "_cycle_count", DREAM_CYCLE_INTERVAL - 1
-    ) + 1
+    with _status_lock:
+        _slumber_status["_cycle_count"] = _slumber_status.get(
+            "_cycle_count", DREAM_CYCLE_INTERVAL - 1
+        ) + 1
 
     # Sub-cycle 6: Dream Synthesis (R24)
     if _should_dream(skip_idle_gate=skip_idle_gate):
-        _slumber_status["state"] = "dreaming"
+        _update_status(state="dreaming")
         try:
             _dream_batch()
         except Exception as e:
-            _slumber_status["error"] = str(e)
+            _update_status(error=str(e))
             logger.warning("Slumber dream error: %s", e)
 
     # Sub-cycle 7: Graph Weave (R27)
     if _should_weave():
-        _slumber_status["state"] = "weaving"
+        _update_status(state="weaving")
         try:
             _weave_batch()
         except Exception as e:
-            _slumber_status["error"] = str(e)
+            _update_status(error=str(e))
             logger.warning("Slumber weave error: %s", e)
 
     # Sub-cycle 8: Entity Co-occurrence Linking (R31)
     if _should_cooccur():
-        _slumber_status["state"] = "linking"
+        _update_status(state="linking")
         try:
             _cooccur_batch()
         except Exception as e:
-            _slumber_status["error"] = str(e)
+            _update_status(error=str(e))
             logger.warning("Slumber co-occurrence error: %s", e)
 
     # Sub-cycle 9: Entity Salience Decay (R31)
     if _should_entity_decay():
-        _slumber_status["state"] = "decaying"
+        _update_status(state="decaying")
         try:
             _entity_decay_batch()
         except Exception as e:
-            _slumber_status["error"] = str(e)
+            _update_status(error=str(e))
             logger.warning("Slumber entity decay error: %s", e)
 
     # Sub-cycle 10: Register Mining (R32)
     if _should_mine_register(skip_idle_gate=skip_idle_gate):
-        _slumber_status["state"] = "mining"
+        _update_status(state="mining")
         try:
             _register_mine_batch()
         except Exception as e:
-            _slumber_status["error"] = str(e)
+            _update_status(error=str(e))
             logger.warning("Slumber register mining error: %s", e)
 
-    _slumber_status["state"] = "idle"
-    _slumber_status["last_cycle_at"] = datetime.now().isoformat()
+    _update_status(state="idle", last_cycle_at=datetime.now().isoformat())
     _persist_status_to_db()
 
 

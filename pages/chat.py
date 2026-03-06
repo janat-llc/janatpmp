@@ -80,7 +80,9 @@ def _handle_send(message, history, conv_id, provider, model,
                 raw_response = msg.get("content", "")
                 break
 
-        reasoning, clean_response = parse_reasoning(raw_response)
+        from services.response_cleaner import clean_response as strip_report_mode
+        reasoning, parsed_response = parse_reasoning(raw_response)
+        clean_response = strip_report_mode(parsed_response)
 
         # Decompose reasoning tokens from completion_tokens when provider
         # doesn't report them separately (Ollama lumps <think> + response).
@@ -931,6 +933,23 @@ def build_chat_page():
 
                     gr.Markdown("---", key="cog-entity-sep")
 
+                # R43: layer_names must be defined before Pre-Cognition
+                # section which references it for display labels.
+                layer_names = {
+                    "identity_core": "Identity Core",
+                    "bootstrap_caveat": "Bootstrap Caveat",
+                    "relational_context": "Relational Context",
+                    "memory_directive": "Memory Directive",
+                    "temporal_grounding": "Temporal Grounding",
+                    "conversation_state": "Conversation State",
+                    "knowledge_boundary": "Knowledge Boundary",
+                    "platform_context": "Platform Context",
+                    "self_introspection": "Self-Introspection",
+                    "register_exemplars": "Register Exemplars",
+                    "behavioral_guidelines": "Behavioral Guidelines",
+                    "tone_directive": "Tone Directive",
+                }
+
                 # --- Section 0: Pre-Cognition (R25) ---
                 precog = trace.get("precognition", {})
                 if precog.get("precognition_used"):
@@ -999,21 +1018,6 @@ def build_chat_page():
                     f"**{layer_count} layers** | {total_chars:,} chars total",
                     key="cog-prompt-header",
                 )
-
-                layer_names = {
-                    "identity_core": "Identity Core",
-                    "bootstrap_caveat": "Bootstrap Caveat",
-                    "relational_context": "Relational Context",
-                    "memory_directive": "Memory Directive",
-                    "temporal_grounding": "Temporal Grounding",
-                    "conversation_state": "Conversation State",
-                    "knowledge_boundary": "Knowledge Boundary",
-                    "platform_context": "Platform Context",
-                    "self_introspection": "Self-Introspection",
-                    "register_exemplars": "Register Exemplars",
-                    "behavioral_guidelines": "Behavioral Guidelines",
-                    "tone_directive": "Tone Directive",
-                }
 
                 for i, (key, layer) in enumerate(prompt_layers.items()):
                     chars = layer.get("chars", 0)

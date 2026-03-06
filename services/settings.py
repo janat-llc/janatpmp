@@ -128,6 +128,7 @@ SETTINGS_REGISTRY = {
     "chat_temperature":     ("0.7", False, "chat", _validate_positive_float),
     "chat_top_p":           ("0.9", False, "chat", _validate_positive_float),
     "chat_max_tokens":      ("8192", False, "chat", _validate_positive_int),
+    "response_cleanup_enabled": ("true", False, "chat", None),
 
     # Ollama
     "ollama_num_ctx":       ("32768", False, "ollama", _validate_positive_int),

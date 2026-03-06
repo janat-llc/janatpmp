@@ -27,6 +27,13 @@ services:
       - "11435:11434"
     volumes:
       - ollama_data:/root/.ollama
+      - ./ollama:/ollama-init:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        ollama serve &
+        /ollama-init/ollama-init.sh
+        wait
     deploy:
       resources:
         reservations:

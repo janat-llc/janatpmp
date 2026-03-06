@@ -298,14 +298,27 @@ def init_database():
                 logger.info("Applied migration 1.7.0: message roles")
 
         # Migration 1.8.0: Creator provenance (R38)
+        # Uses ALTER TABLE ADD COLUMN which fails if columns already exist in fresh schema.
+        # Tolerate "duplicate column name" on fresh DBs where schema.sql already has them.
         cursor = conn.execute(
             "SELECT version FROM schema_version WHERE version='1.8.0'"
         )
         if cursor.fetchone() is None:
             migration_path = Path(__file__).parent / "migrations" / "1.8.0_creator_provenance.sql"
             if migration_path.exists():
-                conn.executescript(migration_path.read_text(encoding="utf-8"))
-                logger.info("Applied migration 1.8.0: creator provenance")
+                try:
+                    conn.executescript(migration_path.read_text(encoding="utf-8"))
+                    logger.info("Applied migration 1.8.0: creator provenance")
+                except Exception as e:
+                    if "duplicate column" in str(e).lower():
+                        conn.execute(
+                            "INSERT OR IGNORE INTO schema_version (version, description) "
+                            "VALUES ('1.8.0', 'Creator provenance (columns already in schema)')"
+                        )
+                        conn.commit()
+                        logger.info("Migration 1.8.0: columns already exist (fresh schema), marked applied")
+                    else:
+                        raise
 
         # Migration 1.9.0: Speaker identity on messages (R39)
         cursor = conn.execute(

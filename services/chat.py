@@ -1501,6 +1501,11 @@ def chat(message: str, history: list[dict],
 
     _EMPTY_TIMINGS = {"rag": 0, "inference": 0, "total": 0}
 
+    # Settings precedence (highest to lowest):
+    # 1. provider_override / model_override — per-call from UI sidebar or MCP
+    # 2. get_setting("chat_provider") / get_setting("chat_model") — DB defaults
+    #    Written by: Chat > Settings tab, Admin > Settings tab, set_setting() MCP
+    # 3. SETTINGS_REGISTRY defaults — hardcoded fallbacks in services/settings.py
     provider = provider_override or get_setting("chat_provider")
     api_key = get_setting("chat_api_key")
     model = model_override or get_setting("chat_model")
@@ -1774,7 +1779,7 @@ def chat(message: str, history: list[dict],
             return _error_result(history)
 
 
-def chat_with_janus(message: str, speaker: str = "mat") -> dict:
+def chat_with_janus(message: str, speaker: str = "mat", model: str = "", provider: str = "") -> dict:
     """Send a message to Janus through the full pipeline and return response + diagnostics.
 
     Runs the complete chat pipeline: intent classification, pre-cognition, RAG retrieval,
@@ -1787,6 +1792,8 @@ def chat_with_janus(message: str, speaker: str = "mat") -> dict:
     Args:
         message: The message to send to Janus.
         speaker: Who is speaking — mat, claude, agent, etc. Defaults to mat.
+        model: Model override for this call only. Empty = use settings default.
+        provider: Provider override for this call only. Empty = use settings default.
 
     Returns:
         Dict with response, cognition_trace, rag_metrics, timings, token_counts,
@@ -1825,7 +1832,9 @@ def chat_with_janus(message: str, speaker: str = "mat") -> dict:
 
     # Run full pipeline
     result = chat(message, history, conversation_id=conv_id,
-                  speaker=speaker, speakers=recent_speakers)
+                  speaker=speaker, speakers=recent_speakers,
+                  provider_override=provider or None,
+                  model_override=model or None)
 
     # Extract response
     new_messages = result["history"][len(history):]
@@ -1835,7 +1844,9 @@ def chat_with_janus(message: str, speaker: str = "mat") -> dict:
             raw_response = msg.get("content", "")
             break
 
-    reasoning, clean_response = parse_reasoning(raw_response)
+    from services.response_cleaner import clean_response as strip_report_mode
+    reasoning, parsed_response = parse_reasoning(raw_response)
+    clean_response = strip_report_mode(parsed_response)
     rag_metrics = result.get("rag_metrics", {})
     token_counts = result.get("token_counts", {})
     timings = result.get("timings", {})

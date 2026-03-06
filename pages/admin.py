@@ -178,12 +178,30 @@ def build_admin_page():
                                 continue
                             # Use human-readable label
                             label = key.replace("_", " ").title()
-                            txt = gr.Textbox(
-                                label=label,
-                                value=str(value) if value else "",
-                                interactive=True,
-                                key=f"setting-{key}",
-                            )
+                            if key == "chat_provider":
+                                txt = gr.Dropdown(
+                                    choices=["anthropic", "gemini", "ollama"],
+                                    value=str(value) if value else "ollama",
+                                    label=label, interactive=True,
+                                    key=f"setting-{key}",
+                                )
+                            elif key == "chat_model":
+                                from services.chat import fetch_ollama_models
+                                _models = fetch_ollama_models() or ([str(value)] if value else [])
+                                txt = gr.Dropdown(
+                                    choices=_models,
+                                    value=str(value) if value else "",
+                                    label=label, interactive=True,
+                                    allow_custom_value=True,
+                                    key=f"setting-{key}",
+                                )
+                            else:
+                                txt = gr.Textbox(
+                                    label=label,
+                                    value=str(value) if value else "",
+                                    interactive=True,
+                                    key=f"setting-{key}",
+                                )
                             inputs_map[key] = txt
 
                         if inputs_map:
