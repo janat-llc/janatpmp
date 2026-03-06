@@ -1,17 +1,18 @@
-"""MCP Tool Registry — all 84 functions exposed via gr.api().
+"""MCP Tool Registry — all 85 functions exposed via gr.api().
 
 Centralizes imports so app.py only needs one import line.
 Grouped by category for readability. Each function MUST have
 Google-style docstrings (Gradio uses them for MCP tool descriptions).
 """
 
-# --- Core CRUD (db/operations.py) — 24 functions ---
+# --- Core CRUD (db/operations.py) — 25 functions ---
 from db.operations import (
     create_item, get_item, list_items, update_item, delete_item,
     create_task, get_task, list_tasks, update_task,
     create_document, get_document, list_documents,
     search_items, search_documents,
     create_relationship, get_relationships,
+    get_sprint_view,
     get_stats, get_schema_info,
     backup_database, reset_database, restore_database, list_backups,
     get_domains, get_domain, create_domain, update_domain,
@@ -97,6 +98,7 @@ ALL_MCP_TOOLS: list = [
     create_task, get_task, list_tasks, update_task,
     search_items,
     create_relationship, get_relationships,
+    get_sprint_view,
     get_domains, get_domain, create_domain, update_domain,
 
     # --- Knowledge page: memory + connections + pipeline (34) ---

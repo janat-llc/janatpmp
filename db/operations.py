@@ -1050,6 +1050,114 @@ def get_relationships(
         return [dict(row) for row in cursor.fetchall()]
 
 
+def get_sprint_view(item_id: str) -> dict:
+    """Get sprint/epic hierarchy with status rollup.
+
+    Returns the item and all its children (features) with their
+    linked tasks and status summary. Children are items whose
+    parent_id matches the given item_id. Tasks are found via
+    'implements' relationships in the relationships table.
+
+    Args:
+        item_id: The sprint/epic item ID to view
+
+    Returns:
+        Dict with sprint info, child features, tasks per feature,
+        and summary counts. Empty dict if item_id not found.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        # Sprint item itself
+        cursor.execute("SELECT * FROM items WHERE id = ?", (item_id,))
+        sprint_row = cursor.fetchone()
+        if not sprint_row:
+            return {}
+        sprint = dict(sprint_row)
+
+        # Children (features) — direct children only
+        cursor.execute(
+            "SELECT * FROM items WHERE parent_id = ? "
+            "ORDER BY priority ASC, updated_at DESC",
+            (item_id,),
+        )
+        children = [dict(r) for r in cursor.fetchall()]
+
+        # For each child, find tasks via 'implements' relationship
+        # Direction: source_type='task' implements target_type='item'
+        features = []
+        total_tasks = 0
+        tasks_completed = 0
+        tasks_pending = 0
+
+        for child in children:
+            cursor.execute(
+                """SELECT source_id FROM relationships
+                   WHERE target_type = 'item' AND target_id = ?
+                     AND source_type = 'task'
+                     AND relationship_type = 'implements'""",
+                (child["id"],),
+            )
+            task_ids = [r["source_id"] for r in cursor.fetchall()]
+
+            tasks = []
+            for tid in task_ids:
+                cursor.execute("SELECT * FROM tasks WHERE id = ?", (tid,))
+                t = cursor.fetchone()
+                if t:
+                    task = dict(t)
+                    tasks.append({
+                        "id": task["id"],
+                        "title": task.get("title", ""),
+                        "status": task.get("status", ""),
+                        "assigned_to": task.get("assigned_to", ""),
+                        "task_type": task.get("task_type", ""),
+                        "priority": task.get("priority", "normal"),
+                    })
+                    total_tasks += 1
+                    if task.get("status") == "completed":
+                        tasks_completed += 1
+                    elif task.get("status") in (
+                        "pending", "processing", "review",
+                    ):
+                        tasks_pending += 1
+
+            features.append({
+                "id": child["id"],
+                "title": child.get("title", ""),
+                "status": child.get("status", ""),
+                "entity_type": child.get("entity_type", ""),
+                "priority": child.get("priority", 3),
+                "tasks": tasks,
+            })
+
+        features_shipped = sum(
+            1 for f in features if f["status"] in ("completed", "shipped")
+        )
+        features_in_progress = sum(
+            1 for f in features if f["status"] == "in_progress"
+        )
+
+        return {
+            "sprint": {
+                "id": sprint["id"],
+                "title": sprint.get("title", ""),
+                "status": sprint.get("status", ""),
+                "entity_type": sprint.get("entity_type", ""),
+                "domain": sprint.get("domain", ""),
+            },
+            "features": features,
+            "summary": {
+                "total_features": len(features),
+                "features_shipped": features_shipped,
+                "features_in_progress": features_in_progress,
+                "total_tasks": total_tasks,
+                "tasks_completed": tasks_completed,
+                "tasks_pending": tasks_pending,
+            },
+        }
+
+
 # =============================================================================
 # SCHEMA & STATS
 # =============================================================================

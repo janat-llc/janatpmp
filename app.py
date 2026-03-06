@@ -123,4 +123,5 @@ if __name__ == "__main__":
         css=JANAT_CSS,
         allowed_paths=["assets"],
         show_error=True,
+        # Footer hidden via CSS in janat_theme.py (Gradio 6.6.0 has no show_footer param)
     )

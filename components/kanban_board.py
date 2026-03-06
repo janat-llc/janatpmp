@@ -16,7 +16,7 @@ from datetime import datetime
 
 import gradio as gr
 
-from db.operations import list_items, list_tasks, update_item, update_task
+from db.operations import list_items, list_tasks, update_item, update_task, get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,24 @@ def build_board_data(view_mode: str = "items", filters: dict | None = None) -> d
     filters = filters or {}
     col_defs = TASK_COLUMNS if view_mode == "tasks" else ITEM_COLUMNS
 
+    # R42: Sprint choices — items that have children
+    sprint_choices = []
+    if view_mode == "items":
+        with get_connection() as conn:
+            rows_sc = conn.execute(
+                """SELECT i.id, i.title, i.entity_type
+                   FROM items i
+                   WHERE i.id IN (
+                       SELECT DISTINCT parent_id FROM items
+                       WHERE parent_id IS NOT NULL
+                   )
+                   ORDER BY i.updated_at DESC"""
+            ).fetchall()
+            sprint_choices = [
+                {"id": r["id"], "title": r["title"], "type": r["entity_type"]}
+                for r in rows_sc
+            ]
+
     # Build status → column_id lookup
     status_to_col = {}
     for col_id, _, _, statuses, _ in col_defs:
@@ -100,9 +118,13 @@ def build_board_data(view_mode: str = "items", filters: dict | None = None) -> d
             query_kwargs["domain"] = filters["domain"]
         if filters.get("type") and filters["type"] != "all":
             query_kwargs["entity_type"] = filters["type"]
+        # R42: Sprint filter — show children of selected sprint
+        if filters.get("sprint") and filters["sprint"] != "all":
+            query_kwargs["parent_id"] = filters["sprint"]
         rows = list_items(**query_kwargs)
-        # Exclude non-workable entity types unless user explicitly filters
-        if not filters.get("type") or filters["type"] == "all":
+        # Exclude containers unless user explicitly filters by type or sprint
+        if (not filters.get("type") or filters["type"] == "all") and \
+           (not filters.get("sprint") or filters["sprint"] == "all"):
             rows = [r for r in rows if r.get("entity_type") not in BOARD_EXCLUDED_TYPES]
 
     # Build column buckets
@@ -187,8 +209,10 @@ def build_board_data(view_mode: str = "items", filters: dict | None = None) -> d
         "filters": {
             "domain": filters.get("domain", "all"),
             "type": filters.get("type", "all"),
+            "sprint": filters.get("sprint", "all"),
             "show_archived": bool(filters.get("show_archived")),
         },
+        "sprint_choices": sprint_choices if view_mode == "items" else [],
         "selected_card": None,
     }
 
@@ -255,6 +279,16 @@ KANBAN_HTML = """
                 <select class="filter-control filter-type">
                     <option value="all" ${value.filters.type === 'all' ? 'selected' : ''}>All Types</option>
                 </select>
+                ${(value.sprint_choices || []).length > 0 ? `
+                    <select class="filter-control filter-sprint">
+                        <option value="all" ${(value.filters.sprint || 'all') === 'all' ? 'selected' : ''}>All Items</option>
+                        ${(value.sprint_choices || []).map(s =>
+                            '<option value="' + s.id + '"' +
+                            (value.filters.sprint === s.id ? ' selected' : '') +
+                            '>' + s.title.substring(0, 40) + '</option>'
+                        ).join('')}
+                    </select>
+                ` : ''}
             ` : `
                 <select class="filter-control filter-assigned">
                     <option value="all">All Assigned</option>
@@ -682,6 +716,8 @@ KANBAN_JS = """
             filters.domain = control.value;
         } else if (control.classList.contains('filter-type')) {
             filters.type = control.value;
+        } else if (control.classList.contains('filter-sprint')) {
+            filters.sprint = control.value;
         } else if (control.classList.contains('filter-assigned')) {
             filters.assigned_to = control.value === 'all' ? '' : control.value;
         } else if (control.classList.contains('filter-archived')) {

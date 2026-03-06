@@ -48,7 +48,7 @@ JANATPMP/
 ├── db/
 │   ├── schema.sql            # Database schema DDL (NO seed data)
 │   ├── seed_data.sql         # Optional seed data (separate from schema)
-│   ├── operations.py         # All CRUD + lifecycle functions (28 operations)
+│   ├── operations.py         # All CRUD + lifecycle functions (29 operations)
 │   ├── chat_operations.py    # Conversation + message CRUD (Phase 4B)
 │   ├── chunk_operations.py   # Chunk CRUD, stats, FTS search (R16)
 │   ├── entity_ops.py         # Entity + mention CRUD, FTS search (R29)
@@ -226,7 +226,7 @@ Persona settings (10 fields including `user_name`, `user_bio`, `user_full_name`,
 
 ### Data Flow
 
-`db/operations.py` → 28 functions → three surfaces: UI (pages/*.py), API (`gr.api()`), MCP.
+`db/operations.py` → 29 functions → three surfaces: UI (pages/*.py), API (`gr.api()`), MCP.
 One set of functions serves all three. NO `demo.load()` — bake data via `value=`.
 
 ### Startup Sequence (`services/startup.py`)
@@ -492,13 +492,13 @@ from mcp_registry import ALL_MCP_TOOLS
 with gr.Blocks() as demo:
     build_page()
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)  # 84 MCP tools from registry
+        gr.api(tool_fn)  # 85 MCP tools from registry
 
 demo.launch(mcp_server=True)
 ```
 
-84 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
-28 from `db/operations.py` (including domain CRUD + export/import), 17 from
+85 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
+29 from `db/operations.py` (including domain CRUD + export/import + sprint view), 17 from
 `db/chat_operations.py` (including Janus lifecycle + conversation stream + metadata backfill
 + knowledge state), 4 from `db/chunk_operations.py` (chunk CRUD + stats + search),
 3 from `db/entity_ops.py` (R29 entity extraction), 3 from `db/file_registry_ops.py`
@@ -660,18 +660,18 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
   `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
   handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R41)
+## Current Platform State (Post-R42)
 
 **Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded. Decay immunity — quality-based salience floors prevent high-quality content from decaying below proportional minimums (R41).
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`.
 **RAG:** Hybrid FTS + vector (messages, chunks, AND documents), graph-aware ranking, salience-weighted scoring (R40), temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval with `created_at` for temporal scoring (R34), intent-gated attribution (R32). Salience factor: `score *= (0.5 + salience)` — default 0.5 is neutral, high-quality boosted, low-quality penalized (R40).
 **Identity:** 12-layer adaptive prompt composer (R37 adds action feedback layer), pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32), dynamic speaker identity — multi-speaker conversations produce "the Weavers" identity line (R39).
 **Slumber:** 11 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine. Runs in cerebellum container (R41) — no idle gate, continuous 30s cycles. Status persisted to SQLite for cross-process visibility. Decay immunity in propagate: quality-based salience floors stored in Qdrant payload (`salience_floor`), enforced by both `_propagate_batch()` and `write_usage_salience()` (R41). Per-message resilience in evaluate batch (R40). FTS indexes rebuilt at startup if out of sync (R40).
-**UI:** Kanban board (R36) — drag-and-drop card management via `KanbanBoard(gr.HTML)` with `_pending_action` + `trigger('change')` pattern; auto-collapse empty columns; adaptive left sidebar for Kanban view (R36.1); workable-type filter excludes containers, Done column 14-day recency cap with "visible / total" header, card clicks stay in Work tab (R36.2); creator badges on cards (R38).
+**UI:** Kanban board (R36) — drag-and-drop card management via `KanbanBoard(gr.HTML)` with `_pending_action` + `trigger('change')` pattern; auto-collapse empty columns; adaptive left sidebar for Kanban view (R36.1); workable-type filter excludes containers, Done column 14-day recency cap with "visible / total" header, card clicks stay in Work tab (R36.2); creator badges on cards (R38); sprint filter dropdown scopes board to sprint/epic children (R42). Archive Chapter button moved below divider with JS `confirm()` safety dialog (R42).
 **Intent Dispatch:** Intent Engine (R35/R37) resolves entities via FTS, gates execution by confidence (auto >=0.75, confirm 0.5-0.75), executes db_ops directly, injects feedback into prompt composer; confirmation flow for medium-confidence actions; feature-flagged via `intent_action_dispatch_enabled`. Janus-created items default to `review` status (R38). Action feedback diagnostic logging for dispatch chain tracing (R39).
 **Provenance:** Five actors tracked across all write operations — mat (UI), claude (MCP), janus (dispatch), agent (automated), imported (bulk ingest). `created_by` set once at creation, `modified_by` updated on every write. Kanban badges, detail views, MCP tool schemas all surface provenance (R38).
 **Speaker Identity:** `speaker` column on messages tracks who sent each message (mat, claude, agent, etc.). `chat_with_janus()` MCP tool exposes `speaker` param. Non-Mat speakers get `[Speaker]:` prefix in LLM history. Mixed-speaker conversations trigger dynamic identity layer: "You are in conversation with Claude and Mat — the Weavers." (R39).
-**Platform:** 84 MCP tools, auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41).
+**Platform:** 85 MCP tools (R42: `get_sprint_view()`), auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41).
 
 ### Architectural Gaps
 

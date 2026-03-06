@@ -407,7 +407,6 @@ def build_chat_page():
     # === RIGHT SIDEBAR — Session Parameters ===
     with gr.Sidebar(position="right"):
         gr.Markdown("### Real-time")
-        archive_btn = gr.Button("Archive Chapter", variant="secondary", size="sm")
         cfg_context_window = gr.Number(
             label="LLM Context Turns",
             value=int(get_setting("janus_context_messages") or "10"),
@@ -443,6 +442,7 @@ def build_chat_page():
             step=256, value=config["max_tokens"], interactive=True,
         )
         gr.Markdown("---")
+        archive_btn = gr.Button("Archive Chapter", variant="secondary", size="sm")
 
         @gr.render(inputs=[turn_metrics])
         def render_session_metrics(metrics):
@@ -1417,6 +1417,7 @@ def build_chat_page():
         _archive_chapter,
         inputs=[active_conv_id],
         outputs=[active_conv_id, chatbot, chat_history, turn_metrics],
+        js="(conv_id) => confirm('Archive this chapter? This starts a fresh conversation.') ? [conv_id] : [null]",
         api_visibility="private",
     )
 
