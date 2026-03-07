@@ -78,6 +78,9 @@ _slumber_status = {
     # Register Mining (R32)
     "last_mined": 0,           # Exemplars mined in last cycle
     "total_mined": 0,          # Cumulative exemplars since startup
+    # Entity Dedup (R47)
+    "last_deduped": 0,         # Entities merged in last cycle
+    "total_deduped": 0,        # Cumulative merges since startup
 }
 
 # Words too common to be meaningful keywords
@@ -898,6 +901,43 @@ def _register_mine_batch():
         logger.info("Slumber register mining: %d exemplars processed", count)
 
 
+def _should_entity_dedup() -> bool:
+    """Check if entity dedup should run this cycle (R47)."""
+    from atlas.config import ENTITY_DEDUP_CYCLE_INTERVAL
+    with _status_lock:
+        _slumber_status["_dedup_cycle_count"] = _slumber_status.get(
+            "_dedup_cycle_count", ENTITY_DEDUP_CYCLE_INTERVAL - 1
+        ) + 1
+        return _slumber_status["_dedup_cycle_count"] % ENTITY_DEDUP_CYCLE_INTERVAL == 0
+
+
+def _entity_dedup_batch():
+    """Sub-cycle 11: Entity Dedup (R47)."""
+    import json as _json
+    from services.entity_merge import detect_duplicates, merge_entities
+    from atlas.config import ENTITY_DEDUP_BATCH_SIZE
+
+    candidates = detect_duplicates()
+    merged = 0
+    for cluster in candidates[:ENTITY_DEDUP_BATCH_SIZE]:
+        dup_ids = ",".join(d["id"] for d in cluster["duplicates"])
+        try:
+            result_str = merge_entities(
+                cluster["canonical_id"], dup_ids,
+                actor="agent", dry_run=False,
+            )
+            result = _json.loads(result_str)
+            merged += result.get("merged", 0)
+        except Exception as e:
+            logger.warning("Dedup merge error for %s: %s",
+                           cluster.get("canonical", "?"), e)
+
+    _update_status(last_deduped=merged)
+    _inc_status("total_deduped", merged)
+    if merged:
+        logger.info("Slumber entity dedup: %d entities merged", merged)
+
+
 def _run_one_cycle(skip_idle_gate: bool = False) -> None:
     """Execute one complete Slumber cycle (11 sub-cycles).
 
@@ -1025,6 +1065,15 @@ def _run_one_cycle(skip_idle_gate: bool = False) -> None:
         except Exception as e:
             _update_status(error=str(e))
             logger.warning("Slumber register mining error: %s", e)
+
+    # Sub-cycle 11: Entity Dedup (R47)
+    if _should_entity_dedup():
+        _update_status(state="deduping")
+        try:
+            _entity_dedup_batch()
+        except Exception as e:
+            _update_status(error=str(e))
+            logger.warning("Slumber entity dedup error: %s", e)
 
     _update_status(state="idle", last_cycle_at=datetime.now().isoformat())
     _persist_status_to_db()

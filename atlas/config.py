@@ -118,6 +118,10 @@ REGISTER_MINING_CYCLE_INTERVAL = 5   # Mine every Nth slumber cycle
 REGISTER_MINING_BATCH_SIZE = 10      # Messages to check per cycle
 REGISTER_MINING_MIN_QUALITY = 0.6    # Min quality_score to evaluate
 
+# --- Entity Dedup (R47: Entity Merge Infrastructure) ---
+ENTITY_DEDUP_CYCLE_INTERVAL = 5     # Dedup every Nth slumber cycle
+ENTITY_DEDUP_BATCH_SIZE = 50        # Max merges per cycle
+
 # --- Pre-Cognition (R25) ---
 PRECOGNITION_TIMEOUT_MS = 3000   # Max wait for Gemini pre-pass (ms)
 PRECOGNITION_WEIGHT_MIN = 0.0    # Floor for layer weights

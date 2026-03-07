@@ -24,7 +24,7 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 ```
 JANATPMP/
 ├── app.py                    # Thin launcher: startup calls, gr.Blocks, banner, demo.launch()
-├── mcp_registry.py           # MCP Tool Registry — all 85 gr.api() function imports + ALL_MCP_TOOLS list
+├── mcp_registry.py           # MCP Tool Registry — all 87 gr.api() function imports + ALL_MCP_TOOLS list
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── components/
 │   ├── __init__.py
@@ -108,7 +108,8 @@ JANATPMP/
 │   ├── chat.py               # Multi-provider chat (Anthropic/Gemini/Ollama) — self-query tools for Ollama
 │   ├── prompt_composer.py    # 12-layer adaptive Janus identity system prompt (R19/R25/R32/R33/R37)
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
-│   ├── slumber.py            # Background daemon — 11-stage Slumber Cycle (R12/R27/R31/R32)
+│   ├── slumber.py            # Background daemon — 12-stage Slumber Cycle (R12/R27/R31/R32/R47)
+│   ├── entity_merge.py       # Entity merge + batch dedup + duplicate detection (R47)
 │   ├── slumber_eval.py        # Gemini-powered message evaluation (R22: First Light)
 │   ├── precognition.py        # Gemini pre-cognition — adaptive prompt shaping (R25)
 │   ├── postcognition.py       # Gemini post-cognition — response evaluation + corrective signal (R33)
@@ -383,7 +384,7 @@ Legacy format (pre-R12): `Phase {version}: {summary}`
   - Volume: `neo4j_data` (local)
   - Auth: `neo4j/janatpmp_graph`
   - Node labels: Item, Task, Document, Conversation, Message, Domain, MessageMetadata, Chunk, Person, Identity, Entity
-  - Edge types: IN_DOMAIN, TARGETS_ITEM, BELONGS_TO, FOLLOWS, DESCRIBES, INFORMED_BY, SIMILAR_TO, PART_OF, BECAME, INHERITS_MEMORY_OF, PARTICIPATED_IN, SPOKE, SYNTHESIZED_FROM, MENTIONS, CO_OCCURS_WITH
+  - Edge types: IN_DOMAIN, TARGETS_ITEM, BELONGS_TO, FOLLOWS, DESCRIBES, INFORMED_BY, SIMILAR_TO, PART_OF, BECAME, INHERITS_MEMORY_OF, PARTICIPATED_IN, SPOKE, SYNTHESIZED_FROM, MENTIONS, CO_OCCURS_WITH, ALIAS_OF
 - **Ollama:** `janatpmp-ollama` container on port 11435, shares `ollama_data` external volume
   - Internal URL: `http://ollama:11434/v1` (Docker DNS)
   - External URL: `http://localhost:11435` (host access for testing)
@@ -500,16 +501,17 @@ from mcp_registry import ALL_MCP_TOOLS
 with gr.Blocks() as demo:
     build_page()
     for tool_fn in ALL_MCP_TOOLS:
-        gr.api(tool_fn)  # 85 MCP tools from registry
+        gr.api(tool_fn)  # 87 MCP tools from registry
 
 demo.launch(mcp_server=True)
 ```
 
-85 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
+87 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
 29 from `db/operations.py` (including domain CRUD + export/import + sprint view), 17 from
 `db/chat_operations.py` (including Janus lifecycle + conversation stream + metadata backfill
 + knowledge state), 4 from `db/chunk_operations.py` (chunk CRUD + stats + search),
-3 from `db/entity_ops.py` (R29 entity extraction), 3 from `db/file_registry_ops.py`
+3 from `db/entity_ops.py` (R29 entity extraction), 2 from `services/entity_merge.py`
+(R47 entity merge), 3 from `db/file_registry_ops.py`
 (R17 file registry), 10 vector/embedding/chunking operations from `services/`, 2 import
 pipelines, 2 ingestion orchestrators, 6 graph operations from `graph/` (including identity
 seeding + semantic edge weaving), 2 from R17 (ingestion progress + temporal context),
@@ -579,7 +581,7 @@ Every new message, document, item, and task fans out to three stores:
 3. **Neo4j** — structural edges via CDC consumer (BELONGS_TO, FOLLOWS, IN_DOMAIN);
    INFORMED_BY edges from on_write (RAG provenance, fire-and-forget)
 
-### Slumber Cycle (11 Sub-cycles)
+### Slumber Cycle (12 Sub-cycles)
 
 Runs in the cerebellum container (R41) — no idle gate, continuous 30s cycles. Status
 persisted to SQLite for cross-process visibility. `touch_activity()` still gates GPU contention.
@@ -598,6 +600,7 @@ Deep idle (10 min) gates Gemini-heavy phases (Extract, Dream, Mine) so they don'
 | 8 | Link | every 3rd | Entity co-occurrence edges from shared messages (R31) |
 | 9 | Decay | every 5th | Entity salience decay — temporal fade + mention boost (R31) |
 | 10 | Mine | every 5th (deep idle) | Register mining — conversational register extraction via Gemini (R32) |
+| 11 | Dedup | every 5th | Entity dedup — auto-detect and merge duplicate entities (R47) |
 
 ### Prompt Composer (12 Layers)
 
@@ -668,19 +671,20 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
   `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
   handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R46)
+## Current Platform State (Post-R47)
 
 **Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded. Decay immunity — quality-based salience floors prevent high-quality content from decaying below proportional minimums (R41). Canonical document ingestion — manifest-based PDF pipeline with elevated salience floors for decay immunity; 4 foundational research papers (C-Theory, Principle of Existing, Convergence Academic, Convergence Web) ingested as first-class knowledge (R46).
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`. `chat_with_janus()` accepts `model`/`provider` per-call overrides for A/B testing (R43). Response cleanup strips report-mode formatting (headers, rules, signatures) with code-block protection, feature flag `response_cleanup_enabled`, and diagnostic logging (R43/R44). Chat page auto-refreshes every 5 seconds via `gr.Timer` polling — MCP messages appear without browser refresh (R44).
 **RAG:** Hybrid FTS + vector (messages, chunks, AND documents), graph-aware ranking, salience-weighted scoring (R40), temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval with `created_at` for temporal scoring (R34), intent-gated attribution (R32). Salience factor: `score *= (0.5 + salience)` — default 0.5 is neutral, high-quality boosted, low-quality penalized (R40). Light RAG and full RAG paths both propagate scores, collections, and metadata into `chat_with_janus()` diagnostic return (R44). Original ANN score preserved before salience weighting for accurate diagnostics (R44).
 **Identity:** 12-layer adaptive prompt composer (R37 adds action feedback layer), pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32), dynamic speaker identity — single non-Mat speaker gets "You are in conversation with Claude." and multi-speaker conversations produce "the Weavers" identity line (R39/R44).
-**Slumber:** 11 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine. Runs in cerebellum container (R41) — no idle gate, continuous 30s cycles. Status persisted to SQLite for cross-process visibility. Thread-safe status dict via `threading.Lock` + `_update_status()`/`_inc_status()` helpers — eliminates dict-race crashes during concurrent reads (R43). Decay immunity in propagate: quality-based salience floors stored in Qdrant payload (`salience_floor`), enforced by both `_propagate_batch()` and `write_usage_salience()` (R41). Per-message resilience in evaluate batch (R40). FTS indexes rebuilt at startup if out of sync (R40).
+**Slumber:** 12 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine, dedup. Runs in cerebellum container (R41) — no idle gate, continuous 30s cycles. Status persisted to SQLite for cross-process visibility. Thread-safe status dict via `threading.Lock` + `_update_status()`/`_inc_status()` helpers — eliminates dict-race crashes during concurrent reads (R43). Decay immunity in propagate: quality-based salience floors stored in Qdrant payload (`salience_floor`), enforced by both `_propagate_batch()` and `write_usage_salience()` (R41). Per-message resilience in evaluate batch (R40). FTS indexes rebuilt at startup if out of sync (R40).
 **UI:** Kanban board (R36) — drag-and-drop card management via `KanbanBoard(gr.HTML)` with `_pending_action` + `trigger('change')` pattern; auto-collapse empty columns; adaptive left sidebar for Kanban view (R36.1); workable-type filter excludes containers, Done column 14-day recency cap with "visible / total" header, card clicks stay in Work tab (R36.2); creator badges on cards (R38); sprint filter dropdown scopes board to sprint/epic children (R42). Archive Chapter button moved below divider with JS `confirm()` safety dialog (R42). Admin Settings: dynamic dropdowns for `chat_model`, `chat_provider`, `rag_synthesizer_provider`, `rag_synthesizer_model` (R43/R45); password fields for API keys (R45); infrastructure settings moved from Chat to Admin (R45). Speaker labels (`**[Claude]**`, `**[Agent]**`) on non-Mat messages in Chat display (R44).
 **Intent Dispatch:** Intent Engine (R35/R37) resolves entities via FTS, gates execution by confidence (auto >=0.75, confirm 0.5-0.75), executes db_ops directly, injects feedback into prompt composer; confirmation flow for medium-confidence actions; feature-flagged via `intent_action_dispatch_enabled`. Janus-created items default to `review` status (R38). Action feedback diagnostic logging for dispatch chain tracing (R39).
 **Provenance:** Five actors tracked across all write operations — mat (UI), claude (MCP), janus (dispatch), agent (automated), imported (bulk ingest). `created_by` set once at creation, `modified_by` updated on every write. Kanban badges, detail views, MCP tool schemas all surface provenance (R38).
 **Speaker Identity:** `speaker` column on messages tracks who sent each message (mat, claude, agent, etc.). `chat_with_janus()` MCP tool exposes `speaker` param. Non-Mat speakers get `[Speaker]:` prefix in LLM history and bold `[Speaker]` label in Chat UI display (R44). Single non-Mat speakers now correctly replace the hardcoded Mat identity in the prompt composer; mixed-speaker conversations trigger "the Weavers" identity line (R39/R44).
 **Canonical Ingestion:** Manifest-based pipeline (`services/canonical_ingest.py`) reads `imports/canonical/manifest.json`, detects new/changed documents via SHA-256 content hashing, extracts text from PDFs via `pdfplumber` (`services/pdf_extractor.py`), creates/updates JANATPMP documents, and embeds with elevated salience floors for decay immunity. `on_document_write()` accepts `salience_floor` param (default 0.0) — canonical docs get 0.7-0.9 floors. Runs before general auto-ingestion in `scan_and_ingest()`. Docker volume mount `./imports/canonical:/data/canonical` on both core and cerebellum (R46).
-**Platform:** 85 MCP tools (R42: `get_sprint_view()`), auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41). Ollama init script (`ollama/ollama-init.sh`) auto-pulls required models and creates custom Modelfiles on container startup (R43).
+**Entity Merge:** `merge_entities()` MCP tool consolidates duplicate entity nodes — relocates all Neo4j edges (CO_OCCURS_WITH via canonical ordering, MENTIONS, etc.) from duplicate to canonical, reassigns SQLite mentions with conflict handling, consolidates metadata (mention_count sum, first/last_seen_at, description), then deletes duplicate from both stores. `batch_merge_from_map()` processes the dedup map JSON (313 clusters) with 6 false positive exclusions and creates ALIAS_OF edges for 14 abbreviation pairs. Slumber sub-cycle 11 (`Dedup`) auto-detects new duplicates via article prefix / plural-singular / case variation pattern matching every 5th cycle (R47).
+**Platform:** 87 MCP tools (R47: `merge_entities()`, `batch_merge_from_map()`), auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41). Ollama init script (`ollama/ollama-init.sh`) auto-pulls required models and creates custom Modelfiles on container startup (R43).
 
 ### Architectural Gaps
 

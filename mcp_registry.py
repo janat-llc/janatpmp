@@ -79,6 +79,8 @@ from services.auto_ingest import get_ingestion_progress
 from atlas.temporal import get_temporal_context
 # --- Entity extraction (R29: The Troubadour) — 3 functions ---
 from db.entity_ops import list_entities, get_entity, search_entities
+# --- Entity merge (R47: Entity Merge Infrastructure) — 2 functions ---
+from services.entity_merge import merge_entities, batch_merge_from_map
 # --- Knowledge state + register mining (R32: The Mirror) — 3 functions ---
 from db.chat_operations import get_knowledge_state
 from atlas.register_mining import search_register_exemplars, run_register_mining_cycle
@@ -125,6 +127,8 @@ ALL_MCP_TOOLS: list = [
     get_ingestion_progress,
     # Entity extraction (R29: The Troubadour)
     list_entities, get_entity, search_entities,
+    # Entity merge (R47: Entity Merge Infrastructure)
+    merge_entities, batch_merge_from_map,
 
     # --- Admin page: operations + platform (6) ---
     get_stats, get_schema_info,
