@@ -185,7 +185,7 @@ def merge_entities(
                 update_entity(
                     canonical_id,
                     description=desc,
-                    mention_count=str(new_count),
+                    mention_count=new_count,
                     last_seen_at=last,
                 )
                 # Update first_seen_at directly (update_entity doesn't have it)
