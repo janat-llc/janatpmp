@@ -697,6 +697,14 @@ def scan_and_ingest(auto_embed: bool = True, source: str = "startup") -> dict:
     start_time = time.time()
     _reset_progress()
 
+    # R46: Canonical document ingestion (runs before general scans)
+    canonical_result = {"processed": 0, "skipped": 0, "errors": 0}
+    try:
+        from services.canonical_ingest import process_manifest
+        canonical_result = process_manifest()
+    except Exception as e:
+        logger.warning("Canonical ingest failed: %s", e)
+
     # Phase 0: Auto-import platform export if DB is empty
     _update_progress(status="scanning", current_phase="export_check",
                      phase_detail="Checking for platform exports")
@@ -827,6 +835,7 @@ def scan_and_ingest(auto_embed: bool = True, source: str = "startup") -> dict:
 
     summary = {
         "export_imported": export_result if export_result.get("imported") else None,
+        "canonical_result": canonical_result,
         "files_found": total_ingested + total_skipped + total_failed,
         "files_ingested": total_ingested,
         "files_skipped": total_skipped,

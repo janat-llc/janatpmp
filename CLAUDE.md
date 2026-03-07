@@ -118,6 +118,8 @@ JANATPMP/
 │   ├── bulk_embed.py         # Batch embed via Ollama with progress & checkpointing
 │   ├── settings.py           # Settings registry with validation and categories
 │   ├── auto_ingest.py        # Startup + Slumber auto-ingestion scanner (R17)
+│   ├── canonical_ingest.py   # Manifest-based canonical document ingestion (R46)
+│   ├── pdf_extractor.py      # PDF text extraction via pdfplumber (R46)
 │   ├── startup.py            # Platform init: initialize_core(), initialize_services(), background auto-ingest
 │   ├── intent_engine.py      # Intent Engine — hypothesis tracking + action dispatch (R35/R37)
 │   ├── intent_router.py      # Intent classification + pipeline routing (R26)
@@ -137,6 +139,8 @@ JANATPMP/
 │   ├── janatpmp-mockup.png   # Visual reference for Projects page layout
 │   ├── INVENTORY_OLD_PARSERS.md    # Old pipeline code inventory (Phase 6A)
 │   └── INVENTORY_CONTENT_CORPUS.md # Content corpus catalog (Phase 6A)
+├── imports/
+│   └── canonical/            # Canonical document PDFs + manifest (gitignored, runtime)
 ├── completed/                # Local-only archive (gitignored) — TODO files, dead prototypes
 ├── screenshots/              # UI screenshots for reference
 ├── requirements.txt          # Python dependencies (pinned)
@@ -664,9 +668,9 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
   `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
   handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R45)
+## Current Platform State (Post-R46)
 
-**Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded. Decay immunity — quality-based salience floors prevent high-quality content from decaying below proportional minimums (R41).
+**Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded. Decay immunity — quality-based salience floors prevent high-quality content from decaying below proportional minimums (R41). Canonical document ingestion — manifest-based PDF pipeline with elevated salience floors for decay immunity; 4 foundational research papers (C-Theory, Principle of Existing, Convergence Academic, Convergence Web) ingested as first-class knowledge (R46).
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`. `chat_with_janus()` accepts `model`/`provider` per-call overrides for A/B testing (R43). Response cleanup strips report-mode formatting (headers, rules, signatures) with code-block protection, feature flag `response_cleanup_enabled`, and diagnostic logging (R43/R44). Chat page auto-refreshes every 5 seconds via `gr.Timer` polling — MCP messages appear without browser refresh (R44).
 **RAG:** Hybrid FTS + vector (messages, chunks, AND documents), graph-aware ranking, salience-weighted scoring (R40), temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval with `created_at` for temporal scoring (R34), intent-gated attribution (R32). Salience factor: `score *= (0.5 + salience)` — default 0.5 is neutral, high-quality boosted, low-quality penalized (R40). Light RAG and full RAG paths both propagate scores, collections, and metadata into `chat_with_janus()` diagnostic return (R44). Original ANN score preserved before salience weighting for accurate diagnostics (R44).
 **Identity:** 12-layer adaptive prompt composer (R37 adds action feedback layer), pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32), dynamic speaker identity — single non-Mat speaker gets "You are in conversation with Claude." and multi-speaker conversations produce "the Weavers" identity line (R39/R44).
@@ -675,6 +679,7 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 **Intent Dispatch:** Intent Engine (R35/R37) resolves entities via FTS, gates execution by confidence (auto >=0.75, confirm 0.5-0.75), executes db_ops directly, injects feedback into prompt composer; confirmation flow for medium-confidence actions; feature-flagged via `intent_action_dispatch_enabled`. Janus-created items default to `review` status (R38). Action feedback diagnostic logging for dispatch chain tracing (R39).
 **Provenance:** Five actors tracked across all write operations — mat (UI), claude (MCP), janus (dispatch), agent (automated), imported (bulk ingest). `created_by` set once at creation, `modified_by` updated on every write. Kanban badges, detail views, MCP tool schemas all surface provenance (R38).
 **Speaker Identity:** `speaker` column on messages tracks who sent each message (mat, claude, agent, etc.). `chat_with_janus()` MCP tool exposes `speaker` param. Non-Mat speakers get `[Speaker]:` prefix in LLM history and bold `[Speaker]` label in Chat UI display (R44). Single non-Mat speakers now correctly replace the hardcoded Mat identity in the prompt composer; mixed-speaker conversations trigger "the Weavers" identity line (R39/R44).
+**Canonical Ingestion:** Manifest-based pipeline (`services/canonical_ingest.py`) reads `imports/canonical/manifest.json`, detects new/changed documents via SHA-256 content hashing, extracts text from PDFs via `pdfplumber` (`services/pdf_extractor.py`), creates/updates JANATPMP documents, and embeds with elevated salience floors for decay immunity. `on_document_write()` accepts `salience_floor` param (default 0.0) — canonical docs get 0.7-0.9 floors. Runs before general auto-ingestion in `scan_and_ingest()`. Docker volume mount `./imports/canonical:/data/canonical` on both core and cerebellum (R46).
 **Platform:** 85 MCP tools (R42: `get_sprint_view()`), auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41). Ollama init script (`ollama/ollama-init.sh`) auto-pulls required models and creates custom Modelfiles on container startup (R43).
 
 ### Architectural Gaps

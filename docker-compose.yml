@@ -7,6 +7,7 @@ services:
     volumes:
       - .:/app
       - C:\Janat\Claude\Claude_Export:/data/claude_export:ro
+      - ./imports/canonical:/data/canonical
     environment:
       - GRADIO_SERVER_NAME=0.0.0.0
       - GRADIO_MCP_SERVER=True
@@ -113,6 +114,7 @@ services:
     volumes:
       - .:/app
       - C:\Janat\Claude\Claude_Export:/data/claude_export:ro
+      - ./imports/canonical:/data/canonical
     depends_on:
       - ollama
       - janatpmp-qdrant

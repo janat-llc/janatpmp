@@ -289,6 +289,7 @@ def on_document_write(
     content: str,
     doc_type: str = "",
     source: str = "",
+    salience_floor: float = 0.0,
 ) -> None:
     """Synchronous chunk + embed a document into Qdrant.
 
@@ -303,6 +304,7 @@ def on_document_write(
         content: Document content text.
         doc_type: Document type (file, artifact, research, etc.).
         source: Document source (upload, agent, manual, etc.).
+        salience_floor: R46 decay immunity floor. Non-zero for canonical docs.
     """
     if len(content) < 20:
         return
@@ -341,7 +343,8 @@ def on_document_write(
             "doc_type": doc_type,
             "source": source,
             "created_at": now_iso,
-            "salience": SALIENCE_DEFAULT,
+            "salience": max(SALIENCE_DEFAULT, salience_floor),
+            "salience_floor": salience_floor,
             "entity_type": "document",
         }
 
