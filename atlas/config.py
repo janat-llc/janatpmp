@@ -20,7 +20,7 @@ CDC_POLL_INTERVAL = 5    # Seconds between CDC polling cycles
 CDC_BATCH_SIZE = 50      # Max rows per poll
 
 # --- Model identifiers ---
-EMBEDDING_MODEL = "qwen3-embedding-4b-cpu"  # qwen3-embedding:4b on CPU, num_ctx 2048. Zero VRAM — Janus gets full GPU
+EMBEDDING_MODEL = "qwen3-embedding-4b-cpu"  # Production: CPU-only, zero VRAM — Janus gets full GPU
 RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"  # DECOMMISSIONED — kept for import compat
 
 # --- Vector dimensions ---
