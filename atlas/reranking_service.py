@@ -1,7 +1,9 @@
-"""ATLAS reranking service — Qwen3-Reranker-0.6B via vLLM.
+"""ATLAS reranking service — DECOMMISSIONED.
 
-HTTP client to vLLM's /score endpoint. Returns 0-1 probability scores
-(not unbounded logits like the previous Nemotron VL reranker).
+DECOMMISSIONED (R49): vLLM reranker container removed from docker-compose.yml.
+This module is retained for import compatibility only. The rerank() function
+is never called in production — rerank=False is the default everywhere.
+RAG scoring replaced by composite scoring in services/chat.py.
 """
 
 import logging

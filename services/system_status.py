@@ -135,10 +135,11 @@ def get_system_status() -> dict:
     try:
         from services.vector_store import _get_client, COLLECTION_MESSAGES, COLLECTION_DOCUMENTS
         client = _get_client()
+        from atlas.config import EMBEDDING_MODEL, EMBEDDING_DIM
         qdrant_health = {
             "collections": [COLLECTION_MESSAGES, COLLECTION_DOCUMENTS],
-            "embedding_model": get_setting("ollama_embed_model") or "qwen3-embedding:0.6b",
-            "dimensions": 1024,
+            "embedding_model": EMBEDDING_MODEL,
+            "dimensions": EMBEDDING_DIM,
         }
         for coll_name in [COLLECTION_MESSAGES, COLLECTION_DOCUMENTS]:
             key = coll_name.replace("janatpmp_", "") + "_points"

@@ -237,7 +237,7 @@ def _build_system_prompt(history: list[dict] = None,
 
 _EMPTY_RAG_METRICS = {
     "hit_count": 0, "hits_used": 0, "collections_searched": [],
-    "avg_rerank_score": 0.0, "avg_salience": 0.0, "scores": [],
+    "avg_composite_score": 0.0, "avg_salience": 0.0, "scores": [],
     "rejected": [], "context_text": "",
 }
 
@@ -672,17 +672,26 @@ def _build_rag_context(user_message: str,
             results, temporal_trace = _apply_temporal_decay(results)
         metrics["temporal_trace"] = temporal_trace
 
-        # R40: Salience-weighted ranking — Slumber quality scores affect retrieval.
-        # Salience stored in Qdrant payloads by Propagate sub-cycle (0.0-1.0).
-        # Factor range: 0.5 (salience=0) to 1.5 (salience=1.0).
+        # R49: Composite scoring — cosine × temporal × salience_factor.
+        # At this point, r["score"] already has temporal decay applied (line 672).
+        # Salience factor range: 0.5 (salience=0) to 1.5 (salience=1.0).
         # At default 0.5: factor=1.0 — backward-compatible with all existing vectors.
         for r in results:
-            # R44: Save original ANN score BEFORE salience weighting
             r["ann_score_original"] = round(r.get("score", 0.0), 4)
             salience = r.get("salience", 0.5)
+            salience_factor = 0.5 + salience
+            temporal = r.get("temporal_factor", 1.0)
             if salience > 0 and salience != 0.5:
                 r["pre_salience_score"] = round(r.get("score", 0.0), 4)
-                r["score"] = r.get("score", 0.0) * (0.5 + salience)
+                r["score"] = r.get("score", 0.0) * salience_factor
+            # R49: Composite breakdown for Cognition trace visibility
+            r["composite_breakdown"] = {
+                "cosine": r.get("pre_decay_score", r["ann_score_original"]),
+                "salience": round(salience, 3),
+                "salience_factor": round(salience_factor, 3),
+                "temporal": round(temporal, 3),
+                "composite": round(r.get("score", 0.0), 4),
+            }
         results.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         metrics["salience_applied"] = True
 
@@ -731,6 +740,8 @@ def _build_rag_context(user_message: str,
                 "temporal_factor": r.get("temporal_factor", 1.0),
                 "age_days": r.get("age_days"),
                 "pre_decay_score": r.get("pre_decay_score"),
+                # R49 composite scoring breakdown
+                "composite_breakdown": r.get("composite_breakdown", {}),
             }
 
             # Filter 1: Minimum text length — reject short stubs (domain
@@ -856,7 +867,7 @@ def _build_rag_context(user_message: str,
         metrics["scores"] = used_scores
         metrics["rejected"] = rejected_scores
         if used_scores:
-            metrics["avg_rerank_score"] = sum(s["rerank_score"] for s in used_scores) / len(used_scores)
+            metrics["avg_composite_score"] = sum(s.get("composite_breakdown", {}).get("composite", s.get("rerank_score", 0.0)) for s in used_scores) / len(used_scores)
             metrics["avg_salience"] = sum(s["salience"] for s in used_scores) / len(used_scores)
 
         if not context_parts:
@@ -1910,7 +1921,7 @@ def chat_with_janus(message: str, speaker: str = "mat", model: str = "", provide
             rag_hit_count=rag_metrics.get("hit_count", 0),
             rag_hits_used=rag_metrics.get("hits_used", 0),
             rag_collections=json.dumps(rag_metrics.get("collections_searched", [])),
-            rag_avg_rerank=rag_metrics.get("avg_rerank_score", 0.0),
+            rag_avg_rerank=rag_metrics.get("avg_composite_score", 0.0),
             rag_avg_salience=rag_metrics.get("avg_salience", 0.0),
             rag_scores=json.dumps(rag_metrics.get("scores", [])),
             system_prompt_length=result.get("system_prompt_length", 0),

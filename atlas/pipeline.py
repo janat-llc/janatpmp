@@ -1,12 +1,14 @@
-"""ATLAS pipeline — orchestrates embed → rerank → salience write-back.
+"""ATLAS pipeline — DECOMMISSIONED reranker orchestration.
 
-Two-stage retrieval: ANN search produces candidates, cross-encoder reranker
-reorders them, salience signal is written back to Qdrant.
+DECOMMISSIONED (R49): vLLM reranker container removed. This module is retained
+for import compatibility only. The rerank_and_write_salience() function is never
+called in production (rerank=False everywhere). RAG scoring is now handled by
+composite scoring in services/chat.py: cosine × temporal × salience_factor.
 """
 
 import logging
 
-from atlas.config import RERANK_CANDIDATES, RERANK_RETURN
+from atlas.config import RAG_ANN_CANDIDATES, RAG_RETURN_TOP
 from atlas.reranking_service import rerank
 from atlas.memory_service import write_salience
 
@@ -17,7 +19,7 @@ def rerank_and_write_salience(
     query: str,
     candidates: list[dict],
     collection: str,
-    limit: int = RERANK_RETURN,
+    limit: int = RAG_RETURN_TOP,
 ) -> list[dict]:
     """Rerank ANN candidates and write salience back to Qdrant.
 

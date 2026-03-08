@@ -169,7 +169,7 @@ def _handle_send(message, history, conv_id, provider, model,
                 rag_hit_count=rag_metrics.get("hit_count", 0),
                 rag_hits_used=rag_metrics.get("hits_used", 0),
                 rag_collections=json.dumps(rag_metrics.get("collections_searched", [])),
-                rag_avg_rerank=rag_metrics.get("avg_rerank_score", 0.0),
+                rag_avg_rerank=rag_metrics.get("avg_composite_score", 0.0),
                 rag_avg_salience=rag_metrics.get("avg_salience", 0.0),
                 rag_scores=json.dumps(rag_metrics.get("scores", [])),
                 system_prompt_length=result.get("system_prompt_length", 0),
@@ -300,7 +300,7 @@ def build_chat_page():
                 hit_count = rag.get("hit_count", 0)
                 rejected_count = len(rag.get("rejected", []))
                 collections = rag.get("collections_searched", [])
-                avg_rerank = rag.get("avg_rerank_score", 0.0)
+                avg_composite = rag.get("avg_composite_score", 0.0)
                 avg_sal = rag.get("avg_salience", 0.0)
 
                 synthesized = rag.get("synthesized", False)
@@ -311,7 +311,7 @@ def build_chat_page():
                     + (f" ({rejected_count} rejected)" if rejected_count else "")
                     + synth_label
                     + f"\n\nCollections: {', '.join(collections) if collections else 'none'}"
-                    + f"\n\nAvg rerank: **{avg_rerank:.3f}**"
+                    + f"\n\nAvg composite: **{avg_composite:.3f}**"
                     + f"\n\nAvg salience: **{avg_sal:.3f}**"
                 )
 
@@ -588,10 +588,10 @@ def build_chat_page():
                             key="ov-rag-funnel-tip",
                         )
                     with gr.Column():
-                        # Retrieval Quality Trend — avg rerank + salience over turns
+                        # Retrieval Quality Trend — avg composite + salience over turns
                         quality_df = pd.melt(
                             df[["turn", "avg_rerank", "avg_salience"]].rename(
-                                columns={"avg_rerank": "Rerank", "avg_salience": "Salience"}
+                                columns={"avg_rerank": "Composite", "avg_salience": "Salience"}
                             ),
                             id_vars=["turn"], var_name="Score", value_name="Value",
                         )

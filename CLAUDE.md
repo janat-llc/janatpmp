@@ -15,9 +15,9 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 - **Gradio** 6.6.0 with MCP support (`gradio[mcp]==6.6.0`)
 - **SQLite3** for persistence (WAL mode, FTS5 full-text search)
 - **Pandas** for data display
-- **Qdrant** vector database (semantic search, 1024-dim cosine collections)
+- **Qdrant** vector database (semantic search, 2560-dim cosine collections)
 - **Neo4j** 2026.01.4 graph database (entity relationships, knowledge graph)
-- **Ollama** for chat LLM + embedding (qwen3.5:27b chat, qwen3-embedding:0.6b via `/v1/embeddings`)
+- **Ollama** for chat LLM + embedding (qwen3.5:27b chat, qwen3-embedding-4b-cpu via `/v1/embeddings`)
 
 ## Project Structure
 
@@ -82,7 +82,7 @@ JANATPMP/
 │   ├── __init__.py
 │   ├── config.py             # Model names, dimensions, service URLs, Neo4j + salience + co-occurrence constants
 │   ├── chunking.py           # Paragraph-aware text splitter for messages + documents (R16)
-│   ├── embedding_service.py  # Qwen3-Embedding-0.6B via Ollama HTTP (OpenAI client)
+│   ├── embedding_service.py  # Qwen3-Embedding-4B via Ollama HTTP (OpenAI client, CPU-only)
 │   ├── reranking_service.py  # DECOMMISSIONED — vLLM reranker removed, rerank defaults to False
 │   ├── memory_service.py     # Salience write-back to Qdrant payloads
 │   ├── usage_signal.py       # Keyword overlap heuristic for usage-based salience (R12)
@@ -377,7 +377,7 @@ Legacy format (pre-R12): `Phase {version}: {summary}`
   - Internal URL: `http://janatpmp-qdrant:6333` (Docker DNS)
   - External URL: `http://localhost:6343` (host access, dashboard at `/dashboard`)
   - Volume: `janatpmp_qdrant_data` (external)
-  - Collections: `janatpmp_documents` (1024-dim), `janatpmp_messages` (1024-dim)
+  - Collections: `janatpmp_documents` (2560-dim), `janatpmp_messages` (2560-dim)
   - Auto-recreates collections on dimension mismatch at startup
 - **Neo4j:** `janatpmp-neo4j` container on ports 7474 (browser) / 7687 (Bolt)
   - Internal URL: `bolt://janatpmp-neo4j:7687` (Docker DNS)
@@ -393,9 +393,9 @@ Legacy format (pre-R12): `Phase {version}: {summary}`
   - `OLLAMA_KEEP_ALIVE=-1` keeps models loaded permanently (no unload timeout)
   - `OLLAMA_KV_CACHE_TYPE=q8_0` — quantized KV cache for reduced VRAM usage
   - Chat model + RAG synthesizer: qwen3.5:27b (default, "Janus") — shared model, zero extra VRAM
-  - Embedding model: Qwen3-Embedding-0.6B (~0.6 GB) — used via `/v1/embeddings`
+  - Embedding model: Qwen3-Embedding-4B on CPU (~4 GB RAM, zero VRAM) — used via `/v1/embeddings`
   - Ollama model list is fetched dynamically via `/api/tags` — no hardcoded model names
-  - Only 2 models loaded: qwen3.5:27b (chat + synthesis) and qwen3-embedding:0.6b (embed)
+  - Chat model on GPU (100% VRAM), embedding model on CPU (0% VRAM) — no model swap latency
 - **vLLM Reranker:** DECOMMISSIONED — container commented out in docker-compose.yml.
   Reranking defaults to `rerank=False`. Code in `atlas/reranking_service.py` retained but unused.
 
@@ -665,18 +665,18 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
   trigger recreation migration
 - **vLLM reranker decommissioned** — `rerank=False` default. ANN results returned directly
 - **Shared chat + synthesis model** — qwen3.5:27b serves both roles, zero extra VRAM
-- **Asymmetric embedding** — Qwen3-Embedding-0.6B uses instruction prefix for queries,
-  plain text for passages. Client-side `[:1024]` truncation for safety.
+- **Asymmetric embedding** — Qwen3-Embedding-4B uses instruction prefix for queries,
+  plain text for passages. Client-side `[:2560]` truncation for safety.
 - **Needle pattern (gr.HTML subclass)** — `KanbanBoard(gr.HTML)` is the first custom
   component. Subclass `gr.HTML`, define `html_template`/`css_template`/`js_on_load`, declare
   `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
   handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R48)
+## Current Platform State (Post-R49)
 
-**Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded. Decay immunity — quality-based salience floors prevent high-quality content from decaying below proportional minimums (R41). Canonical document ingestion — manifest-based PDF pipeline with elevated salience floors for decay immunity; 4 foundational research papers (C-Theory, Principle of Existing, Convergence Academic, Convergence Web) ingested as first-class knowledge (R46).
+**Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 2560-dim embeddings via Qwen3-Embedding-4B on CPU (R49, upgraded from 0.6B/1024-dim). Decay immunity — quality-based salience floors prevent high-quality content from decaying below proportional minimums (R41). Canonical document ingestion — manifest-based PDF pipeline with elevated salience floors for decay immunity; 5 canonical documents (C-Theory, Principle of Existing, Convergence Academic, Convergence Web, Constitution v2.0) ingested as first-class knowledge (R46/R49). All 9,400+ messages have real quality scores (avg 0.938, 13 distinct values) — salience is fully operational.
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`. `chat_with_janus()` accepts `model`/`provider` per-call overrides for A/B testing (R43). Response cleanup strips report-mode formatting (headers, rules, signatures) with code-block protection, feature flag `response_cleanup_enabled`, and diagnostic logging (R43/R44). Chat page auto-refreshes every 5 seconds via `gr.Timer` polling — MCP messages appear without browser refresh (R44).
-**RAG:** Hybrid FTS + vector (messages, chunks, AND documents), graph-aware ranking, salience-weighted scoring (R40), temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval with `created_at` for temporal scoring (R34), intent-gated attribution (R32). Salience factor: `score *= (0.5 + salience)` — default 0.5 is neutral, high-quality boosted, low-quality penalized (R40). Light RAG and full RAG paths both propagate scores, collections, and metadata into `chat_with_janus()` diagnostic return (R44). Original ANN score preserved before salience weighting for accurate diagnostics (R44).
+**RAG:** Hybrid FTS + vector (messages, chunks, AND documents), composite scoring pipeline: `cosine × temporal_decay × salience_factor` with per-hit breakdown in Cognition trace (R49). 30 ANN candidates per collection, top 10 after composite scoring, minimum score 0.4. Ghost reranker config cleaned up — `RERANK_CANDIDATES`/`RERANK_RETURN` replaced with `RAG_ANN_CANDIDATES`/`RAG_RETURN_TOP`/`RAG_MIN_SCORE` (R49). Graph-aware ranking, temporal decay (14d half-life, 0.15 floor), entity routing (R30), graph retrieval (R34), intent-gated attribution (R32). Salience factor: `score *= (0.5 + salience)` — default 0.5 neutral (R40). Light and full RAG paths propagate scores into `chat_with_janus()` diagnostic return (R44).
 **Identity:** 12-layer adaptive prompt composer (R37 adds action feedback layer), pre-cognition, post-cognition feedback loop (R33), register exemplar injection (R32), dynamic speaker identity — single non-Mat speaker gets "You are in conversation with Claude." and multi-speaker conversations produce "the Weavers" identity line (R39/R44).
 **Slumber:** 12 sub-cycles — ingest, evaluate, propagate, relate, prune, extract, dream, weave, link, decay, mine, dedup. Runs in cerebellum container (R41) — no idle gate, continuous 30s cycles. Status persisted to SQLite for cross-process visibility. Thread-safe status dict via `threading.Lock` + `_update_status()`/`_inc_status()` helpers — eliminates dict-race crashes during concurrent reads (R43). Decay immunity in propagate: quality-based salience floors stored in Qdrant payload (`salience_floor`), enforced by both `_propagate_batch()` and `write_usage_salience()` (R41). Per-message resilience in evaluate batch (R40). FTS indexes rebuilt at startup if out of sync (R40).
 **UI:** Kanban board (R36) — drag-and-drop card management via `KanbanBoard(gr.HTML)` with `_pending_action` + `trigger('change')` pattern; auto-collapse empty columns; adaptive left sidebar for Kanban view (R36.1); workable-type filter excludes containers, Done column 14-day recency cap with "visible / total" header, card clicks stay in Work tab (R36.2); creator badges on cards (R38); sprint filter dropdown scopes board to sprint/epic children (R42). Archive Chapter button moved below divider with JS `confirm()` safety dialog (R42). Admin Settings: dynamic dropdowns for `chat_model`, `chat_provider`, `rag_synthesizer_provider`, `rag_synthesizer_model` (R43/R45); password fields for API keys (R45); infrastructure settings moved from Chat to Admin (R45). Speaker labels (`**[Claude]**`, `**[Agent]**`) on non-Mat messages in Chat display (R44).

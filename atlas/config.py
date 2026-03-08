@@ -44,9 +44,10 @@ SALIENCE_DECAY_RATE = 0.01   # Decay for retrieved-but-unused chunks
 # --- RAG retrieval ---
 RAG_MAX_CHUNKS_DEFAULT = 10  # Default max chunks injected (tunable via settings DB)
 
-# --- Reranking parameters ---
-RERANK_CANDIDATES = 20  # ANN top-k before reranking
-RERANK_RETURN = 5        # Top-n returned after reranking
+# --- RAG scoring pipeline (R49: replaces decommissioned reranker) ---
+RAG_ANN_CANDIDATES = 30   # ANN candidates fetched per collection before composite scoring
+RAG_RETURN_TOP = 10        # Max results after composite scoring (before chat.py filtering)
+RAG_MIN_SCORE = 0.4        # Minimum composite score to include in results
 
 # --- Temporal Engine defaults (R17) ---
 LOCATION_LAT = 46.8290       # Fargo, ND (Mat's house)

@@ -16,7 +16,7 @@ from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
 )
 from services.embedding import embed_passages, embed_query
-from atlas.config import RERANK_CANDIDATES, EMBEDDING_DIM
+from atlas.config import RAG_ANN_CANDIDATES, EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
 
@@ -305,7 +305,7 @@ def search(query: str, collection: str = COLLECTION_DOCUMENTS,
     query_vector = embed_query(query)
 
     # Wider ANN net when reranking (retrieve more candidates for reranker to score)
-    ann_limit = RERANK_CANDIDATES if rerank else limit
+    ann_limit = RAG_ANN_CANDIDATES if rerank else max(limit, RAG_ANN_CANDIDATES)
 
     results = client.query_points(
         collection_name=collection,
