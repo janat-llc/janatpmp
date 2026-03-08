@@ -330,9 +330,11 @@ def _build_temporal_context(conversation_id: str = "",
         # Minimal mode: date + time of day only (R25)
         if weight < 0.7:
             parts = []
-            if temporal_ctx.get("date_display"):
-                parts.append(temporal_ctx["date_display"])
-            if temporal_ctx.get("time_of_day"):
+            if temporal_ctx.get("date_formatted"):
+                parts.append(temporal_ctx["date_formatted"])
+            if temporal_ctx.get("time_precise"):
+                parts.append(f"Time: {temporal_ctx['time_precise']}")
+            elif temporal_ctx.get("time_of_day"):
                 parts.append(f"Time of day: {temporal_ctx['time_of_day']}")
             temporal_text = ". ".join(parts) if parts else ""
         else:

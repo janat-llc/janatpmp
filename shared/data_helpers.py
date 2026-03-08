@@ -1,4 +1,5 @@
 """Shared data-loading helpers for JANATPMP UI."""
+import json
 import pandas as pd
 from db.operations import list_items, list_tasks, list_documents, get_connection
 from db.chat_operations import (
@@ -184,6 +185,9 @@ def _load_chat_session() -> dict:
                 "total": last_meta.get("latency_total_ms", 0) or 0,
             }
 
+    # Load full last-turn metadata for sidebar/cognition restore (R48)
+    last_turn_meta = _load_last_turn_metadata(conv_id)
+
     return {
         "conv_id": conv_id,
         "display_history": display_history or list(DEFAULT_CHAT_HISTORY),
@@ -191,6 +195,7 @@ def _load_chat_session() -> dict:
         "token_totals": totals,
         "turn_count": len(msgs),
         "last_timings": last_timings,
+        "last_turn_metadata": last_turn_meta,
     }
 
 
@@ -227,3 +232,106 @@ def _load_conversation_metrics(conv_id: str) -> list[dict]:
         """, (conv_id,))
         rows = cursor.fetchall()
         return [dict(r) for r in rows]
+
+
+def _load_last_turn_metadata(conv_id: str) -> dict:
+    """Load the most recent turn's full metadata from messages_metadata.
+
+    Returns dict with rag_metrics, token_counts, timings, cognition_trace,
+    system_prompt_length — ready to populate turn_metrics State on init.
+    """
+    if not conv_id:
+        return {}
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT m.tokens_prompt, m.tokens_reasoning, m.tokens_response, mm.*
+            FROM messages_metadata mm
+            JOIN messages m ON mm.message_id = m.id
+            WHERE m.conversation_id = ?
+            ORDER BY m.sequence DESC LIMIT 1
+        """, (conv_id,))
+        row = cursor.fetchone()
+        if not row:
+            return {}
+        r = dict(row)
+
+    def _json_field(val):
+        if not val:
+            return {}
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except (json.JSONDecodeError, ValueError):
+                return {}
+        return val
+
+    # Parse JSON columns for cognition trace
+    prompt_layers = _json_field(r.get("cognition_prompt_layers"))
+    graph_trace = _json_field(r.get("cognition_graph_trace"))
+    precognition = _json_field(r.get("cognition_precognition"))
+    postcognition = _json_field(r.get("cognition_postcognition"))
+    scores = _json_field(r.get("rag_scores"))
+
+    return {
+        "rag_metrics": {
+            "hit_count": r.get("rag_hit_count", 0) or 0,
+            "hits_used": r.get("rag_hits_used", 0) or 0,
+            "collections_searched": [],
+            "avg_rerank_score": r.get("rag_avg_rerank", 0.0) or 0.0,
+            "avg_salience": r.get("rag_avg_salience", 0.0) or 0.0,
+            "scores": scores if isinstance(scores, list) else [],
+            "rejected": [],
+            "context_text": r.get("rag_context_text", "") or "",
+        },
+        "token_counts": {
+            "prompt": r.get("tokens_prompt", 0) or 0,
+            "reasoning": r.get("tokens_reasoning", 0) or 0,
+            "response": r.get("tokens_response", 0) or 0,
+            "total": (
+                (r.get("tokens_prompt", 0) or 0)
+                + (r.get("tokens_reasoning", 0) or 0)
+                + (r.get("tokens_response", 0) or 0)
+            ),
+        },
+        "timings": {
+            "rag": r.get("latency_rag_ms", 0) or 0,
+            "inference": r.get("latency_inference_ms", 0) or 0,
+            "total": r.get("latency_total_ms", 0) or 0,
+        },
+        "cognition_trace": {
+            "prompt_layers": prompt_layers,
+            "graph_trace": graph_trace,
+            "precognition": precognition,
+            "postcognition": postcognition,
+        },
+        "system_prompt_length": r.get("system_prompt_length", 0) or 0,
+    }
+
+
+def _load_janus_summary() -> list[dict]:
+    """Load recent Janus conversation summaries for visibility panel.
+
+    Returns list of dicts with: id, title, turn_count, last_message_at,
+    total_tokens, is_active.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                c.id, c.title, c.is_active,
+                COUNT(m.id) AS turn_count,
+                MAX(m.created_at) AS last_message_at,
+                COALESCE(SUM(
+                    COALESCE(m.tokens_prompt, 0)
+                    + COALESCE(m.tokens_reasoning, 0)
+                    + COALESCE(m.tokens_response, 0)
+                ), 0) AS total_tokens
+            FROM conversations c
+            LEFT JOIN messages m ON m.conversation_id = c.id
+            WHERE c.source = 'platform'
+            GROUP BY c.id
+            ORDER BY last_message_at DESC
+            LIMIT 5
+        """)
+        return [dict(r) for r in cursor.fetchall()]

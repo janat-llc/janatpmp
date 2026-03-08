@@ -511,11 +511,46 @@ def build_chat_page():
             @gr.render(inputs=[turn_metrics, active_conv_id])
             def render_overview(metrics, conv_id):
                 tc = metrics.get("turn_count", 0)
+
+                # --- R48: Recent Janus Activity (always visible) ---
+                gr.Markdown("### Recent Activity", key="ov-activity-title")
+                try:
+                    from shared.data_helpers import _load_janus_summary
+                    convs = _load_janus_summary()
+                    if convs:
+                        for c in convs:
+                            active = " (active)" if c.get("is_active") else ""
+                            last_at = c.get("last_message_at", "unknown")
+                            gr.Markdown(
+                                f"- **{c.get('title', 'Untitled')}**{active} — "
+                                f"{c.get('turn_count', 0)} turns, "
+                                f"{c.get('total_tokens', 0):,} tokens, "
+                                f"last: {last_at}",
+                                key=f"ov-conv-{c['id'][:8]}",
+                            )
+                    else:
+                        gr.Markdown("*No Janus conversations yet.*", key="ov-no-convs")
+                except Exception:
+                    gr.Markdown("*Could not load conversation history.*", key="ov-conv-err")
+
+                # --- R48: System Health Alerts (always visible) ---
+                gr.Markdown("### System Health", key="ov-alerts-title")
+                try:
+                    from services.system_status import _generate_alerts
+                    alerts = _generate_alerts()
+                    for i, alert in enumerate(alerts):
+                        level = alert.get("level", "ok")
+                        icon = {"error": "\u26d4", "warning": "\u26a0\ufe0f", "ok": "\u2705"}.get(level, "\u2139\ufe0f")
+                        gr.Markdown(
+                            f"{icon} {alert.get('message', '')}",
+                            key=f"ov-alert-{i}",
+                        )
+                except Exception:
+                    gr.Markdown("*Could not load system alerts.*", key="ov-alerts-err")
+
                 if not conv_id or tc < 1:
                     gr.Markdown(
-                        "*Send a message to see metrics...*\n\n"
-                        "Charts will appear here after your first conversation turn, "
-                        "showing RAG pipeline health, latency breakdowns, and token usage.",
+                        "*Send a message to see conversation charts...*",
                         key="overview-empty",
                     )
                     return
@@ -722,7 +757,7 @@ def build_chat_page():
                     intent_name = intent_data.get(
                         "intent", "unknown").upper()
                     confidence = intent_data.get("confidence", 0)
-                    rag = intent_data.get("rag_depth", "unknown")
+                    rag_depth_label = intent_data.get("rag_depth", "unknown")
                     precog_flag = ("Yes" if intent_data.get(
                         "run_precognition") else "No")
                     reasoning = intent_data.get("reasoning", "")
@@ -735,7 +770,7 @@ def build_chat_page():
                         key="cog-intent-header",
                     )
                     gr.Markdown(
-                        f"**{intent_name}** ({rag} RAG) | "
+                        f"**{intent_name}** ({rag_depth_label} RAG) | "
                         f"{conf_bar} {confidence:.0%}\n\n"
                         f"Pre-Cognition: {precog_flag} | {reasoning}",
                         key="cog-intent-body",
@@ -1311,12 +1346,16 @@ def build_chat_page():
         session = _load_chat_session()
         if session["conv_id"]:
             set_active_conversation_id(session["conv_id"])
+        # R48: Load last turn's full metadata so sidebars show real data on load
+        last_meta = session.get("last_turn_metadata", {})
         metrics = {
-            "rag_metrics": dict(_EMPTY_RAG_METRICS),
-            "token_counts": dict(_EMPTY_TOKEN_COUNTS),
-            "timings": session.get("last_timings", {"rag": 0, "inference": 0, "total": 0}),
+            "rag_metrics": last_meta.get("rag_metrics", dict(_EMPTY_RAG_METRICS)),
+            "token_counts": last_meta.get("token_counts", dict(_EMPTY_TOKEN_COUNTS)),
+            "timings": last_meta.get("timings", session.get("last_timings", {"rag": 0, "inference": 0, "total": 0})),
             "cumulative_tokens": session["token_totals"],
             "turn_count": session["turn_count"],
+            "system_prompt_length": last_meta.get("system_prompt_length", 0),
+            "cognition_trace": last_meta.get("cognition_trace", {}),
         }
         # Refresh provider/model from DB so changes take effect on page refresh
         fresh_config = get_chat_config()
@@ -1358,11 +1397,17 @@ def build_chat_page():
         if db_count <= current_count:
             return gr.skip(), gr.skip()
 
-        # New messages detected — rebuild display history from DB
+        # New messages detected — rebuild display history + metrics from DB
         session = _load_chat_session()
+        last_meta = session.get("last_turn_metadata", {})
         new_metrics = dict(metrics)
         new_metrics["turn_count"] = session["turn_count"]
         new_metrics["cumulative_tokens"] = session["token_totals"]
+        new_metrics["rag_metrics"] = last_meta.get("rag_metrics", metrics.get("rag_metrics", {}))
+        new_metrics["token_counts"] = last_meta.get("token_counts", metrics.get("token_counts", {}))
+        new_metrics["timings"] = last_meta.get("timings", metrics.get("timings", {}))
+        new_metrics["cognition_trace"] = last_meta.get("cognition_trace", {})
+        new_metrics["system_prompt_length"] = last_meta.get("system_prompt_length", 0)
         return session["display_history"], new_metrics
 
     poll_timer.tick(

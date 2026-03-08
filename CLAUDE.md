@@ -24,7 +24,7 @@ persistent project state that AI assistants can read and write via MCP (Model Co
 ```
 JANATPMP/
 ├── app.py                    # Thin launcher: startup calls, gr.Blocks, banner, demo.launch()
-├── mcp_registry.py           # MCP Tool Registry — all 87 gr.api() function imports + ALL_MCP_TOOLS list
+├── mcp_registry.py           # MCP Tool Registry — all 88 gr.api() function imports + ALL_MCP_TOOLS list
 ├── janat_theme.py            # Custom Gradio theme (Janat brand colors, fonts, CSS)
 ├── components/
 │   ├── __init__.py
@@ -110,6 +110,7 @@ JANATPMP/
 │   ├── turn_timer.py         # Thread-local TurnTimer context manager (R12)
 │   ├── slumber.py            # Background daemon — 12-stage Slumber Cycle (R12/R27/R31/R32/R47)
 │   ├── entity_merge.py       # Entity merge + batch dedup + duplicate detection (R47)
+│   ├── system_status.py      # System health aggregator — single MCP endpoint (R48)
 │   ├── slumber_eval.py        # Gemini-powered message evaluation (R22: First Light)
 │   ├── precognition.py        # Gemini pre-cognition — adaptive prompt shaping (R25)
 │   ├── postcognition.py       # Gemini post-cognition — response evaluation + corrective signal (R33)
@@ -506,7 +507,7 @@ with gr.Blocks() as demo:
 demo.launch(mcp_server=True)
 ```
 
-87 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
+88 functions are exposed via `gr.api()` as MCP tools, centralized in `mcp_registry.py`:
 29 from `db/operations.py` (including domain CRUD + export/import + sprint view), 17 from
 `db/chat_operations.py` (including Janus lifecycle + conversation stream + metadata backfill
 + knowledge state), 4 from `db/chunk_operations.py` (chunk CRUD + stats + search),
@@ -671,7 +672,7 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
   `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
   handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R47)
+## Current Platform State (Post-R48)
 
 **Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 659 conversations embedded. Decay immunity — quality-based salience floors prevent high-quality content from decaying below proportional minimums (R41). Canonical document ingestion — manifest-based PDF pipeline with elevated salience floors for decay immunity; 4 foundational research papers (C-Theory, Principle of Existing, Convergence Academic, Convergence Web) ingested as first-class knowledge (R46).
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`. `chat_with_janus()` accepts `model`/`provider` per-call overrides for A/B testing (R43). Response cleanup strips report-mode formatting (headers, rules, signatures) with code-block protection, feature flag `response_cleanup_enabled`, and diagnostic logging (R43/R44). Chat page auto-refreshes every 5 seconds via `gr.Timer` polling — MCP messages appear without browser refresh (R44).
@@ -684,7 +685,8 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 **Speaker Identity:** `speaker` column on messages tracks who sent each message (mat, claude, agent, etc.). `chat_with_janus()` MCP tool exposes `speaker` param. Non-Mat speakers get `[Speaker]:` prefix in LLM history and bold `[Speaker]` label in Chat UI display (R44). Single non-Mat speakers now correctly replace the hardcoded Mat identity in the prompt composer; mixed-speaker conversations trigger "the Weavers" identity line (R39/R44).
 **Canonical Ingestion:** Manifest-based pipeline (`services/canonical_ingest.py`) reads `imports/canonical/manifest.json`, detects new/changed documents via SHA-256 content hashing, extracts text from PDFs via `pdfplumber` (`services/pdf_extractor.py`), creates/updates JANATPMP documents, and embeds with elevated salience floors for decay immunity. `on_document_write()` accepts `salience_floor` param (default 0.0) — canonical docs get 0.7-0.9 floors. Runs before general auto-ingestion in `scan_and_ingest()`. Docker volume mount `./imports/canonical:/data/canonical` on both core and cerebellum (R46).
 **Entity Merge:** `merge_entities()` MCP tool consolidates duplicate entity nodes — relocates all Neo4j edges (CO_OCCURS_WITH via canonical ordering, MENTIONS, etc.) from duplicate to canonical, reassigns SQLite mentions with conflict handling, consolidates metadata (mention_count sum, first/last_seen_at, description), then deletes duplicate from both stores. `batch_merge_from_map()` processes the dedup map JSON (313 clusters) with 6 false positive exclusions and creates ALIAS_OF edges for 14 abbreviation pairs. Slumber sub-cycle 11 (`Dedup`) auto-detects new duplicates via article prefix / plural-singular / case variation pattern matching every 5th cycle (R47).
-**Platform:** 87 MCP tools (R47: `merge_entities()`, `batch_merge_from_map()`), auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41). Ollama init script (`ollama/ollama-init.sh`) auto-pulls required models and creates custom Modelfiles on container startup (R43).
+**Observability:** `get_system_status()` MCP tool returns complete system health in one call — triad health (SQLite/Qdrant/Neo4j), Slumber sub-cycle stats, pipeline info, coverage gaps, auto-generated alerts (R48). Temporal context uses precise time ("2:47 PM CST") not categories ("afternoon"), substrate awareness (CPU %, memory via psutil), outside weather framed as Mat's environment (R48). Chat metrics (left sidebar, right sidebar, Cognition tab) load last turn's full metadata from DB on page load — no more zeros between turns (R48). Overview tab shows Recent Activity (last 5 Janus conversations) and System Health alerts panel even with no active conversation (R48).
+**Platform:** 88 MCP tools (R48: `get_system_status()`), auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41). Ollama init script (`ollama/ollama-init.sh`) auto-pulls required models and creates custom Modelfiles on container startup (R43).
 
 ### Architectural Gaps
 

@@ -177,6 +177,7 @@ def get_temporal_context(
 
     return {
         "time_of_day": _time_of_day(hour),
+        "time_precise": now.strftime("%I:%M %p %Z").lstrip("0"),
         "day_of_week": now.strftime("%A"),
         "date_formatted": now.strftime("%A, %B %d, %Y"),
         "season": _season(month, lat),
@@ -193,6 +194,25 @@ def get_temporal_context(
     }
 
 
+def get_substrate_context() -> dict:
+    """Get substrate environment metrics (CPU, memory).
+
+    Returns:
+        Dict with cpu_percent, memory_percent, memory_available_gb, memory_total_gb.
+        Empty dict if psutil is unavailable.
+    """
+    try:
+        import psutil
+        return {
+            "cpu_percent": psutil.cpu_percent(interval=0.1),
+            "memory_percent": psutil.virtual_memory().percent,
+            "memory_available_gb": round(psutil.virtual_memory().available / (1024**3), 1),
+            "memory_total_gb": round(psutil.virtual_memory().total / (1024**3), 1),
+        }
+    except Exception:
+        return {}
+
+
 def format_temporal_prompt(ctx: dict) -> str:
     """Format temporal context as compact lines for system prompt context block.
 
@@ -200,13 +220,27 @@ def format_temporal_prompt(ctx: dict) -> str:
         ctx: Dict from get_temporal_context().
 
     Returns:
-        Two-line string: Time line + Location line, dash-prefixed.
+        Multi-line string: precise time, substrate status, Mat's environment.
     """
     low_f, high_f = ctx["temp_range_f"]
-    # Strip day name from date_formatted since we already have day_of_week
     date_part = ctx["date_formatted"].split(", ", 1)[1] if ", " in ctx["date_formatted"] else ctx["date_formatted"]
+    time_str = ctx.get("time_precise", ctx["time_of_day"])
+
     lines = [
-        f"\u2014 Time: {ctx['day_of_week']} {ctx['time_of_day']}, {date_part}",
-        f"\u2014 Location: {ctx['location_name']} ({ctx['season']}, ~{low_f}-{high_f}\u00b0F, sunrise {ctx['sunrise']}, sunset {ctx['sunset']})",
+        f"\u2014 Time: {time_str}, {ctx['day_of_week']}, {date_part}",
     ]
+
+    substrate = get_substrate_context()
+    if substrate:
+        mem_used = substrate["memory_total_gb"] - substrate["memory_available_gb"]
+        lines.append(
+            f"\u2014 Your substrate: CPU {substrate['cpu_percent']:.0f}%, "
+            f"Memory {mem_used:.1f}/{substrate['memory_total_gb']:.0f} GB"
+        )
+
+    lines.append(
+        f"\u2014 Outside (Mat's environment): ~{low_f}-{high_f}\u00b0F, "
+        f"{ctx['location_name']} ({ctx['season']})"
+    )
+
     return "\n".join(lines)

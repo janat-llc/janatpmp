@@ -1,4 +1,4 @@
-"""MCP Tool Registry — all 85 functions exposed via gr.api().
+"""MCP Tool Registry — all 88 functions exposed via gr.api().
 
 Centralizes imports so app.py only needs one import line.
 Grouped by category for readability. Each function MUST have
@@ -88,6 +88,8 @@ from atlas.register_mining import search_register_exemplars, run_register_mining
 from services.chat import chat_with_janus
 # --- Slumber status (R22: First Light) — 1 function ---
 from services.slumber import get_slumber_status
+# --- System status (R48: System Observability) — 1 function ---
+from services.system_status import get_system_status
 # --- Backfill orchestrator (R26: The Waking Mind) — 3 functions ---
 from services.backfill_orchestrator import (
     get_backfill_progress, cancel_backfill, run_backfill,
@@ -148,4 +150,7 @@ ALL_MCP_TOOLS: list = [
     get_knowledge_state,
     search_register_exemplars,
     run_register_mining_cycle,
+
+    # --- System observability (R48) — 1 function ---
+    get_system_status,
 ]
