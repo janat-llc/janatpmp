@@ -101,6 +101,7 @@ services:
       - neo4j_data:/data
     environment:
       - NEO4J_AUTH=neo4j/janatpmp_graph
+      - NEO4J_PLUGINS=["graph-data-science"]
     restart: unless-stopped
     networks:
       - janatpmp_network

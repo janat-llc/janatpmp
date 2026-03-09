@@ -73,7 +73,10 @@ JANATPMP/
 │   │   ├── 1.6.0_postcognition.sql
 │   │   ├── 1.7.0_message_roles.sql
 │   │   ├── 1.8.0_creator_provenance.sql
-│   │   └── 1.9.0_speaker_identity.sql
+│   │   ├── 1.9.0_speaker_identity.sql
+│   │   ├── 2.0.0_salience_score.sql
+│   │   ├── 2.1.0_entity_types.sql
+│   │   └── 2.2.0_items_entity_types.sql
 │   ├── janatpmp.db           # SQLite database (runtime, gitignored)
 │   ├── backups/              # Timestamped database backups (SQLite + Qdrant + Neo4j)
 │   ├── exports/              # Portable project data exports (JSON)
@@ -101,7 +104,8 @@ JANATPMP/
 │   ├── schema.py             # Idempotent Neo4j constraints + indexes
 │   ├── graph_service.py      # Neo4j CRUD + MCP tools (query, neighbors, stats)
 │   ├── cdc_consumer.py       # Background CDC poller + backfill_graph MCP tool
-│   └── semantic_edges.py     # Conversation SIMILAR_TO edge generation (R20)
+│   ├── semantic_edges.py     # Conversation SIMILAR_TO edge generation (R20)
+│   └── graph_analytics.py    # GDS centrality analysis — betweenness + degree (R50)
 ├── services/
 │   ├── __init__.py
 │   ├── log_config.py         # SQLiteLogHandler + setup_logging() + get_logs()
@@ -257,10 +261,10 @@ Categories: `chat`, `ollama`, `export`, `ingestion`, `rag`, `system`, `persona`.
 **Core Tables:** `domains`, `items`, `tasks`, `documents`, `relationships`, `conversations`,
 `messages` (triplet: user_prompt + model_reasoning + model_response), `app_logs`, `settings`,
 `messages_metadata` (cognitive telemetry + quality_score), `chunks` (FTS5, CDC), `entities`
-(6 types, R29), `entity_mentions`, `file_registry`, `register_exemplars` (R32),
+(12 types: concept/decision/milestone/person/reference/emotional_state + experiment/bug/spike/research/debt/initiative, R29/R50), `entity_mentions`, `file_registry`, `register_exemplars` (R32),
 `cdc_outbox`, `schema_version`. Full details in JANATPMP document "Database Schema Reference".
 
-**20 migrations** (0.3.0 through 2.0.0) in `db/migrations/`. Latest: `2.0.0_salience_score.sql` (HF-01) — adds `salience_score` and `salience_reasoning` columns to `messages_metadata`.
+**22 migrations** (0.3.0 through 2.2.0) in `db/migrations/`. Latest: `2.2.0_items_entity_types.sql` (R50) — expands `items` entity_type CHECK constraint with experiment, bug, spike, research, debt, initiative. `2.1.0_entity_types.sql` does the same for the `entities` table.
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
 the fresh-DB/existing-DB if/else branch (after both branches complete).
@@ -686,7 +690,7 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 **Canonical Ingestion:** Manifest-based pipeline (`services/canonical_ingest.py`) reads `imports/canonical/manifest.json`, detects new/changed documents via SHA-256 content hashing, extracts text from PDFs via `pdfplumber` (`services/pdf_extractor.py`), creates/updates JANATPMP documents, and embeds with elevated salience floors for decay immunity. `on_document_write()` accepts `salience_floor` param (default 0.0) — canonical docs get 0.7-0.9 floors. Runs before general auto-ingestion in `scan_and_ingest()`. Docker volume mount `./imports/canonical:/data/canonical` on both core and cerebellum (R46).
 **Entity Merge:** `merge_entities()` MCP tool consolidates duplicate entity nodes — relocates all Neo4j edges (CO_OCCURS_WITH via canonical ordering, MENTIONS, etc.) from duplicate to canonical, reassigns SQLite mentions with conflict handling, consolidates metadata (mention_count sum, first/last_seen_at, description), then deletes duplicate from both stores. `batch_merge_from_map()` processes the dedup map JSON (313 clusters) with 6 false positive exclusions and creates ALIAS_OF edges for 14 abbreviation pairs. Slumber sub-cycle 11 (`Dedup`) auto-detects new duplicates via article prefix / plural-singular / case variation pattern matching every 5th cycle (R47).
 **Observability:** `get_system_status()` MCP tool returns complete system health in one call — triad health (SQLite/Qdrant/Neo4j), Slumber sub-cycle stats, pipeline info, coverage gaps, auto-generated alerts (R48). Temporal context uses precise time ("2:47 PM CST") not categories ("afternoon"), substrate awareness (CPU %, memory via psutil), outside weather framed as Mat's environment (R48). Chat metrics (left sidebar, right sidebar, Cognition tab) load last turn's full metadata from DB on page load — no more zeros between turns (R48). Overview tab shows Recent Activity (last 5 Janus conversations) and System Health alerts panel even with no active conversation (R48).
-**Platform:** 88 MCP tools (R48: `get_system_status()`), auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41). Ollama init script (`ollama/ollama-init.sh`) auto-pulls required models and creates custom Modelfiles on container startup (R43).
+**Platform:** 89 MCP tools (R50: `compute_graph_centrality()`), auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41). Ollama init script (`ollama/ollama-init.sh`) auto-pulls required models and creates custom Modelfiles on container startup (R43). Neo4j GDS plugin installed — `compute_graph_centrality("betweenness"|"degree", limit)` available for entity topology analysis; C-Theory confirmed as dominant hub (betweenness score 2310).
 
 ### Architectural Gaps
 

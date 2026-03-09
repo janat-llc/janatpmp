@@ -71,7 +71,7 @@ def _generate_alerts() -> list[dict]:
         gs = graph_stats()
         if gs.get("error"):
             alerts.append({"level": "error", "message": f"Neo4j error: {gs['error']}"})
-        elif gs.get("total_nodes", 0) == 0:
+        elif sum(gs.get("nodes", {}).values() or [0]) == 0:
             alerts.append({"level": "warning", "message": "Neo4j graph has 0 nodes"})
     except Exception:
         alerts.append({"level": "error", "message": "Neo4j unreachable"})
@@ -231,7 +231,7 @@ def get_system_status() -> dict:
         try:
             from graph.graph_service import graph_stats
             gs = graph_stats()
-            entities_neo4j = gs.get("node_labels", {}).get("Entity", 0)
+            entities_neo4j = gs.get("nodes", {}).get("Entity", 0)
         except Exception:
             pass
 

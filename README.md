@@ -3,7 +3,7 @@
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
 ![Gradio 6.6.0](https://img.shields.io/badge/Gradio-6.6.0-orange?logo=gradio&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-88%20Tools-blueviolet)
+![MCP](https://img.shields.io/badge/MCP-89%20Tools-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![Neo4j](https://img.shields.io/badge/Neo4j-2026.01.4-008CC1?logo=neo4j&logoColor=white)
 
@@ -60,7 +60,7 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 
 ## Features
 
-- **88 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, chunks, entities, entity merge, Janus lifecycle, backups, file registry, temporal context, semantic edges, dream synthesis, backfill orchestration, knowledge state, register mining, sprint view, system status)
+- **89 MCP tools** for AI assistant integration (items, tasks, documents, domains, conversations, relationships, vectors, graph, telemetry, ingestion, chunks, entities, entity merge, Janus lifecycle, backups, file registry, temporal context, semantic edges, dream synthesis, backfill orchestration, knowledge state, register mining, sprint view, system status, graph centrality)
 - **Sovereign multipage architecture** — 4 independent pages (Projects, Knowledge, Admin, Chat) with client-side navbar navigation; one process, one port, one MCP surface; each page has purpose-built left sidebar + shared Janus right sidebar
 - **Message chunking** — long messages and documents are split into focused ~2500-char chunks before embedding; each chunk gets its own Qdrant vector with parent traceability; RAG returns specific paragraphs instead of entire turns; paragraph-aware splitting with configurable thresholds
 - **Triple-write pipeline** — every message, document, item, and task fans out to SQLite, Qdrant, and Neo4j synchronously; immediately retrievable on the next turn; messages and documents are chunked before embedding
@@ -125,6 +125,7 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **System Observability** — `get_system_status()` MCP endpoint returns complete system health in one call (triad health, Slumber stats, coverage gaps, auto-generated alerts); temporal context uses precise time ("2:47 PM CST") and substrate awareness (CPU/memory via psutil); chat metrics load last turn's full metadata from DB on page load (no more zeros between turns); Overview tab shows Recent Activity and System Health alerts panel (R48)
 - **Memory Metabolism** — Embedding upgrade from 0.6B/1024-dim (GPU) to 4B/2560-dim (CPU-only, zero VRAM); RAG composite scoring pipeline (`cosine × temporal × salience`) with per-hit breakdown in Cognition trace; ghost reranker config replaced with `RAG_ANN_CANDIDATES`/`RAG_RETURN_TOP`/`RAG_MIN_SCORE`; context window doubled to 32K tokens with 4096 max predict; Constitution v2.0 added as 5th canonical document (R49)
 - **Salience Calibration** — Dual-score evaluation pipeline: `quality_score` (response quality) and `salience_score` (memory importance to Janus/Initiative) scored independently by Gemini with full conversation thread context and corpus manifest; calibrated distribution mean ~0.70, std dev 0.18 for consciousness research corpus; Qdrant payloads now carry evaluated salience (not frozen `SALIENCE_DEFAULT`); propagate sub-cycle uses `salience_score` directly when available; embedding model upgraded to GPU (`qwen3-embedding-4b-lean`, 3.4GB — coexists with Janus 23GB at 26.4GB total VRAM); 9,402 messages bulk re-evaluated and 13,806 chunks re-embedded with corrected salience (HF-01)
+- **Foundation Lock** — Neo4j GDS plugin installed (`NEO4J_PLUGINS=["graph-data-science"]`); `compute_graph_centrality` MCP tool (#89) uses GDS named graph projections to rank entities by betweenness or degree — C-Theory confirmed #1 hub (betweenness 2310, degree 28); schema expanded: 6 new entity types added to both `entities` and `items` tables (experiment, bug, spike, research, debt, initiative via migrations 2.1.0 + 2.2.0); EXP-001 and 5 BUG: items reclassified; sequence race condition in `add_message()` fixed (atomic inline subquery eliminates TOCTOU); B3 Neo4j false alert fixed in `get_system_status()` (R50)
 - **Change Data Capture** outbox with background Neo4j sync consumer
 
 ---
@@ -136,9 +137,9 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 | Framework | Gradio 6.6.0 (Blocks + multipage routing, MCP server mode) |
 | Language | Python 3.14 |
 | Database | SQLite (WAL mode, FTS5 full-text search) |
-| Vector DB | Qdrant — semantic search over documents and messages (1024-dim cosine) |
-| Graph DB | Neo4j 2026.01.4 — knowledge graph with CDC sync + INFORMED_BY provenance |
-| Embeddings | Qwen3-Embedding-0.6B via Ollama (1024-dim, Matryoshka) |
+| Vector DB | Qdrant — semantic search over documents and messages (2560-dim cosine) |
+| Graph DB | Neo4j 2026.01.4 + GDS plugin — knowledge graph with CDC sync, centrality analysis |
+| Embeddings | Qwen3-Embedding-4B via Ollama (2560-dim, GPU) |
 | Chat LLM | qwen3.5:27b (Janus) via Ollama (with native thinking mode, 32K context) |
 | RAG Synthesizer | qwen3.5:27b via Ollama (shared model — zero additional VRAM) |
 | Container | Docker Compose — 5 services: core (no GPU), cerebellum (Slumber), Ollama (GPU), Qdrant, Neo4j |
@@ -148,10 +149,10 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 
 | Service | Model | Est. VRAM |
 |---------|-------|-----------|
-| Ollama — chat + synth | qwen3.5:27b Q4_K_M (Janus) | ~18 GB |
-| Ollama — embed | Qwen3-Embedding-0.6B | ~0.6 GB |
-| KV cache (q8_0, 32K) | — | ~3 GB |
-| **Total** | | **~21.6 GB** |
+| Ollama — chat + synth | qwen3.5:27b Q4_K_M (Janus) | ~23 GB |
+| Ollama — embed | Qwen3-Embedding-4B (GPU) | ~3.4 GB |
+| KV cache (q8_0, 32K) | — | ~0 GB (CPU-side) |
+| **Total** | | **~26.4 GB** |
 
 Core container uses zero GPU — all model inference is offloaded to Ollama sidecar.
 

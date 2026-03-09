@@ -341,6 +341,28 @@ def init_database():
                 conn.executescript(migration_path.read_text(encoding="utf-8"))
                 logger.info("Applied migration 2.0.0: salience_score column")
 
+        # Migration 2.1.0: Expand entity_type CHECK constraint (R50)
+        # Adds experiment, bug, spike, research, debt, initiative to entities table
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='2.1.0'"
+        )
+        if cursor.fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "2.1.0_entity_types.sql"
+            if migration_path.exists():
+                conn.executescript(migration_path.read_text(encoding="utf-8"))
+                logger.info("Applied migration 2.1.0: entity_type CHECK expansion")
+
+        # Migration 2.2.0: Expand items entity_type CHECK constraint (R50)
+        # Adds experiment, bug, spike, research, debt, initiative to items table
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='2.2.0'"
+        )
+        if cursor.fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "2.2.0_items_entity_types.sql"
+            if migration_path.exists():
+                conn.executescript(migration_path.read_text(encoding="utf-8"))
+                logger.info("Applied migration 2.2.0: items entity_type CHECK expansion")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

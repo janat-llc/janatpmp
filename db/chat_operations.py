@@ -322,7 +322,6 @@ def add_message(
     Returns:
         The ID of the created message
     """
-    seq = get_next_sequence(conversation_id)
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -330,9 +329,14 @@ def add_message(
                 (conversation_id, sequence, user_prompt, model_reasoning, model_response,
                  provider, model, tokens_prompt, tokens_reasoning, tokens_response,
                  tools_called, role, speaker)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (
+                ?,
+                (SELECT COALESCE(MAX(sequence), 0) + 1 FROM messages WHERE conversation_id = ?),
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
         """, (
-            conversation_id, seq, user_prompt, model_reasoning, model_response,
+            conversation_id, conversation_id,
+            user_prompt, model_reasoning, model_response,
             provider, model, tokens_prompt, tokens_reasoning, tokens_response,
             tools_called, role, speaker,
         ))
