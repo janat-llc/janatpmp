@@ -447,11 +447,16 @@ def get_message_metadata(message_id: str) -> dict:
         return dict(row) if row else {}
 
 
+_UNSET = object()  # Sentinel for "no change" on nullable float columns
+
+
 def update_message_metadata(
     message_id: str,
     keywords: str = "",
     labels: str = "",
     quality_score: float = -1.0,
+    salience_score: float | None = _UNSET,
+    salience_reasoning: str = "",
     rag_scores: str = "",
     salience_synced: int = -1,
     eval_rationale: str = "",
@@ -467,6 +472,8 @@ def update_message_metadata(
         keywords: JSON array of keywords (empty = no change)
         labels: JSON array of labels (empty = no change)
         quality_score: Quality score 0.0-1.0 (negative = no change)
+        salience_score: HF-01 true salience score 0.0-1.0 (sentinel = no change, None = write NULL)
+        salience_reasoning: HF-01 salience justification text (empty = no change)
         rag_scores: Updated JSON array of per-hit scores (empty = no change)
         salience_synced: Set to 1 after Slumber propagates quality to Qdrant salience (negative = no change)
         eval_rationale: Evaluation rationale text (empty = no change, R22)
@@ -491,6 +498,12 @@ def update_message_metadata(
         if quality_score >= 0:
             updates.append("quality_score = ?")
             params.append(quality_score)
+        if salience_score is not _UNSET:
+            updates.append("salience_score = ?")
+            params.append(salience_score)
+        if salience_reasoning:
+            updates.append("salience_reasoning = ?")
+            params.append(salience_reasoning)
         if rag_scores:
             updates.append("rag_scores = ?")
             params.append(rag_scores)

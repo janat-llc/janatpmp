@@ -424,10 +424,12 @@ def embed_all_messages() -> dict:
                    m.conversation_id, m.sequence,
                    COALESCE(m.created_at, conv.created_at) as created_at,
                    m.provider, m.model,
-                   conv.title as conv_title
+                   conv.title as conv_title,
+                   mm.salience_score
             FROM chunks c
             JOIN messages m ON c.entity_id = m.id
             LEFT JOIN conversations conv ON m.conversation_id = conv.id
+            LEFT JOIN messages_metadata mm ON mm.message_id = c.entity_id
             WHERE c.entity_type = 'message' AND c.embedded_at IS NULL
             ORDER BY c.entity_id, c.chunk_index
         """).fetchall()
@@ -456,7 +458,12 @@ def embed_all_messages() -> dict:
                     "created_at": row["created_at"] or "",
                     "provider": row["provider"] or "",
                     "model": row["model"] or "",
-                    "salience": SALIENCE_DEFAULT,
+                    # HF-01: Use evaluated salience_score from SQLite if available
+                    "salience": (
+                        float(row["salience_score"])
+                        if row["salience_score"] is not None
+                        else SALIENCE_DEFAULT
+                    ),
                     "entity_type": "message",
                 }
                 points.append(PointStruct(
@@ -494,9 +501,11 @@ def embed_all_messages() -> dict:
                    m.user_prompt, m.model_response,
                    COALESCE(m.created_at, c.created_at) as created_at,
                    m.provider, m.model,
-                   c.title as conv_title
+                   c.title as conv_title,
+                   mm.salience_score
             FROM messages m
             JOIN conversations c ON c.id = m.conversation_id
+            LEFT JOIN messages_metadata mm ON mm.message_id = m.id
             WHERE (m.user_prompt != '' OR m.model_response != '')
             AND NOT EXISTS (
                 SELECT 1 FROM chunks ch
@@ -546,7 +555,12 @@ def embed_all_messages() -> dict:
                         "created_at": row["created_at"] or "",
                         "provider": row["provider"] or "",
                         "model": row["model"] or "",
-                        "salience": SALIENCE_DEFAULT,
+                        # HF-01: Use evaluated salience_score from SQLite if available
+                        "salience": (
+                            float(row["salience_score"])
+                            if row["salience_score"] is not None
+                            else SALIENCE_DEFAULT
+                        ),
                         "entity_type": "message",
                     },
                 )

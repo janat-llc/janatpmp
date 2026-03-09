@@ -330,6 +330,17 @@ def init_database():
                 conn.executescript(migration_path.read_text(encoding="utf-8"))
                 logger.info("Applied migration 1.9.0: speaker identity")
 
+        # Migration 2.0.0: True salience scoring (HF-01)
+        # Adds salience_score + salience_reasoning distinct from quality_score
+        cursor = conn.execute(
+            "SELECT version FROM schema_version WHERE version='2.0.0'"
+        )
+        if cursor.fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "2.0.0_salience_score.sql"
+            if migration_path.exists():
+                conn.executescript(migration_path.read_text(encoding="utf-8"))
+                logger.info("Applied migration 2.0.0: salience_score column")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

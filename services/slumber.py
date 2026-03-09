@@ -302,7 +302,8 @@ def _evaluate_batch() -> int:
         cursor = conn.cursor()
         # Find messages with metadata but no quality score
         cursor.execute("""
-            SELECT mm.message_id, m.user_prompt, m.model_response, m.model_reasoning
+            SELECT mm.message_id, m.conversation_id, m.user_prompt,
+                   m.model_response, m.model_reasoning
             FROM messages_metadata mm
             JOIN messages m ON mm.message_id = m.id
             WHERE mm.quality_score IS NULL
@@ -335,7 +336,26 @@ def _evaluate_batch() -> int:
 
             if use_llm:
                 from services.slumber_eval import evaluate_message
-                result = evaluate_message(user_prompt, model_response, model_reasoning)
+                from db.chat_operations import get_messages
+
+                # Fetch full conversation thread for context
+                conv_id = row["conversation_id"]
+                conv_messages = get_messages(conv_id, limit=1000) if conv_id else []
+
+                # Find the index of this message within the thread
+                turn_index = next(
+                    (i for i, m in enumerate(conv_messages) if m["id"] == msg_id),
+                    len(conv_messages),
+                )
+
+                result = evaluate_message(
+                    user_prompt=user_prompt,
+                    model_response=model_response,
+                    model_reasoning=model_reasoning,
+                    conversation_messages=conv_messages,
+                    turn_index=turn_index,
+                    target_message_id=msg_id,
+                )
                 quality = result["quality_score"]
                 keywords_from_topics = result.get("topics", [])
             else:
@@ -343,7 +363,7 @@ def _evaluate_batch() -> int:
                 result = {
                     "fallback": True, "rationale": "", "topics": [],
                     "emotional_register": "", "eval_provider": "heuristic",
-                    "eval_model": "",
+                    "eval_model": "", "salience_score": None, "salience_reasoning": "",
                 }
                 keywords_from_topics = []
 
@@ -354,10 +374,12 @@ def _evaluate_batch() -> int:
                 k for k in tf_keywords if k not in keywords_from_topics
             ]
 
-            # Update metadata with quality score + evaluation details
+            # Update metadata with quality score + salience score + evaluation details
             update_message_metadata(
                 message_id=msg_id,
                 quality_score=quality,
+                salience_score=result.get("salience_score"),
+                salience_reasoning=result.get("salience_reasoning", ""),
                 keywords=json.dumps(merged_keywords[:10]),
                 eval_rationale=result.get("rationale", ""),
                 eval_emotional_register=result.get("emotional_register", ""),
@@ -422,7 +444,7 @@ def _propagate_batch():
 
     with get_connection() as conn:
         rows = conn.execute("""
-            SELECT mm.message_id, mm.quality_score
+            SELECT mm.message_id, mm.quality_score, mm.salience_score
             FROM messages_metadata mm
             WHERE mm.quality_score IS NOT NULL
               AND mm.salience_synced = 0
@@ -479,15 +501,21 @@ def _propagate_batch():
         except Exception:
             continue
 
-        # Apply quality → salience mapping
-        if quality < 0.15:
-            new_salience = current_salience * 0.3        # Hard decay
-        elif quality < 0.4:
-            new_salience = current_salience * 0.7        # Soft decay
-        elif quality > 0.7:
-            new_salience = min(1.0, current_salience + 0.1)  # Boost
+        # HF-01: Use evaluated salience_score directly when available.
+        # GUARD: Never overwrite a non-NULL salience_score with quality-derived value.
+        evaluated_salience = row["salience_score"]
+        if evaluated_salience is not None:
+            new_salience = float(evaluated_salience)
         else:
-            new_salience = current_salience               # Neutral (0.4-0.7)
+            # Fallback: derive salience from quality for rows not yet evaluated
+            if quality < 0.15:
+                new_salience = current_salience * 0.3        # Hard decay
+            elif quality < 0.4:
+                new_salience = current_salience * 0.7        # Soft decay
+            elif quality > 0.7:
+                new_salience = min(1.0, current_salience + 0.1)  # Boost
+            else:
+                new_salience = current_salience               # Neutral (0.4-0.7)
 
         # R41: Decay immunity — enforce quality-based salience floor
         floor = _quality_salience_floor(quality)

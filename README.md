@@ -72,7 +72,7 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Reasoning token decomposition** — proportional split of completion tokens into reasoning vs response KPIs, even when providers don't report them separately
 - **ATLAS semantic search** — ANN retrieval via Qdrant with salience write-back, salience-weighted RAG ranking multiplies `score * (0.5 + salience)` so Slumber quality scores directly influence retrieval (R40; cross-encoder reranker decommissioned)
 - **Usage-based salience** — keyword overlap heuristic estimates which RAG hits the model actually used, feeding salience boosts/decays back to Qdrant
-- **RAG pipeline** — Qwen3-Embedding-0.6B embeddings (1024-dim, Matryoshka) via Ollama, injected into chat context per-message
+- **RAG pipeline** — Qwen3-Embedding-4B embeddings (2560-dim) via Ollama on GPU, injected into chat context per-message
 - **Cognitive telemetry** — per-turn timing, frozen RAG snapshots, and token counts persisted to `messages_metadata` for longitudinal analysis
 - **Temporal Affinity Engine** — Janus knows current time, date, season, sunrise/sunset, and approximate temperature; pure-function solar calculations + NOAA climate normals; injected into every system prompt; RAG results carry relative time labels
 - **Auto-ingestion** — startup + Slumber scanner walks configured directories, discovers new files by SHA-256 hash, ingests automatically without manual button clicks; file registry tracks processed files; real-time progress tracking through all phases
@@ -124,6 +124,7 @@ Every mutation fans out to three stores via the **triple-write pipeline**: SQLit
 - **Entity Merge Infrastructure** — `merge_entities()` MCP tool consolidates duplicates across the Triad (SQLite mentions, Neo4j edges with canonical ordering, Qdrant vectors); `batch_merge_from_map()` processes dedup map JSON; Slumber sub-cycle 11 auto-detects new duplicates via pattern matching (article prefix, plural/singular, case variation) every 5th cycle; ALIAS_OF edges preserve merge history (R47)
 - **System Observability** — `get_system_status()` MCP endpoint returns complete system health in one call (triad health, Slumber stats, coverage gaps, auto-generated alerts); temporal context uses precise time ("2:47 PM CST") and substrate awareness (CPU/memory via psutil); chat metrics load last turn's full metadata from DB on page load (no more zeros between turns); Overview tab shows Recent Activity and System Health alerts panel (R48)
 - **Memory Metabolism** — Embedding upgrade from 0.6B/1024-dim (GPU) to 4B/2560-dim (CPU-only, zero VRAM); RAG composite scoring pipeline (`cosine × temporal × salience`) with per-hit breakdown in Cognition trace; ghost reranker config replaced with `RAG_ANN_CANDIDATES`/`RAG_RETURN_TOP`/`RAG_MIN_SCORE`; context window doubled to 32K tokens with 4096 max predict; Constitution v2.0 added as 5th canonical document (R49)
+- **Salience Calibration** — Dual-score evaluation pipeline: `quality_score` (response quality) and `salience_score` (memory importance to Janus/Initiative) scored independently by Gemini with full conversation thread context and corpus manifest; calibrated distribution mean ~0.70, std dev 0.18 for consciousness research corpus; Qdrant payloads now carry evaluated salience (not frozen `SALIENCE_DEFAULT`); propagate sub-cycle uses `salience_score` directly when available; embedding model upgraded to GPU (`qwen3-embedding-4b-lean`, 3.4GB — coexists with Janus 23GB at 26.4GB total VRAM); 9,402 messages bulk re-evaluated and 13,806 chunks re-embedded with corrected salience (HF-01)
 - **Change Data Capture** outbox with background Neo4j sync consumer
 
 ---
@@ -233,7 +234,7 @@ JANATPMP/
 ├── atlas/                     # ATLAS — HTTP client layer for model services
 │   ├── config.py              # Service URLs, model identifiers, Neo4j + salience constants
 │   ├── chunking.py            # Paragraph-aware text splitter for messages + documents (R16)
-│   ├── embedding_service.py   # Qwen3-Embedding-0.6B via Ollama /v1/embeddings
+│   ├── embedding_service.py   # Qwen3-Embedding-4B via Ollama /v1/embeddings (GPU)
 │   ├── reranking_service.py   # Cross-encoder reranker (DECOMMISSIONED)
 │   ├── memory_service.py      # Salience write-back to Qdrant (retrieval + usage signals)
 │   ├── usage_signal.py        # Keyword overlap heuristic for usage-based salience (R12)
