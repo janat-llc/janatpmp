@@ -35,6 +35,8 @@ env/
 
 # Database
 db/janatpmp.db
+db/janatpmp.db-shm
+db/janatpmp.db-wal
 db/backups/
 db/exports/
 janatpmp.db
@@ -74,3 +76,14 @@ completed/
 
 # Git worktrees (isolated workspaces)
 .worktrees/
+
+# Root-level scratch Modelfiles (canonical versions live in ollama/modelfiles/)
+Modelfile.*
+
+# Generated type stubs
+components/*.pyi
+
+# Cypher/graph export scratch files (canonical versions committed to docs/ when ready)
+docs/*.cypher
+docs/entity-dedup-*.json
+docs/entity-dedup-*.md
