@@ -204,6 +204,8 @@ SETTINGS_REGISTRY = {
 
     # Co-occurrence Linking (R31)
     "cooccurrence_watermark":  ("0", False, "system", None),
+    # Conversation-scope CO_OCCURS_WITH weaving (R51)
+    "conv_cooccurrence_watermark": ("0", False, "system", None),
 
     # Register Mining (R32: The Mirror)
     "register_mining_provider":  ("gemini", False, "system", None),

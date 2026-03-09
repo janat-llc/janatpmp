@@ -105,7 +105,8 @@ JANATPMP/
 │   ├── graph_service.py      # Neo4j CRUD + MCP tools (query, neighbors, stats)
 │   ├── cdc_consumer.py       # Background CDC poller + backfill_graph MCP tool
 │   ├── semantic_edges.py     # Conversation SIMILAR_TO edge generation (R20)
-│   └── graph_analytics.py    # GDS centrality analysis — betweenness + degree (R50)
+│   ├── graph_analytics.py    # GDS centrality analysis — betweenness + degree (R50)
+│   └── co_occurrence_weaver.py  # Conversation-scope CO_OCCURS_WITH weaving (R51)
 ├── services/
 │   ├── __init__.py
 │   ├── log_config.py         # SQLiteLogHandler + setup_logging() + get_logs()
@@ -676,7 +677,7 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
   `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
   handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R50)
+## Current Platform State (Post-R51)
 
 **Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 2560-dim embeddings via Qwen3-Embedding-4B on GPU (HF-01 upgraded from CPU; both Janus 23GB + embed 3.4GB fit on GPU at 26.4GB total). Decay immunity — quality-based salience floors prevent high-quality content from decaying below proportional minimums (R41). Canonical document ingestion — manifest-based PDF pipeline with elevated salience floors for decay immunity; 5 canonical documents (C-Theory, Principle of Existing, Convergence Academic, Convergence Web, Constitution v2.0) ingested as first-class knowledge (R46/R49). All 9,402 messages have dual scores — `quality_score` (response quality) and `salience_score` (memory importance to Janus/Initiative), mean salience 0.70, std dev 0.18 (HF-01). Qdrant payloads carry evaluated `salience_score` from SQLite (not frozen `SALIENCE_DEFAULT`).
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`. `chat_with_janus()` accepts `model`/`provider` per-call overrides for A/B testing (R43). Response cleanup strips report-mode formatting (headers, rules, signatures) with code-block protection, feature flag `response_cleanup_enabled`, and diagnostic logging (R43/R44). Chat page auto-refreshes every 5 seconds via `gr.Timer` polling — MCP messages appear without browser refresh (R44).
@@ -693,7 +694,8 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 **Graph:** Neo4j GDS plugin installed (R50). `compute_graph_centrality("betweenness"|"degree", limit)` MCP tool (#89) uses named graph projections (GDS 2.x API) over Entity nodes + MENTIONS/CO_OCCURS_WITH edges. C-Theory confirmed dominant hub (betweenness 2310, degree 28). GDS projection lifecycle: `gds.graph.project()` → algorithm → `gds.graph.drop()` with best-effort cleanup on error.
 **Schema:** 12 entity types now supported in both `entities` and `items` tables — original 6 (concept, decision, milestone, person, reference, emotional_state) plus R50 additions (experiment, bug, spike, research, debt, initiative) via migrations 2.1.0 + 2.2.0. EXP-001 reclassified to `experiment`; 5 BUG: items reclassified to `bug`. `create_item()` returns item ID string (not dict).
 **Reliability:** `add_message()` sequence assignment atomic via inline subquery `(SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE conversation_id=?)` — eliminates TOCTOU race condition (R50). 2 pre-existing duplicate sequences from 2026-03-08 remain (legacy, not retroactively fixed).
-**Platform:** 89 MCP tools (R50: `compute_graph_centrality()`), auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41). Ollama init script (`ollama/ollama-init.sh`) auto-pulls required models and creates custom Modelfiles on container startup (R43).
+**Knowledge Graph:** CO_OCCURS_WITH edges grown from 192 → 56,373 via conversation-scope weaving (R51). Genesis Block crystal (26 identity nodes) connected to main graph. C-Theory ↔ Janus direct edge confirmed (weight 18). Graph now has 2 dominant hubs: Frustration (#1 betweenness, cross-domain emotional bridge) and C-Theory (#2). Janus moved to #6 (up from #21). Weave sub-cycle now produces both SIMILAR_TO (Conversation→Conversation) and CO_OCCURS_WITH (Entity↔Entity) edges per cycle.
+**Platform:** 91 MCP tools (R51: `weave_conversation_cooccurrences()` + `weave_all_conversations()`), auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41). Ollama init script (`ollama/ollama-init.sh`) auto-pulls required models and creates custom Modelfiles on container startup (R43).
 
 ### Architectural Gaps
 

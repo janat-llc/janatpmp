@@ -774,6 +774,13 @@ def _dream_batch():
             result["insights_created"],
             result["edges_created"],
         )
+    # R51: Diagnostic logging to surface Gemini connectivity / data issues
+    if result.get("errors"):
+        logger.warning("Dream Synthesis errors: %s", result["errors"])
+    if result.get("clusters_found", 0) == 0:
+        logger.info(
+            "Dream Synthesis: 0 clusters found — check scored message count and Gemini connectivity"
+        )
 
 
 def _should_weave() -> bool:
@@ -789,17 +796,30 @@ def _should_weave() -> bool:
 
 
 def _weave_batch():
-    """Sub-cycle 6: Weave semantic edges for new conversations."""
-    from graph.semantic_edges import weave_new_conversations
+    """Sub-cycle 7: Weave semantic SIMILAR_TO + conversation CO_OCCURS_WITH edges.
 
-    result = weave_new_conversations()
-    _update_status(last_woven=result.get("edges_created", 0))
-    _inc_status("total_woven", result.get("edges_created", 0))
-    if result.get("edges_created", 0) > 0:
+    R51: Extended to include conversation-scope co-occurrence weaving alongside
+    the existing semantic SIMILAR_TO edge generation. The co-occurrence weaver
+    uses a rowid watermark so it always has work to do on new conversations.
+    """
+    from graph.semantic_edges import weave_new_conversations
+    from graph.co_occurrence_weaver import weave_all_conversations
+
+    # SIMILAR_TO edges — Conversation→Conversation via vector centroids (R27)
+    sem_result = weave_new_conversations()
+    sem_edges = sem_result.get("edges_created", 0)
+
+    # CO_OCCURS_WITH edges — Entity↔Entity via conversation-scope co-occurrence (R51)
+    cooc_result = weave_all_conversations(limit=50)
+    cooc_edges = cooc_result.get("total_edges", 0)
+
+    total = sem_edges + cooc_edges
+    _update_status(last_woven=total)
+    _inc_status("total_woven", total)
+    if total > 0:
         logger.info(
-            "Slumber weave: %d edges from %d conversations",
-            result["edges_created"],
-            result["conversations_processed"],
+            "Slumber weave: %d SIMILAR_TO + %d CO_OCCURS_WITH edges",
+            sem_edges, cooc_edges,
         )
 
 

@@ -1,4 +1,4 @@
-"""MCP Tool Registry — all 89 functions exposed via gr.api().
+"""MCP Tool Registry — all 91 functions exposed via gr.api().
 
 Centralizes imports so app.py only needs one import line.
 Grouped by category for readability. Each function MUST have
@@ -68,6 +68,7 @@ from db.chunk_operations import (
 # --- Knowledge graph (R13: Neo4j) — 5 functions ---
 from graph.graph_service import graph_query, graph_neighbors, graph_stats
 from graph.graph_analytics import compute_centrality as compute_graph_centrality
+from graph.co_occurrence_weaver import weave_conversation_cooccurrences, weave_all_conversations
 from graph.cdc_consumer import backfill_graph, seed_identity_graph
 # --- Semantic edge generation (R20: Graph Awakening) — 1 function ---
 from graph.semantic_edges import weave_conversation_graph
@@ -157,4 +158,8 @@ ALL_MCP_TOOLS: list = [
 
     # --- Graph analytics (R50: GDS centrality) — 1 function ---
     compute_graph_centrality,
+
+    # --- Graph co-occurrence weaver (R51: conversation-scope bridges) — 2 functions ---
+    weave_conversation_cooccurrences,
+    weave_all_conversations,
 ]
