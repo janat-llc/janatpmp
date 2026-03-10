@@ -128,12 +128,25 @@ def ingest_google_ai_conversations(directory: str, auto_embed: bool = True) -> d
     }
 
 
-def ingest_markdown_documents(directory: str, auto_embed: bool = True) -> dict:
+def ingest_markdown_documents(
+    directory: str,
+    auto_embed: bool = True,
+    author: str = None,
+    speaker: str = None,
+    source_type: str = None,
+    file_timestamp_mode: bool = False,
+    exclude_patterns: list[str] | None = None,
+) -> dict:
     """Parse markdown/text files and insert as documents.
 
     Args:
         directory: Path to directory containing .md and .txt files.
         auto_embed: If True, auto-embed new documents into Qdrant after import.
+        author: Author attribution to persist on each document (e.g. "claude", "mat").
+        speaker: Speaker identity for conversational documents.
+        source_type: Content category label (e.g. "journal", "session_minutes", "canonical").
+        file_timestamp_mode: If True, use file mtime as file_created_at on each document.
+        exclude_patterns: fnmatch patterns to skip (e.g. ["TEMPLATE_*", "*.gdoc", "desktop.ini"]).
 
     Returns:
         Dict with keys: imported, skipped, errors, total_files.
@@ -142,7 +155,7 @@ def ingest_markdown_documents(directory: str, auto_embed: bool = True) -> dict:
     from .markdown_ingest import ingest_directory
     from .dedup import compute_content_hash
 
-    parsed = ingest_directory(directory)
+    parsed = ingest_directory(directory, exclude_patterns=exclude_patterns)
     total_files = len(parsed)
 
     # Build dedup set: existing document titles with source='upload'
@@ -170,12 +183,18 @@ def ingest_markdown_documents(directory: str, auto_embed: bool = True) -> dict:
         try:
             doc_type = _DOC_TYPE_MAP.get(doc["doc_type"], "file")
             source = _SOURCE_MAP.get(doc["source"], "upload")
+            file_created_at = doc.get("file_created_at") if file_timestamp_mode else None
             create_document(
                 doc_type=doc_type,
                 source=source,
                 title=title,
                 content=doc["content"],
                 actor="imported",
+                author=author,
+                speaker=speaker,
+                source_type=source_type,
+                file_created_at=file_created_at,
+                file_path=doc.get("file_path"),
             )
             existing_titles.add(title)
             imported += 1

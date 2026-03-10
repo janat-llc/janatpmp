@@ -15,8 +15,10 @@ Output format:
     }
 """
 
+import fnmatch
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,7 @@ _DOC_TYPE_PATTERNS = [
     (r"(?i)grimoire|spell|illusion|ritual", "creative"),
     (r"(?i)protocol|mandate|sprint|mission", "project_doc"),
     (r"(?i)readme|changelog|todo|guide", "documentation"),
+    (r"(?i)minutes|book.club", "session_notes"),
 ]
 
 
@@ -63,6 +66,7 @@ def ingest_text(file_path: str | Path) -> dict | None:
 def ingest_directory(
     directory: str | Path,
     extensions: tuple[str, ...] = (".md", ".txt"),
+    exclude_patterns: list[str] | None = None,
 ) -> list[dict]:
     """
     Ingest all markdown and text files in a directory.
@@ -70,6 +74,7 @@ def ingest_directory(
     Args:
         directory: Path to directory.
         extensions: File extensions to include.
+        exclude_patterns: fnmatch-style filename patterns to skip (e.g. ["TEMPLATE_*", "*.gdoc"]).
 
     Returns:
         List of document dicts (skips empty/invalid files).
@@ -83,6 +88,11 @@ def ingest_directory(
     files = sorted(
         f for f in directory.iterdir() if f.suffix.lower() in extensions
     )
+    if exclude_patterns:
+        files = [
+            f for f in files
+            if not any(fnmatch.fnmatch(f.name, pat) for pat in exclude_patterns)
+        ]
     logger.info(f"Processing {len(files)} files from {directory.name}/")
 
     for file_path in files:
@@ -129,6 +139,8 @@ def _ingest_file(file_path: str | Path, source: str) -> dict | None:
         "doc_type": doc_type,
         "source": source,
         "word_count": word_count,
+        "file_path": str(file_path),
+        "file_created_at": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(),
     }
 
 
