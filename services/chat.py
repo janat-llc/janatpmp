@@ -867,7 +867,9 @@ def _build_rag_context(user_message: str,
         metrics["scores"] = used_scores
         metrics["rejected"] = rejected_scores
         if used_scores:
-            metrics["avg_composite_score"] = sum(s.get("composite_breakdown", {}).get("composite", s.get("rerank_score", 0.0)) for s in used_scores) / len(used_scores)
+            # B13 fix (R55): fallback was rerank_score (always 0.0 post-vLLM decommission)
+            # Correct fallback chain: composite → ann_score_original → 0.0
+            metrics["avg_composite_score"] = sum(s.get("composite_breakdown", {}).get("composite", s.get("ann_score", 0.0)) for s in used_scores) / len(used_scores)
             metrics["avg_salience"] = sum(s["salience"] for s in used_scores) / len(used_scores)
 
         if not context_parts:

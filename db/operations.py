@@ -373,6 +373,16 @@ def init_database():
                 conn.executescript(migration_path.read_text(encoding="utf-8"))
                 logger.info("Applied migration 2.3.0: document provenance fields")
 
+        # Migration 2.3.1: Add 'entry' to doc_type CHECK constraint (R55)
+        # WARNING: 'journal' is RESERVED as doc_type (conflicts with JIRI Journal, ISSN 3070-9288)
+        if conn.execute(
+            "SELECT version FROM schema_version WHERE version='2.3.1'"
+        ).fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "2.3.1_entry_doctype.sql"
+            if migration_path.exists():
+                conn.executescript(migration_path.read_text(encoding="utf-8"))
+                logger.info("Applied migration 2.3.1: entry doc_type")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

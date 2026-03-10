@@ -269,7 +269,18 @@ Categories: `chat`, `ollama`, `export`, `ingestion`, `rag`, `system`, `persona`.
 (12 types: concept/decision/milestone/person/reference/emotional_state + experiment/bug/spike/research/debt/initiative, R29/R50), `entity_mentions`, `file_registry`, `register_exemplars` (R32),
 `cdc_outbox`, `schema_version`. Full details in JANATPMP document "Database Schema Reference".
 
-**23 migrations** (0.3.0 through 2.3.0) in `db/migrations/`. Latest: `2.3.0_document_provenance.sql` (R52) — adds `author`, `speaker`, `source_type`, `file_created_at` columns to `documents` table + 2 filtered indexes. `2.2.0_items_entity_types.sql` (R50) expanded `items` entity_type CHECK constraint.
+**24 migrations** (0.3.0 through 2.3.1) in `db/migrations/`. Latest: `2.3.1_entry_doctype.sql` (R55) — adds `entry` to `doc_type` CHECK constraint via full table recreation (rename/create/copy/drop) + FTS virtual table + all 7 triggers. `2.3.0_document_provenance.sql` (R52) added provenance columns.
+
+**doc_type taxonomy (R55):**
+- `entry` — personal journal entries (Claude journals, future Janus journal entries)
+- `session_notes` — session minutes, ship logs, session summaries
+- `file` — uploaded files, chapter content, project docs
+- `research` — essays, papers, research notes
+- `artifact` — generated artifacts (code, docs, etc.)
+- `conversation` — conversation exports
+- `code` — source code files
+- `agent_output` — agent-generated content
+- **WARNING:** `'journal'` is RESERVED — never use as a doc_type value (conflicts with JIRI Journal, ISSN 3070-9288)
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
 the fresh-DB/existing-DB if/else branch (after both branches complete).
@@ -684,12 +695,12 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 ## Current Platform State (Post-R52)
 
 **Infrastructure:** 5-container Docker stack — core (Gradio/Python 3.14), cerebellum (Slumber), ollama (GPU: qwen3.5:27b 23GB + qwen3-embedding-4b-lean 3.4GB = 26.4GB VRAM), qdrant, neo4j. 91 MCP tools. JanatDocs volume: `C:\Janat\JanatDocs:/data/janatdocs` (core + cerebellum). Canonical volume: `./imports/canonical:/data/canonical`.
-**Memory:** Triad triple-write — SQLite (source of truth) + Qdrant (2560-dim, ~2500-char paragraph chunks) + Neo4j (graph). Dual salience scores: `quality_score` (response quality) and `salience_score` (memory importance), mean 0.70, std dev 0.18. Decay immunity via quality-based salience floors in Qdrant payload (`salience_floor`). Canonical docs (5 papers, floors 0.7–0.9) + 60 Claude Journals + 61 BookClub Session Minutes ingested (R52). `documents` table carries `author`, `speaker`, `source_type`, `file_created_at` provenance (migration 2.3.0). **Note:** `documents.embedding_status` is NOT written by the chunk-embed pipeline — requires post-embed backfill via chunk-presence check after bulk ingestion.
-**RAG:** Hybrid FTS + vector across messages, chunks, and documents. Composite scoring: `cosine × temporal_decay × salience_factor` — 30 ANN candidates, top 10, minimum 0.4. Temporal decay: 14d half-life, 0.15 floor (bypassed on temporal query terms). Salience factor: `score *= (0.5 + salience)`. Graph-aware ranking, entity routing, graph retrieval. Reranker decommissioned (`rerank=False`).
+**Memory:** Triad triple-write — SQLite (source of truth) + Qdrant (2560-dim, ~2500-char paragraph chunks) + Neo4j (graph). Dual salience scores: `quality_score` (response quality) and `salience_score` (memory importance), mean 0.70, std dev 0.18. Decay immunity via quality-based salience floors in Qdrant payload (`salience_floor`). Canonical docs (5 papers, floors 0.7–0.9) + 60 Claude Journals (`doc_type='entry'`, R55) + 61 BookClub Session Minutes ingested. `documents` table carries `author`, `speaker`, `source_type`, `file_created_at` provenance (migration 2.3.0). `embedding_status` now written by `on_document_write()` — `'completed'` on success, `'failed'` on error (R55).
+**RAG:** Hybrid FTS + vector across messages, chunks, and documents. Composite scoring: `cosine × temporal_decay × salience_factor` — 30 ANN candidates, top 10, minimum 0.4. Temporal decay: 14d half-life, 0.15 floor (bypassed on temporal query terms). Salience factor: `score *= (0.5 + salience)`. Graph-aware ranking, entity routing, graph retrieval. Reranker decommissioned (`rerank=False`). `avg_composite_score` fallback corrected to `ann_score` (R55 — was `rerank_score`, always 0.0 post-vLLM). Chat Metrics sidebar shows actual `collections_searched` values (R55).
 **Chat:** Janus continuous chat, 6 self-query tools, sliding window, chapter archiving, GPU contention guard. `chat_with_janus()` accepts `model`/`provider` per-call overrides. Response cleanup strips report-mode formatting (feature flag: `response_cleanup_enabled`). 5-second polling timer. Speaker labels for non-Mat speakers (`**[Speaker]**`); "the Weavers" identity on multi-speaker.
 **Identity:** 12-layer adaptive prompt composer — pre-cognition, post-cognition feedback loop, register exemplar injection, dynamic speaker identity. Five provenance actors: mat, claude, janus, agent, imported.
 **Slumber (cerebellum):** 12 sub-cycles continuous at 30s — ingest, evaluate, propagate, relate, prune, extract (3rd), dream (5th), weave (5th), link (3rd), decay (5th), mine (5th), dedup (5th). Deep-idle gate (10 min) on Gemini-heavy phases. FTS rebuilt at startup if out of sync.
-**Schema:** 12 entity types in `entities` + `items` — concept, decision, milestone, person, reference, emotional_state, experiment, bug, spike, research, debt, initiative. 23 migrations (0.3.0–2.3.0). `create_item()` returns item ID string. `add_message()` sequence assignment atomic (inline subquery, no TOCTOU).
+**Schema:** 12 entity types in `entities` + `items` — concept, decision, milestone, person, reference, emotional_state, experiment, bug, spike, research, debt, initiative. 24 migrations (0.3.0–2.3.1). `create_item()` returns item ID string. `add_message()` sequence assignment atomic (inline subquery, no TOCTOU).
 **Knowledge Graph:** 56,373 CO_OCCURS_WITH edges. Genesis Block (26 identity nodes) connected. Top hubs: Frustration (#1 betweenness), C-Theory (#2). GDS plugin installed; `compute_graph_centrality` MCP tool (#89) uses named projections. Entity merge: `merge_entities()` + `batch_merge_from_map()` + Slumber Dedup auto-detection (article prefix, plural/singular, case variation).
 **IDF Normalization (R52):** `services/ingestion/idf_scorer.py` builds batch document-frequency tables, identifies terms in >threshold fraction of docs as corpus noise, stores transient list in `settings.batch_extraction_stopwords` (capped at 500 terms). Gemini extraction reads and appends as "do not extract" clause. Always call `clear_stopwords()` after the batch extraction window closes.
 
@@ -697,7 +708,6 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 
 - **No fact/opinion separation** — sliding window treats user statements, RAG fragments, and hypotheticals as equal-weight context.
 - **Echo behavior** — Janus amplifies RAG context without distinguishing memory from elaboration.
-- **`documents.embedding_status`** — not written by the chunk-embed pipeline; must be backfilled after bulk ingestion via chunk-presence check.
 
 ## Future Architecture (not in scope, for context only)
 

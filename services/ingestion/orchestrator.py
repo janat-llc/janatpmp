@@ -15,11 +15,15 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Map parser doc_type values → valid schema doc_type values
-# Schema allows: conversation, file, artifact, research, agent_output, session_notes, code
+# Schema allows: conversation, file, artifact, research, agent_output, session_notes, code, entry
+# NOTE: 'entry' passthrough added R55 — Claude journals classified upstream via path-based override
+# WARNING: 'journal' is RESERVED as a doc_type (conflicts with JIRI Journal, ISSN 3070-9288)
+#          Non-Claude journal files that reach here without path override still map to session_notes.
 _DOC_TYPE_MAP = {
     "chapter": "file",
     "essay": "research",
-    "journal": "session_notes",
+    "journal": "session_notes",  # non-Claude journal files; Claude journals use path override upstream
+    "entry": "entry",            # passthrough for Claude journals (path override in markdown_ingest.py)
     "creative": "artifact",
     "project_doc": "file",
     "documentation": "file",

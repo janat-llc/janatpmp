@@ -130,7 +130,7 @@ def _ingest_file(file_path: str | Path, source: str) -> dict | None:
         return None
 
     title = _extract_title(content, file_path)
-    doc_type = _classify_doc_type(title, file_path.name)
+    doc_type = _classify_doc_type(title, file_path.name, file_path=str(file_path))
     word_count = len(content.split())
 
     return {
@@ -165,17 +165,23 @@ def _extract_title(content: str, file_path: Path) -> str:
     return file_path.stem.replace("_", " ").replace("-", " ")
 
 
-def _classify_doc_type(title: str, filename: str) -> str:
+def _classify_doc_type(title: str, filename: str, file_path: str = "") -> str:
     """
     Classify document type based on title and filename patterns.
 
     Args:
         title: Extracted title.
         filename: Original filename.
+        file_path: Full file path string (optional). Used for path-based overrides.
 
     Returns:
         Document type string.
     """
+    # Path-based override: Claude personal journals → 'entry'
+    # WARNING: 'journal' is RESERVED as a doc_type (conflicts with JIRI Journal, ISSN 3070-9288)
+    if "Claude Journal" in file_path or "Claude_Journal" in file_path:
+        return "entry"
+
     combined = f"{title} {filename}"
     for pattern, doc_type in _DOC_TYPE_PATTERNS:
         if re.search(pattern, combined):

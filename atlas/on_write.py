@@ -360,6 +360,18 @@ def on_document_write(
 
         _insert_chunks_for("document", document_id, chunks, point_ids)
 
+        # Write embedding_status='completed' — B11 fix (R55)
+        try:
+            from db.operations import get_connection
+            with get_connection() as conn:
+                conn.execute(
+                    "UPDATE documents SET embedding_status='completed' WHERE id=?",
+                    (document_id,)
+                )
+                conn.commit()
+        except Exception:
+            pass
+
         logger.debug(
             "on_write embed document: %s -> %d chunk(s) in Qdrant",
             document_id[:12], chunk_total,
@@ -368,6 +380,17 @@ def on_document_write(
     except Exception as e:
         logger.warning("on_write embed document failed for %s: %s",
                         document_id[:12], e)
+        # Write embedding_status='failed' so pipeline gaps are visible
+        try:
+            from db.operations import get_connection
+            with get_connection() as conn:
+                conn.execute(
+                    "UPDATE documents SET embedding_status='failed' WHERE id=?",
+                    (document_id,)
+                )
+                conn.commit()
+        except Exception:
+            pass
 
 
 def on_item_write(

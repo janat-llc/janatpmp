@@ -273,11 +273,17 @@ def _load_last_turn_metadata(conv_id: str) -> dict:
     postcognition = _json_field(r.get("cognition_postcognition"))
     scores = _json_field(r.get("rag_scores"))
 
+    raw_collections = r.get("rag_collections", "[]") or "[]"
+    try:
+        collections = json.loads(raw_collections)
+    except (json.JSONDecodeError, ValueError):
+        collections = []
+
     return {
         "rag_metrics": {
             "hit_count": r.get("rag_hit_count", 0) or 0,
             "hits_used": r.get("rag_hits_used", 0) or 0,
-            "collections_searched": [],
+            "collections_searched": collections,
             "avg_composite_score": r.get("rag_avg_rerank", 0.0) or 0.0,
             "avg_salience": r.get("rag_avg_salience", 0.0) or 0.0,
             "scores": scores if isinstance(scores, list) else [],
