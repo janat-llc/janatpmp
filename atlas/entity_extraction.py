@@ -111,6 +111,19 @@ def extract_entities(
     user_message = "\n\n".join(parts)
     user_message += f"\n\nExtract entities using this schema:\n{_RESPONSE_SCHEMA}"
 
+    # Inject batch IDF stopwords if active (R52 — prevents corpus-noise entity explosion)
+    try:
+        from services.ingestion.idf_scorer import get_active_stopwords
+        active_stopwords = get_active_stopwords()
+        if active_stopwords:
+            user_message += (
+                f"\n\nIMPORTANT: Do NOT extract entities matching these high-frequency "
+                f"corpus terms (they are section headers or formatting artifacts, not "
+                f"meaningful entities): {', '.join(active_stopwords[:50])}"
+            )
+    except Exception:
+        pass  # idf_scorer unavailable — degrade gracefully
+
     try:
         raw = _call_gemini(user_message)
         entities = _parse_extraction_response(raw)

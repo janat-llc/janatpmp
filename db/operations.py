@@ -363,6 +363,16 @@ def init_database():
                 conn.executescript(migration_path.read_text(encoding="utf-8"))
                 logger.info("Applied migration 2.2.0: items entity_type CHECK expansion")
 
+        # Migration 2.3.0: Document provenance fields (R52)
+        # Adds author, speaker, source_type, file_created_at to documents table
+        if conn.execute(
+            "SELECT version FROM schema_version WHERE version='2.3.0'"
+        ).fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "2.3.0_document_provenance.sql"
+            if migration_path.exists():
+                conn.executescript(migration_path.read_text(encoding="utf-8"))
+                logger.info("Applied migration 2.3.0: document provenance fields")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.
@@ -927,6 +937,11 @@ def create_document(
     title: str,
     content: str = "",
     actor: str = "mat",
+    author: str = None,
+    speaker: str = None,
+    source_type: str = None,
+    file_created_at: str = None,
+    file_path: str = None,
 ) -> str:
     """
     Create a new document.
@@ -937,6 +952,11 @@ def create_document(
         title: Document title
         content: Document content
         actor: Who is creating this document (mat, claude, janus, agent, imported)
+        author: Who authored the content (e.g. "claude", "mat", "janus", "unknown")
+        speaker: Speaker identity for conversational content (mirrors message speaker convention)
+        source_type: Fine-grained content category (journal, session_minutes, canonical, sprint_brief, etc.)
+        file_created_at: ISO timestamp from source file's filesystem mtime or document metadata
+        file_path: Absolute path to the source file on disk
 
     Returns:
         The ID of the created document
@@ -944,13 +964,20 @@ def create_document(
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO documents (doc_type, source, title, content, created_by, modified_by)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO documents (doc_type, source, title, content,
+                                   author, speaker, source_type, file_created_at,
+                                   file_path, created_by, modified_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             doc_type,
             source,
             title,
             content if content else None,
+            author,
+            speaker,
+            source_type,
+            file_created_at,
+            file_path,
             actor,
             actor,
         ))

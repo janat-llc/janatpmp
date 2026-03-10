@@ -207,6 +207,10 @@ SETTINGS_REGISTRY = {
     # Conversation-scope CO_OCCURS_WITH weaving (R51)
     "conv_cooccurrence_watermark": ("0", False, "system", None),
 
+    # Batch Ingestion IDF normalization (R52)
+    # Transient comma-separated batch stopwords — set before ingestion, cleared after
+    "batch_extraction_stopwords": ("", False, "ingestion", None),
+
     # Register Mining (R32: The Mirror)
     "register_mining_provider":  ("gemini", False, "system", None),
     "register_mining_model":     ("gemini-2.5-flash-lite", False, "system", None),
