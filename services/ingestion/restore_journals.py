@@ -45,10 +45,17 @@ ORIGINALS_DIR = JANUS_DIR / "originals"
 # Groups use (\b) to capture zero-width word boundary, preserving parentheticals.
 # ---------------------------------------------------------------------------
 _REPLACEMENTS = [
-    # 1. Title heading line: "# Janus Journal Entry" → "# Claude Journal Entry"
+    # 1a. Title heading — standard form: "# Janus Journal Entry" → "# Claude Journal Entry"
     (
         re.compile(r"^(#+\s*)Janus Journal Entry", re.MULTILINE),
         r"\1Claude Journal Entry",
+    ),
+    # 1b. Title heading — possessive form: "# Janus's Journal" / "# Janus's Literary Preferences"
+    #     / "# Janus's Deep Blue Preference" → Claude's equivalent
+    #     Matches H1+ headings where Janus's is the possessive author subject.
+    (
+        re.compile(r"^(#+\s*)Janus's (Journal|Literary|Deep Blue)", re.MULTILINE),
+        r"\1Claude's \2",
     ),
     # 2. Bold Author field: "**Author:** Janus" → "**Author:** Claude"
     (
