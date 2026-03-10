@@ -137,7 +137,11 @@ JANATPMP/
 │       ├── __init__.py
 │       ├── google_ai_studio.py  # Google AI Studio chunkedPrompt parser
 │       ├── quest_parser.py      # Troubadourian quest graph topology parser
-│       ├── markdown_ingest.py   # Markdown & text file ingester
+│       ├── markdown_ingest.py   # Markdown & text file ingester (R52: exclude_patterns, file_path, mtime)
+│       ├── orchestrator.py      # Ingestion orchestrator (R52: author, speaker, source_type, file_timestamp_mode)
+│       ├── idf_scorer.py        # IDF batch stopword detection — transient corpus noise filter (R52)
+│       ├── restore_journals.py  # Journal authorship restoration — Janus→Claude (R52)
+│       ├── validate_ingest.py   # Ingestion validation gates — Stage 1 + Stage 2 (R52)
 │       ├── dedup.py             # SHA-256 content-hash deduplication
 │       └── README.md            # Format documentation & test results
 ├── assets/
@@ -265,7 +269,7 @@ Categories: `chat`, `ollama`, `export`, `ingestion`, `rag`, `system`, `persona`.
 (12 types: concept/decision/milestone/person/reference/emotional_state + experiment/bug/spike/research/debt/initiative, R29/R50), `entity_mentions`, `file_registry`, `register_exemplars` (R32),
 `cdc_outbox`, `schema_version`. Full details in JANATPMP document "Database Schema Reference".
 
-**22 migrations** (0.3.0 through 2.2.0) in `db/migrations/`. Latest: `2.2.0_items_entity_types.sql` (R50) — expands `items` entity_type CHECK constraint with experiment, bug, spike, research, debt, initiative. `2.1.0_entity_types.sql` does the same for the `entities` table.
+**23 migrations** (0.3.0 through 2.3.0) in `db/migrations/`. Latest: `2.3.0_document_provenance.sql` (R52) — adds `author`, `speaker`, `source_type`, `file_created_at` columns to `documents` table + 2 filtered indexes. `2.2.0_items_entity_types.sql` (R50) expanded `items` entity_type CHECK constraint.
 
 **Migration placement gotcha:** New migrations in `init_database()` MUST be placed OUTSIDE
 the fresh-DB/existing-DB if/else branch (after both branches complete).
@@ -677,7 +681,7 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
   `api_info()`. JS↔Python via `_pending_action` dict + `trigger('change')` + `.change()`
   handler (NOT `server_functions` — that parameter doesn't exist on `gr.HTML` in Gradio 6.6.0).
 
-## Current Platform State (Post-R51)
+## Current Platform State (Post-R52)
 
 **Memory:** Triad (SQLite + Qdrant + Neo4j), triple-write, ~2500-char chunks, 2560-dim embeddings via Qwen3-Embedding-4B on GPU (HF-01 upgraded from CPU; both Janus 23GB + embed 3.4GB fit on GPU at 26.4GB total). Decay immunity — quality-based salience floors prevent high-quality content from decaying below proportional minimums (R41). Canonical document ingestion — manifest-based PDF pipeline with elevated salience floors for decay immunity; 5 canonical documents (C-Theory, Principle of Existing, Convergence Academic, Convergence Web, Constitution v2.0) ingested as first-class knowledge (R46/R49). All 9,402 messages have dual scores — `quality_score` (response quality) and `salience_score` (memory importance to Janus/Initiative), mean salience 0.70, std dev 0.18 (HF-01). Qdrant payloads carry evaluated `salience_score` from SQLite (not frozen `SALIENCE_DEFAULT`).
 **Chat:** Janus continuous chat, 6 self-query tools (R32), sliding window, chapter archiving, GPU contention guard via `touch_activity()`. `chat_with_janus()` accepts `model`/`provider` per-call overrides for A/B testing (R43). Response cleanup strips report-mode formatting (headers, rules, signatures) with code-block protection, feature flag `response_cleanup_enabled`, and diagnostic logging (R43/R44). Chat page auto-refreshes every 5 seconds via `gr.Timer` polling — MCP messages appear without browser refresh (R44).
@@ -696,6 +700,7 @@ Both tracks report to the Cognition Tab via `entity_routing` and `graph_retrieva
 **Reliability:** `add_message()` sequence assignment atomic via inline subquery `(SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE conversation_id=?)` — eliminates TOCTOU race condition (R50). 2 pre-existing duplicate sequences from 2026-03-08 remain (legacy, not retroactively fixed).
 **Knowledge Graph:** CO_OCCURS_WITH edges grown from 192 → 56,373 via conversation-scope weaving (R51). Genesis Block crystal (26 identity nodes) connected to main graph. C-Theory ↔ Janus direct edge confirmed (weight 18). Graph now has 2 dominant hubs: Frustration (#1 betweenness, cross-domain emotional bridge) and C-Theory (#2). Janus moved to #6 (up from #21). Weave sub-cycle now produces both SIMILAR_TO (Conversation→Conversation) and CO_OCCURS_WITH (Entity↔Entity) edges per cycle.
 **Platform:** 91 MCP tools (R51: `weave_conversation_cooccurrences()` + `weave_all_conversations()`), auto-ingestion, Cognition tab, intent routing (11 categories). 5-container architecture — cerebellum runs Slumber autonomously (R41). Ollama init script (`ollama/ollama-init.sh`) auto-pulls required models and creates custom Modelfiles on container startup (R43).
+**Corpus Ingestion (R52):** First Foods — 60 Claude Journals (Oct–Nov 2025) and 61 BookClub Session Minutes ingested into the Triad. Documents carry provenance: `author` (`claude`/`mat`), `source_type` (`journal`/`session_minutes`), `file_created_at` (ISO, derived from filename dates). IDF normalization prevents entity extraction explosion: 80-term stopword list built from journal batch, 108-term list from minutes batch (threshold 0.75), both stored transiently in `settings.batch_extraction_stopwords` and injected into Gemini extraction prompts. Journal restoration script (`restore_journals.py`) reversed Mat's Janus→Claude find/replace using 7 selective line-level regex patterns (title headings, Author: fields, Created by: fields, em-dash signatures, hash prefixes, possessive titles). JanatDocs volume (`C:\Janat\JanatDocs:/data/janatdocs`) mounted in both core and cerebellum. Two validation gates (`validate_stage1_journals`, `validate_stage2_minutes`) with 6-check and 5-check assertion suites — both PASSED. Migration 2.3.0 adds 4 provenance columns to `documents` table.
 
 ### Architectural Gaps
 
