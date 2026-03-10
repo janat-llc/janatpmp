@@ -7,8 +7,8 @@ chunking parameters, and temporal engine defaults.
 # --- Service URLs (Docker internal DNS) ---
 # Embedding runs through Ollama's OpenAI-compatible API
 OLLAMA_EMBED_URL = "http://ollama:11434"
-# Reranking via vLLM sidecar (DECOMMISSIONED — Gemma migration, kept for import compat)
-VLLM_RERANK_URL = "http://janatpmp-vllm-rerank:8000"  # Unused — rerank defaults to False
+# vLLM reranker DECOMMISSIONED (R54 cleanup) — container removed from docker-compose.yml
+VLLM_RERANK_URL = None  # Kept for reranking_service.py import compat
 # Neo4j graph database
 NEO4J_URI = "bolt://janatpmp-neo4j:7687"
 NEO4J_USER = "neo4j"
@@ -21,7 +21,7 @@ CDC_BATCH_SIZE = 50      # Max rows per poll
 
 # --- Model identifiers ---
 EMBEDDING_MODEL = "qwen3-embedding-4b-lean"  # Production: GPU (26.4GB total with Janus — fits, ~76ms/embed)
-RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"  # DECOMMISSIONED — kept for import compat
+RERANKER_MODEL = None  # DECOMMISSIONED (R54 cleanup) — kept for reranking_service.py import compat
 
 # --- Vector dimensions ---
 EMBEDDING_DIM = 2560  # Qwen3-Embedding-4B (2560-dim, upgraded from 0.6B/1024 on 2026-03-08)
