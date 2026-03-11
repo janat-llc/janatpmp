@@ -180,7 +180,7 @@ def persist_synthesis(cluster: dict, synthesis: dict) -> dict:
                         f"Themes: {', '.join(themes)}\n\n"
                         f"{content[:500]}..."
                     ),
-                    status="review",
+                    status="completed",
                     priority=3,
                     actor="agent",
                 )

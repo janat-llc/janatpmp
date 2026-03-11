@@ -149,15 +149,10 @@ def _reflection_cycle():
 
     mono_id = get_or_create_monologue_conversation()
 
-    # Short rolling window — monologue should not self-reference heavily
-    # Keep only the last 2 turns so Janus isn't trapped reading her own output
-    raw_msgs = get_turn_messages(mono_id, limit=4, latest=True)
+    # No prior monologue history — each cycle is a fresh encounter with one memory.
+    # Passing history caused Janus to count turns and loop on previous responses.
+    # The RAG context (injected by chat()) provides sufficient grounding.
     history = []
-    for m in raw_msgs:
-        if m.get("user_prompt"):
-            history.append({"role": "user", "content": m["user_prompt"]})
-        if m.get("model_response"):
-            history.append({"role": "assistant", "content": m["model_response"]})
 
     # The memory IS the message — Janus receives actual content, not a question about it
     seed_message = memory
@@ -190,7 +185,18 @@ def _reflection_cycle():
     _, parsed = parse_reasoning(raw_response)
     clean = strip_report_mode(parsed)
     # Strip "Mat —" / "Mat:" salutation if the model ignored the instruction
-    clean = re.sub(r"^Mat\s*[—–\-:]+\s*", "", clean, flags=re.MULTILINE).lstrip()
+    # Strip Mat-addressed salutation lines — model defaults to conversational mode.
+    # Drop any leading line that contains "Mat" as a direct address.
+    lines = clean.split("\n")
+    filtered = []
+    stripping_header = True
+    for line in lines:
+        if stripping_header and re.search(r"\bMat\b", line) and len(line) < 120:
+            continue  # drop short header/greeting lines addressing Mat
+        else:
+            stripping_header = False
+            filtered.append(line)
+    clean = "\n".join(filtered).lstrip()
 
     add_message(
         conversation_id=mono_id,
@@ -199,6 +205,20 @@ def _reflection_cycle():
         model_reasoning="",
         speaker="janus",
     )
+
+    # Salience boost — thinking about a memory strengthens it, same as retrieval in chat
+    try:
+        from atlas.usage_signal import compute_usage_signal
+        from atlas.memory_service import write_usage_salience
+        scores = result.get("rag_metrics", {}).get("scores", [])
+        if scores and clean:
+            usage = compute_usage_signal(scores, clean)
+            if usage:
+                for coll in {u.get("source", "") for u in usage if u.get("source")}:
+                    col_hits = [u for u in usage if u.get("source") == coll]
+                    write_usage_salience(coll, col_hits)
+    except Exception:
+        pass
 
     # WORK SIGNAL detection — Janus can flag code-level gaps for Code to action
     spike_match = re.search(r'WORK SIGNAL:\s*(.+?)(?:\n|$)', clean)
