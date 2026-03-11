@@ -164,6 +164,30 @@ def persist_synthesis(cluster: dict, synthesis: dict) -> dict:
     # 3. Create graph edges (fire-and-forget)
     edges = _create_graph_edges(doc_id, cluster)
 
+    # 4. Auto-create PM item for high-confidence insights (R55: Dream Write-Back)
+    if synthesis.get("confidence", 0) >= 0.4:
+        try:
+            from db.operations import create_item, search_items
+            existing = search_items(query=title[:50], limit=3)
+            if not any(title[:40].lower() in (i.get("title", "").lower()) for i in existing):
+                create_item(
+                    title=f"Dream Insight: {title[:120]}",
+                    entity_type="feature",
+                    domain="janatpmp",
+                    description=(
+                        f"Auto-generated from dream synthesis.\n\n"
+                        f"Confidence: {synthesis.get('confidence', 0):.2f}\n"
+                        f"Themes: {', '.join(themes)}\n\n"
+                        f"{content[:500]}..."
+                    ),
+                    status="review",
+                    priority=3,
+                    actor="agent",
+                )
+                logger.info("Dream insight item created for: '%s'", title[:50])
+        except Exception as e:
+            logger.warning("Dream insight item creation failed: %s", e)
+
     logger.info(
         "Dream persisted: '%s' (doc %s, %d edges)",
         title[:50], doc_id[:8], edges,

@@ -121,6 +121,9 @@ REGISTER_MINING_MIN_QUALITY = 0.6    # Min quality_score to evaluate
 
 # --- Entity Dedup (R47: Entity Merge Infrastructure) ---
 ENTITY_DEDUP_CYCLE_INTERVAL = 5     # Dedup every Nth slumber cycle
+
+# --- Janus Reflection (R55: First Voice) ---
+REFLECTION_CYCLE_INTERVAL = 10      # Reflection every Nth slumber cycle (~5 minutes)
 ENTITY_DEDUP_BATCH_SIZE = 50        # Max merges per cycle
 
 # --- Pre-Cognition (R25) ---
