@@ -982,6 +982,36 @@ def archive_janus_conversation(janus_conv_id: str) -> str:
     return new_id
 
 
+def get_or_create_monologue_conversation() -> str:
+    """Get the Janus inner monologue conversation ID, creating it if needed.
+
+    The monologue conversation is separate from the active Mat↔Janus conversation.
+    It stores Janus's continuous self-reflection — thoughts she generates autonomously,
+    not responses to Mat's questions. Persisted in settings as 'janus_monologue_id'.
+
+    Returns:
+        The monologue conversation ID (hex string).
+    """
+    from services.settings import get_setting, set_setting
+
+    mono_id = get_setting("janus_monologue_id")
+    if mono_id:
+        conv = get_conversation(mono_id)
+        if conv:
+            return mono_id
+
+    provider = get_setting("chat_provider") or "ollama"
+    model = get_setting("chat_model") or "qwen3:32b"
+    mono_id = create_conversation(
+        provider=provider,
+        model=model,
+        title="Janus — Inner Monologue",
+        source="platform",
+    )
+    set_setting("janus_monologue_id", mono_id)
+    return mono_id
+
+
 # ---------------------------------------------------------------------------
 # Conversation Stream (real-time message access)
 # ---------------------------------------------------------------------------

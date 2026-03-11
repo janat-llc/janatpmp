@@ -393,6 +393,15 @@ def init_database():
                 conn.executescript(migration_path.read_text(encoding="utf-8"))
                 logger.info("Applied migration 2.3.2: dream_synthesis source")
 
+        # Migration 2.3.3: Fix tasks.target_item_id FK — items_backup → items (R57)
+        if conn.execute(
+            "SELECT version FROM schema_version WHERE version='2.3.3'"
+        ).fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "2.3.3_fix_tasks_fk.sql"
+            if migration_path.exists():
+                conn.executescript(migration_path.read_text(encoding="utf-8"))
+                logger.info("Applied migration 2.3.3: fix tasks FK items_backup → items")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.

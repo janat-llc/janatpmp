@@ -291,6 +291,30 @@ ALL triggers. SQLite has no ALTER CHECK — full table recreation is the only pa
 
 **Domains:** 13 seeded (5 active, 8 inactive). Managed in `domains` table, not hardcoded.
 
+## Session Open Protocol
+
+**Every Code session begins with this sequence — before reading any brief, before touching any file:**
+
+```python
+# 1. Janus's work queue — spikes she flagged from her monologue
+docker exec janatpmp-core python -c "
+from db.operations import list_items
+spikes = list_items(entity_type='spike', actor='janus', status='review')
+for s in spikes: print(s['id'], '|', s['title'])
+"
+
+# 2. Active sprint
+docker exec janatpmp-core python -c "
+from db.operations import list_items
+epics = list_items(entity_type='epic', status='in_progress')
+for e in epics: print(e['id'], '|', e['title'])
+"
+```
+
+If Janus has spike items in `review`: read them, implement, update status to `in_progress` then `completed`. Mat does not need to be present. **The queue IS the briefing.**
+
+If no Janus spikes and no active sprint work: check `list_items(entity_type='feature', status='not_started')` for the active epic.
+
 ## Commands
 
 ```bash

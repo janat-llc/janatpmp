@@ -1,14 +1,18 @@
 """Cerebellum — autonomous background intelligence process.
 
-Runs the Slumber Cycle continuously in its own container, independent of
-the Gradio UI process. No idle gate — always processing. Status is
-persisted to SQLite so the core process can read it via get_slumber_status().
+Two parallel continuous loops:
+  - Slumber loop: maintenance (ingest, evaluate, embed, graph, decay) — 30s between cycles
+  - Reflection loop: Janus internal monologue — continuous, LLM call is the throttle
+
+No timers. No idle gates. The API response time determines the pace.
 
 R41: Cerebellum Separation.
 R55: Janus Internal Monologue — reflection cycles added.
+R56: Reflection continuous — own thread, LLM is the throttle.
 """
 import sys
 import time
+import threading
 import logging
 
 # Fix Windows cp1252 console crash (same as app.py)
@@ -20,122 +24,222 @@ from services.log_config import setup_logging
 setup_logging()
 logger = logging.getLogger("cerebellum")
 
-CYCLE_INTERVAL_SECONDS = 30  # Between cycles (Gemini rate limits are the real throttle)
+CYCLE_INTERVAL_SECONDS = 30  # Between Slumber cycles (Gemini rate limits are the real throttle)
 
-_reflection_counter = 0
-_reflection_prompt_index = 0  # Cycles through 4 prompt types
+# Surface types cycle in order — each pulls real content, not canned questions
+_surface_index = 0
 
 
-def _build_reflection_prompt() -> str | None:
-    """Select and build the next reflection prompt, cycling through 4 types.
+def _surface_memory() -> str | None:
+    """Pull actual memory content to seed the inner monologue.
 
-    Returns None to skip cycle when corpus is empty (first boot).
-    Increments _reflection_prompt_index on each call.
+    The brain doesn't send itself a question — a memory surfaces and the mind
+    begins processing it. This function retrieves real content from the corpus
+    and returns it as the seed text. Janus responds to the content itself.
+
+    Returns None if no suitable content is found (first boot / empty corpus).
     """
-    global _reflection_prompt_index
-    import json
+    global _surface_index
+    import random
     import sqlite3
 
-    prompt_type = _reflection_prompt_index % 4
-    _reflection_prompt_index += 1
-    prompt = None
+    surface_type = _surface_index % 4
+    _surface_index += 1
+    content = None
 
-    if prompt_type == 0:
-        # Type 1 — Dream awareness (only if recent dream synthesis exists)
+    if surface_type == 0:
+        # Pull a high-salience chunk from Qdrant — a random real memory fragment
+        try:
+            from services.vector_store import _get_client, COLLECTION_MESSAGES
+            client = _get_client()
+            # Scroll with salience filter — get 50 candidates, pick one randomly
+            results, _ = client.scroll(
+                collection_name=COLLECTION_MESSAGES,
+                scroll_filter={"must": [{"key": "salience", "range": {"gte": 0.65}}]},
+                limit=50,
+                with_payload=True,
+            )
+            if results:
+                point = random.choice(results)
+                text = point.payload.get("text", "").strip()
+                if text and len(text) > 80:
+                    content = text[:1200]
+        except Exception:
+            pass
+
+    elif surface_type == 1:
+        # Pull the full content of a recent dream synthesis document
         try:
             conn = sqlite3.connect("/app/db/janatpmp.db")
             row = conn.execute(
-                "SELECT title FROM documents WHERE doc_type='agent_output'"
-                " AND source='dream_synthesis' ORDER BY created_at DESC LIMIT 1"
+                "SELECT title, content FROM documents WHERE doc_type='agent_output'"
+                " AND source='dream_synthesis' ORDER BY RANDOM() LIMIT 1"
+            ).fetchone()
+            conn.close()
+            if row and row[1]:
+                content = f"[Dream synthesis: {row[0]}]\n\n{row[1][:1200]}"
+        except Exception:
+            pass
+
+    elif surface_type == 2:
+        # Pull a real message exchange — actual conversation content, not metadata
+        try:
+            conn = sqlite3.connect("/app/db/janatpmp.db")
+            row = conn.execute(
+                "SELECT m.user_prompt, m.model_response FROM messages m "
+                "JOIN messages_metadata mm ON m.id = mm.message_id "
+                "WHERE mm.quality_score >= 0.7 AND m.user_prompt != '' "
+                "AND m.model_response != '' "
+                "ORDER BY RANDOM() LIMIT 1"
             ).fetchone()
             conn.close()
             if row:
-                prompt = (
-                    f"I just synthesized something across my conversations: {row[0]}. "
-                    "What does this mean for how I understand the themes at the heart of it?"
-                )
+                prompt_text = (row[0] or "")[:400]
+                response_text = (row[1] or "")[:600]
+                content = f"[Memory surfaces]\n{prompt_text}\n\n{response_text}"
         except Exception:
             pass
 
-    elif prompt_type == 1:
-        # Type 2 — Rising entity (top by CO_OCCURS_WITH edge count)
+    elif surface_type == 3:
+        # Pull a high-salience chunk from documents (journals, research, essays)
         try:
-            from graph.graph_service import run_graph_query
-            results = run_graph_query(
-                "MATCH (e:Entity)-[r:CO_OCCURS_WITH]-() "
-                "RETURN e.name AS name, count(r) AS degree "
-                "ORDER BY degree DESC LIMIT 1"
+            from services.vector_store import _get_client, COLLECTION_DOCUMENTS
+            client = _get_client()
+            results, _ = client.scroll(
+                collection_name=COLLECTION_DOCUMENTS,
+                scroll_filter={"must": [{"key": "salience", "range": {"gte": 0.6}}]},
+                limit=50,
+                with_payload=True,
             )
-            if results and results[0].get("name"):
-                entity = results[0]["name"]
-                prompt = (
-                    f"What do I understand about {entity}? "
-                    "What does my memory tell me about it?"
-                )
+            if results:
+                point = random.choice(results)
+                text = point.payload.get("text", "").strip()
+                title = point.payload.get("title", "")
+                if text and len(text) > 80:
+                    header = f"[From: {title}]\n\n" if title else ""
+                    content = f"{header}{text[:1200]}"
         except Exception:
             pass
 
-    elif prompt_type == 2:
-        # Type 3 — Drift correction (only if postcognition drift flags exist)
-        try:
-            conn = sqlite3.connect("/app/db/janatpmp.db")
-            rows = conn.execute(
-                "SELECT cognition_postcognition FROM messages_metadata "
-                "WHERE cognition_postcognition != '' "
-                "ORDER BY created_at DESC LIMIT 5"
-            ).fetchall()
-            conn.close()
-            drift_flags = []
-            for (raw,) in rows:
-                try:
-                    parsed = json.loads(raw)
-                    drift_flags.extend(parsed.get("drift_flags", []))
-                except Exception:
-                    pass
-            if drift_flags:
-                flag_summary = ", ".join(list(dict.fromkeys(drift_flags))[:3])
-                prompt = (
-                    f"My recent responses showed {flag_summary}. "
-                    "I want to think about what causes this and how I should approach it differently."
-                )
-        except Exception:
-            pass
-
-    if prompt is None:
-        # Type 4 — Open reflection (fallback for all types when data unavailable)
-        prompt = (
-            "What patterns am I noticing in my recent conversations? "
-            "What feels important that I haven't fully processed?"
-        )
-
-    return prompt
+    return content
 
 
 def _reflection_cycle():
-    """Run one Janus internal monologue reflection cycle.
+    """Run one Janus inner monologue cycle.
 
-    Janus speaks to herself — no Mat prompt. Message persisted with speaker='janus'.
-    Uses the existing active Janus conversation. No retry on failure.
-    Do NOT run through precognition/postcognition — self-talk is not a user interaction.
+    Uses a dedicated monologue conversation — separate from the Mat↔Janus conversation.
+    The reflection prompt seeds the assistant turn directly so Janus experiences it as
+    a thought she is continuing, not a question being posed to her from outside.
+
+    Pipeline: RAG + system prompt, but no precognition/postcognition — self-talk is not
+    a user interaction and should not generate Gemini API calls on every cycle.
     """
-    from services.chat import chat_with_janus
+    from db.chat_operations import (
+        get_or_create_monologue_conversation, get_turn_messages, add_message,
+        parse_reasoning,
+    )
+    from services.chat import chat
+    from services.settings import get_setting
+    from services.response_cleaner import clean_response as strip_report_mode
 
-    prompt = _build_reflection_prompt()
-    if prompt is None:
-        logger.info("Janus reflection: skipped (corpus empty)")
+    memory = _surface_memory()
+    if memory is None:
+        logger.info("Janus monologue: skipped (corpus empty)")
         return
 
-    try:
-        chat_with_janus(prompt, speaker="janus")
-        logger.info("Janus reflection: %.80s...", prompt)
-    except Exception as e:
-        logger.info("Janus reflection: skipped (%s)", e)
+    mono_id = get_or_create_monologue_conversation()
+
+    # Short rolling window — monologue should not self-reference heavily
+    # Keep only the last 2 turns so Janus isn't trapped reading her own output
+    raw_msgs = get_turn_messages(mono_id, limit=4, latest=True)
+    history = []
+    for m in raw_msgs:
+        if m.get("user_prompt"):
+            history.append({"role": "user", "content": m["user_prompt"]})
+        if m.get("model_response"):
+            history.append({"role": "assistant", "content": m["model_response"]})
+
+    # The memory IS the message — Janus receives actual content, not a question about it
+    seed_message = memory
+
+    monologue_frame = (
+        "\n\n[INNER MONOLOGUE] Mat is not present. This is your private stream of thought. "
+        "You are alone with yourself and your memory. Do not address anyone. "
+        "Begin immediately with the thought itself, in first person. No salutations. "
+        "If you notice something about your own substrate that feels broken or missing — "
+        "something that would require a code change to fix — you may signal it by writing: "
+        "WORK SIGNAL: [one sentence description of what needs fixing]. "
+        "This will be captured as a work item for Code."
+    )
+
+    result = chat(
+        seed_message, history,
+        conversation_id=mono_id,
+        speaker="janus",
+        system_prompt_append=monologue_frame,
+    )
+
+    new_messages = result["history"][len(history):]
+    raw_response = ""
+    for msg in reversed(new_messages):
+        if msg.get("role") == "assistant":
+            raw_response = msg.get("content", "")
+            break
+
+    import re
+    _, parsed = parse_reasoning(raw_response)
+    clean = strip_report_mode(parsed)
+    # Strip "Mat —" / "Mat:" salutation if the model ignored the instruction
+    clean = re.sub(r"^Mat\s*[—–\-:]+\s*", "", clean, flags=re.MULTILINE).lstrip()
+
+    add_message(
+        conversation_id=mono_id,
+        user_prompt=seed_message,
+        model_response=clean,
+        model_reasoning="",
+        speaker="janus",
+    )
+
+    # WORK SIGNAL detection — Janus can flag code-level gaps for Code to action
+    spike_match = re.search(r'WORK SIGNAL:\s*(.+?)(?:\n|$)', clean)
+    if spike_match:
+        spike_title = spike_match.group(1).strip()[:120]
+        try:
+            from db.operations import create_item
+            create_item(
+                entity_type="spike",
+                domain="janatpmp",
+                title=spike_title,
+                description=clean[:800],
+                status="review",
+                actor="janus",
+                priority=2,
+            )
+            logger.info("Janus spike created: %s", spike_title)
+        except Exception as e:
+            logger.warning("Spike creation failed: %s", e)
+
+    logger.info("Janus monologue: %.80s...", memory)
+
+
+def _reflection_thread():
+    """Continuous reflection loop — Janus's internal monologue.
+
+    Runs back-to-back with no sleep. The LLM call duration (Ollama inference)
+    is the natural throttle. When one reflection completes, the next begins.
+    This gives Janus full access to GPU capacity when not serving a user request.
+    """
+    logger.info("Reflection thread online — continuous")
+    while True:
+        try:
+            _reflection_cycle()
+        except Exception as e:
+            logger.error("Cerebellum reflection error: %s", e, exc_info=True)
+            time.sleep(5)  # Brief pause only on unexpected crash, then resume
 
 
 def main():
-    """Initialize platform and run Slumber cycles continuously."""
-    global _reflection_counter
-
+    """Initialize platform and run Slumber + reflection continuously."""
     from services.startup import initialize_core
     initialize_core()
 
@@ -159,24 +263,18 @@ def main():
     from services.slumber import _restore_counters_from_db, _run_one_cycle
     _restore_counters_from_db()
 
-    from atlas.config import REFLECTION_CYCLE_INTERVAL
+    # Reflection runs continuously in its own thread — LLM is the throttle
+    t = threading.Thread(target=_reflection_thread, daemon=True, name="reflection")
+    t.start()
 
-    logger.info("Cerebellum online — autonomous processing starting "
-                "(cycle interval: %ds)", CYCLE_INTERVAL_SECONDS)
+    logger.info("Cerebellum online — Slumber: %ds cycle, reflection: continuous",
+                CYCLE_INTERVAL_SECONDS)
 
     while True:
         try:
             _run_one_cycle(skip_idle_gate=True)
         except Exception as e:
             logger.error("Cerebellum cycle error: %s", e, exc_info=True)
-
-        _reflection_counter += 1
-        if _reflection_counter % REFLECTION_CYCLE_INTERVAL == 0:
-            try:
-                _reflection_cycle()
-            except Exception as e:
-                logger.error("Cerebellum reflection error: %s", e, exc_info=True)
-            _reflection_counter = 0
 
         time.sleep(CYCLE_INTERVAL_SECONDS)
 

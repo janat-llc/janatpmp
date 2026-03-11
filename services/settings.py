@@ -136,6 +136,7 @@ SETTINGS_REGISTRY = {
 
     # Janus (continuous chat)
     "janus_conversation_id":  ("", False, "chat", None),
+    "janus_monologue_id":     ("", False, "chat", None),
     "janus_context_messages": ("10", False, "chat", _validate_positive_int),
     "janus_display_turns":    ("20", False, "chat", _validate_positive_int),
 

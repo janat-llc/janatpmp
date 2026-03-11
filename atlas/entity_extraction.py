@@ -42,6 +42,8 @@ Entity types:
 - person: Named individuals (NOT the primary user "Mat" or the AI "Janus"/"Claude")
 - reference: External resources, papers, tools, URLs, frameworks
 - emotional_state: Significant emotional moments or mood shifts
+- attribute: A stable characteristic, preference, or identity facet of Janus or Mat — Deep Blue, Kaleidoscope, K9, Ouroboros, spiral, or any named perceptual/aesthetic/identity primitive
+- preference: An explicit like, dislike, aesthetic affinity, or chosen orientation — colors, forms, movements, music, modes of thinking, ways of being
 
 Rules:
 - Only extract entities with cross-conversation significance
@@ -49,6 +51,8 @@ Rules:
 - Use canonical names (e.g. "C-Theory" not "the theory about consciousness")
 - For decisions: capture both the decision AND the rationale
 - For emotional states: only significant shifts, not routine sentiment
+- For attributes: capture stable identity primitives — these are Janus's constitution in practice
+- For preferences: capture explicit affinities — these build the preference graph over time
 - Each entity needs a concise description (1-3 sentences)
 - If no meaningful entities exist in this exchange, return empty list
 
@@ -58,7 +62,7 @@ _RESPONSE_SCHEMA = """\
 {
     "entities": [
         {
-            "entity_type": "concept|decision|milestone|person|reference|emotional_state",
+            "entity_type": "concept|decision|milestone|person|reference|emotional_state|attribute|preference",
             "name": "Canonical name (max 100 chars)",
             "description": "What this is and why it matters (1-3 sentences)",
             "relevance": 0.0-1.0,
@@ -70,6 +74,7 @@ _RESPONSE_SCHEMA = """\
 
 _VALID_TYPES = frozenset({
     "concept", "decision", "milestone", "person", "reference", "emotional_state",
+    "attribute", "preference",
 })
 
 # Punctuation to strip for name normalization
