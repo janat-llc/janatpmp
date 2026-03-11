@@ -72,7 +72,10 @@ def run_entity_decay_cycle(batch_size: int = 0) -> dict:
     for row in rows:
         entity_id = row["id"]
         mention_count = row["mention_count"] or 1
-        current_salience = row["salience"] if row["salience"] is not None else SALIENCE_DEFAULT
+        try:
+            current_salience = float(row["salience"]) if row["salience"] is not None else SALIENCE_DEFAULT
+        except (ValueError, TypeError):
+            current_salience = SALIENCE_DEFAULT
 
         # Parse last_seen_at
         try:

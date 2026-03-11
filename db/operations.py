@@ -383,6 +383,16 @@ def init_database():
                 conn.executescript(migration_path.read_text(encoding="utf-8"))
                 logger.info("Applied migration 2.3.1: entry doc_type")
 
+        # Migration 2.3.2: Add 'dream_synthesis' to documents source CHECK constraint (R56)
+        # Dream synthesis was silently failing since R24 — every insight discarded on write.
+        if conn.execute(
+            "SELECT version FROM schema_version WHERE version='2.3.2'"
+        ).fetchone() is None:
+            migration_path = Path(__file__).parent / "migrations" / "2.3.2_dream_synthesis_source.sql"
+            if migration_path.exists():
+                conn.executescript(migration_path.read_text(encoding="utf-8"))
+                logger.info("Applied migration 2.3.2: dream_synthesis source")
+
 
 def cleanup_cdc_outbox(days: int = 90) -> int:
     """Delete processed CDC outbox entries older than the given number of days.
